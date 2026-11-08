@@ -185,13 +185,19 @@ pub fn hash_scheme_of(hash: &str) -> Option<&'static str> {
 }
 
 /// Verifies `password` against a stored password field. A lock prefix
-/// (`!`) is ignored; an account without a password never matches. Hashes
-/// that cannot be checked here (yescrypt, MD5, DES) give
+/// (`!`) is ignored; an account without a password never matches. The
+/// system crypt library is tried first (it knows every scheme PAM does,
+/// yescrypt included); the built-in verifiers cover sha512/sha256-crypt,
+/// bcrypt and argon2 when it is missing or does not know the scheme.
+/// Anything neither can check gives
 /// `user.old_password_verification_unsupported`.
 pub fn verify_password_hash(password: &str, stored: &str) -> Result<bool> {
     let hash = stored.trim_start_matches('!');
     if hash.is_empty() || hash.starts_with('*') || password.is_empty() {
         return Ok(false);
+    }
+    if let Some(ok) = super::libcrypt::verify(password, hash) {
+        return Ok(ok);
     }
     if let Some(ok) = sha_crypt::verify(password, hash) {
         return Ok(ok);

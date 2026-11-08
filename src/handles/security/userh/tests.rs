@@ -10,6 +10,7 @@ use serde_json::Value;
 struct Out {
     status: Status,
     stdout: String,
+    stderr: String,
 }
 
 impl Out {
@@ -72,10 +73,10 @@ fn call_in(target: &str, verb: &str, pairs: &[(&str, &str)], stdin: &str) -> Out
         let mut io = IoStreams::new(&mut input, &mut out, &mut err);
         h.call(verb, &args, &mut io).unwrap()
     };
-    assert!(err.is_empty(), "the handle writes failures through Status");
     Out {
         status,
         stdout: String::from_utf8(out).unwrap(),
+        stderr: String::from_utf8(err).unwrap(),
     }
 }
 
@@ -174,14 +175,19 @@ fn every_verb_refuses_unknown_arguments_with_a_suggestion() {
         mock_call(&m, "alice", verb, &[("timeout_ms", "10")]).fails(2, "user.invalid_argument");
         mock_call(&m, "alice", verb, &[("dry_run", "true")]).fails(2, "user.invalid_argument");
     }
+    // passwd: a misspelled force.
     let o = mock_call(
         &m,
         "alice",
         "passwd",
-        &[("force", "true"), ("new_password_plain", "x")],
+        &[("forse", "true"), ("new_password_plain", "x")],
     );
     o.fails(2, "user.invalid_argument");
-    assert!(o.reason().contains("force"));
+    assert!(
+        o.reason().contains("did you mean `force`?"),
+        "{}",
+        o.reason()
+    );
     assert!(m.changes().is_empty());
     // An unknown verb.
     let o = mock_call(&m, "alice", "lokc", &[]);
@@ -499,6 +505,7 @@ fn every_error_code_is_valid_documented_and_has_the_right_exit() {
         UserError::ToolNotFound(String::new()),
         UserError::Timeout(String::new()),
         UserError::PartialFailure(String::new()),
+        UserError::ProtectedAccount(String::new(), 0),
     ];
     for e in samples {
         let code = e.code();
@@ -1287,22 +1294,31 @@ fn passwd_checks_the_old_password() {
         ],
     )
     .fails(1, "user.old_password_mismatch");
-    // yescrypt cannot be checked here.
-    let m = world().with_password(
-        "alice",
-        "$y$j9T$abcdefgh$ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq",
-    );
-    mock_call(
-        &m,
-        "alice",
-        "passwd",
-        &[
-            ("new_password_plain", "n"),
-            ("require_old_password", "true"),
-            ("old_password_plain", "o"),
-        ],
-    )
-    .fails(1, "user.old_password_verification_unsupported");
+    // yescrypt (made by Debian 13's chpasswd) is checked by the system
+    // crypt library when it can be loaded.
+    let yes = "$y$j9T$Cm8IvKsdOzfFgiL1k1zm1.$o2GHHTASPFxp1KnD1/T7uGKDwxhpLA.O4VEsoDrvSs7";
+    let old = |m: &MockBackend, pw: &str| {
+        mock_call(
+            m,
+            "alice",
+            "passwd",
+            &[
+                ("new_password_plain", "n"),
+                ("require_old_password", "true"),
+                ("old_password_plain", pw),
+            ],
+        )
+    };
+    if libcrypt::available() {
+        old(&world().with_password("alice", yes), "Hello yescrypt").ok();
+        old(&world().with_password("alice", yes), "wrong").fails(1, "user.old_password_mismatch");
+    } else {
+        old(&world().with_password("alice", yes), "Hello yescrypt")
+            .fails(1, "user.old_password_verification_unsupported");
+    }
+    // A scheme neither the library nor resh knows.
+    old(&world().with_password("alice", "$zz$abc$def"), "o")
+        .fails(1, "user.old_password_verification_unsupported");
     // The system backend reads /etc/shadow, which unit tests cannot (or
     // must not rely on reading).
     let (o, _) = system_call(
@@ -1313,6 +1329,7 @@ fn passwd_checks_the_old_password() {
             ("require_old_password", "true"),
             ("old_password_plain", "o"),
             ("dry_run", "true"),
+            ("force", "true"),
         ],
     );
     assert!(!o.status.ok);
@@ -1323,15 +1340,25 @@ fn passwd_dry_run_plans_a_redacted_chpasswd() {
     let (o, cmds) = system_call(
         "root",
         "passwd",
-        &[("new_password_plain", "S3cr3t"), ("dry_run", "true")],
+        &[
+            ("new_password_plain", "S3cr3t"),
+            ("dry_run", "true"),
+            ("force", "true"),
+        ],
     );
     let v = o.ok();
+    assert!(o.stderr.contains("new_password_plain"), "{}", o.stderr);
+    assert!(!o.stderr.contains("S3cr3t"));
     assert_eq!(v["planned_commands"][0], "chpasswd -e <<< (redacted)");
     assert_eq!(v["password"]["scheme"], "sha512_crypt");
     assert_eq!(v["password"]["changed"], false);
     assert!(!o.stdout.contains("S3cr3t"));
     assert!(cmds.is_empty());
-    let (o, cmds) = system_call("root", "passwd", &[("new_password_plain", "S3cr3t")]);
+    let (o, cmds) = system_call(
+        "root",
+        "passwd",
+        &[("new_password_plain", "S3cr3t"), ("force", "true")],
+    );
     o.ok();
     assert_eq!(cmds[0].argv, ["chpasswd", "-e"]);
     let line = cmds[0].stdin.clone().unwrap();
@@ -1581,7 +1608,14 @@ fn hash_formats_are_recognized() {
     assert!(verify_password_hash("pw", &format!("!{sha}")).unwrap());
     assert!(!verify_password_hash("pw", "!").unwrap());
     assert!(!verify_password_hash("pw", "*").unwrap());
-    assert!(verify_password_hash("pw", "$1$abc$def").is_err());
+    assert!(verify_password_hash("pw", "$zz$abc$def").is_err());
+    if libcrypt::available() {
+        let yes = "$y$j9T$Cm8IvKsdOzfFgiL1k1zm1.$o2GHHTASPFxp1KnD1/T7uGKDwxhpLA.O4VEsoDrvSs7";
+        assert!(verify_password_hash("Hello yescrypt", yes).unwrap());
+        assert!(!verify_password_hash("Hello yescrypX", yes).unwrap());
+        assert!(verify_password_hash("Hello yescrypt", &format!("!{yes}")).unwrap());
+        assert_eq!(libcrypt::crypt("pw", "$zz$x"), None);
+    }
 }
 
 #[test]
@@ -1612,4 +1646,69 @@ fn tools_run_under_a_deadline_with_stdin() {
         exec::run(&argv(&["true"]), None, Instant::now()),
         Err(exec::RunError::Timeout(_))
     ));
+}
+
+#[test]
+fn passwd_protects_system_accounts_and_warns_about_plain_passwords() {
+    let m = world();
+    let o = mock_call(&m, "daemon", "passwd", &[("new_password_env", "PATH")]);
+    let v = o.fails(2, "user.protected_account");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("force=true")
+    );
+    assert!(o.stderr.is_empty(), "no warning without new_password_plain");
+    mock_call(
+        &m,
+        "daemon",
+        "passwd",
+        &[("new_password_env", "PATH"), ("dry_run", "true")],
+    )
+    .fails(2, "user.protected_account");
+    assert!(m.changes().is_empty());
+    let v = mock_call(
+        &m,
+        "daemon",
+        "passwd",
+        &[("new_password_env", "PATH"), ("force", "true")],
+    )
+    .ok();
+    assert!(v["warnings"][0].as_str().unwrap().contains("force=true"));
+    mock_call(
+        &m,
+        "alice",
+        "passwd",
+        &[("new_password_env", "PATH"), ("force", "maybe")],
+    )
+    .fails(2, "user.invalid_argument");
+    // Every use of new_password_plain warns, also when the call fails, and
+    // the error line follows the warning.
+    let o = mock_call(&m, "alice", "passwd", &[("new_password_plain", "Secret9")]);
+    o.ok();
+    assert!(
+        o.stderr.starts_with("Warning: new_password_plain="),
+        "{}",
+        o.stderr
+    );
+    assert!(!o.stderr.contains("Secret9"));
+    let o = mock_call(&m, "daemon", "passwd", &[("new_password_plain", "Secret9")]);
+    o.fails(2, "user.protected_account");
+    assert!(
+        o.stderr.contains("Warning: new_password_plain="),
+        "{}",
+        o.stderr
+    );
+    assert!(
+        o.stderr.contains("Error: [user.protected_account] "),
+        "{}",
+        o.stderr
+    );
+    let (o, _) = system_call(
+        "root",
+        "passwd",
+        &[("new_password_plain", "x"), ("dry_run", "true")],
+    );
+    o.fails(2, "user.protected_account");
 }

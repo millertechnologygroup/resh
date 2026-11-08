@@ -34,7 +34,9 @@ impl Run {
     fn fails(&self, exit: i32, code: &str) {
         assert_eq!(self.code, exit, "{}\n{}", self.stdout, self.stderr);
         assert!(
-            self.stderr.starts_with(&format!("Error: [{code}] ")),
+            self.stderr
+                .lines()
+                .any(|l| l.starts_with(&format!("Error: [{code}] "))),
             "{code}: {}",
             self.stderr
         );
@@ -191,6 +193,7 @@ fn passwd_verb_never_shows_the_password() {
             "user://root.passwd",
             "new_password_stdin=true",
             "dry_run=true",
+            "force=true",
         ],
         &format!("{secret}\n"),
         &[],
@@ -205,6 +208,7 @@ fn passwd_verb_never_shows_the_password() {
             "user://root.passwd",
             "new_password_env=RESH_IT_PW",
             "dry_run=true",
+            "force=true",
         ],
         "",
         &[("RESH_IT_PW", secret)],
@@ -225,11 +229,51 @@ fn passwd_verb_never_shows_the_password() {
     // A failure message never holds the password either.
     let r = resh(&[
         "user://root.passwd",
-        "new_password_plain=a\tb",
+        "new_password_plain=a\nb",
         "force=true",
     ]);
     r.fails(2, "user.invalid_argument");
-    assert!(!r.stderr.contains("a\tb"));
+    assert!(!r.stderr.contains("a\nb"));
+}
+
+#[test]
+fn passwd_protects_root_and_warns_about_plain_passwords() {
+    let r = resh_in(
+        &[
+            "user://root.passwd",
+            "new_password_env=RESH_IT_PW",
+            "dry_run=true",
+        ],
+        "",
+        &[("RESH_IT_PW", "x")],
+    );
+    r.fails(2, "user.protected_account");
+    assert!(!r.stderr.contains("Warning"), "{}", r.stderr);
+    let r = resh(&[
+        "user://root.passwd",
+        "new_password_plain=Vis1ble",
+        "dry_run=true",
+    ]);
+    r.fails(2, "user.protected_account");
+    assert!(
+        r.stderr.starts_with("Warning: new_password_plain="),
+        "{}",
+        r.stderr
+    );
+    assert!(!r.stderr.contains("Vis1ble"));
+    let r = resh(&[
+        "user://root.passwd",
+        "new_password_plain=Vis1ble",
+        "dry_run=true",
+        "force=true",
+    ]);
+    r.ok();
+    assert!(
+        r.stderr.starts_with("Warning: new_password_plain="),
+        "{}",
+        r.stderr
+    );
+    assert!(!r.stdout.contains("Vis1ble") && !r.stderr.contains("Vis1ble"));
 }
 
 #[test]

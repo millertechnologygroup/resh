@@ -160,12 +160,9 @@ fn crypt_raw(variant: Variant, password: &[u8], salt: &[u8], rounds: u32) -> Str
 /// The parts of a stored SHA-crypt hash: `(variant, rounds, salt, encoded
 /// digest)`, or `None` for anything else.
 fn parse(stored: &str) -> Option<(Variant, u32, &str, &str)> {
-    let (variant, rest) = if let Some(r) = stored.strip_prefix("$6$") {
-        (Variant::Sha512, r)
-    } else if let Some(r) = stored.strip_prefix("$5$") {
-        (Variant::Sha256, r)
-    } else {
-        return None;
+    let (variant, rest) = match stored.strip_prefix("$6$") {
+        Some(r) => (Variant::Sha512, r),
+        None => (Variant::Sha256, stored.strip_prefix("$5$")?),
     };
     let (rounds, rest) = match rest.strip_prefix("rounds=") {
         Some(r) => {

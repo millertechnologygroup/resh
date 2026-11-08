@@ -39,6 +39,10 @@ fn check_id_range(id: u32, force: bool, uid: bool) -> Result<(), UserError> {
     }
 }
 
+/// What `set_lock` reports: the uid (None when the account is missing),
+/// the lock state, warnings and planned commands.
+type LockOutcome = (Option<u32>, LockInfo, Vec<String>, Vec<String>);
+
 /// Top-level directories `remove_home` never removes.
 fn is_top_level(path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
@@ -690,7 +694,21 @@ impl UserHandle {
             .into());
         }
         let mut warnings = Vec::new();
-        if backend.lookup_user(&username)?.is_none() {
+        let record = backend.lookup_user(&username)?;
+        if let Some(rec) = &record {
+            // The same boundary delete, lock and unlock protect.
+            if rec.uid < FIRST_REGULAR_ID {
+                if !options.force {
+                    return Err(UserError::ProtectedAccount(username, rec.uid).into());
+                }
+                warnings.push(format!(
+                    "Warning: Changing the password of system account {username} (uid={}) \
+                     with force=true.",
+                    rec.uid
+                ));
+            }
+        }
+        if record.is_none() {
             if !options.ignore_if_missing {
                 return Err(UserError::UserNotFound(username).into());
             }
@@ -757,13 +775,13 @@ impl UserHandle {
             backend
                 .set_password_hash(&username, &hash)
                 .map_err(|e| keep_or(e, UserError::PasswordBackendFailure))?;
-            if let Ok(Some(stored)) = backend.password_field(&username) {
-                if stored != hash {
-                    return Err(UserError::PasswordBackendFailure(format!(
-                        "the stored password of {username} is not the new one after the change"
-                    ))
-                    .into());
-                }
+            if let Ok(Some(stored)) = backend.password_field(&username)
+                && stored != hash
+            {
+                return Err(UserError::PasswordBackendFailure(format!(
+                    "the stored password of {username} is not the new one after the change"
+                ))
+                .into());
             }
         }
         Ok(UserPasswdResponse {
@@ -798,7 +816,7 @@ impl UserHandle {
         min_uid: u32,
         force: bool,
         backend: &mut dyn UserBackendProvider,
-    ) -> Result<(Option<u32>, LockInfo, Vec<String>, Vec<String>)> {
+    ) -> Result<LockOutcome> {
         let verb = if lock { "lock" } else { "unlock" };
         let fail = |m: String| {
             if lock {
@@ -1067,10 +1085,10 @@ impl UserHandle {
                 .map_err(|e| lookup_failed(format!("cannot look up uid {uid}"), e))?,
             (None, None) => return Err(UserError::IdentityRequired.into()),
         };
-        if let (Some(name), Some(uid), Some(rec)) = (&options.username, options.uid, &record) {
-            if rec.uid != uid {
-                return Err(UserError::ExistsMismatch(name.clone(), rec.uid, uid).into());
-            }
+        if let (Some(name), Some(uid), Some(rec)) = (&options.username, options.uid, &record)
+            && rec.uid != uid
+        {
+            return Err(UserError::ExistsMismatch(name.clone(), rec.uid, uid).into());
         }
         let mut warnings = Vec::new();
         if record.is_none() {

@@ -2,6 +2,11 @@
 //! options of another mode, and invalid values are refused (exit 2) before
 //! anything is looked up or changed.
 
+// The parsers fill a default options value field by field, in the order
+// the checks must run (an earlier refusal wins), so a struct literal does
+// not fit.
+#![allow(clippy::field_reassign_with_default)]
+
 use std::io::Read;
 
 use super::{
@@ -83,6 +88,7 @@ const PASSWD_ARGS: &[&str] = &[
     "old_password_plain",
     "old_password_env",
     "ignore_if_missing",
+    "force",
     "dry_run",
     "backend",
     "format",
@@ -181,9 +187,6 @@ pub fn check_known(verb: &str, args: &Args) -> Result<(), UserError> {
                  database and runs no tool"
             ),
             "dry_run" => format!("user {verb} changes nothing and does not accept dry_run"),
-            "force" if verb == "passwd" => {
-                "user passwd does not accept force: it has no protection to override".to_string()
-            }
             _ => format!(
                 "unknown argument for user {verb}: {key}{} (accepted: {})",
                 hint(key, allowed),
@@ -224,10 +227,10 @@ impl<'a> Reader<'a> {
     /// A field written into /etc/passwd: no `:` either.
     fn passwd_field(&self, key: &str) -> Result<Option<String>, UserError> {
         let v = self.text(key)?;
-        if let Some(s) = &v {
-            if s.contains(':') {
-                return Err(invalid(format!("{key} must not contain ':'")));
-            }
+        if let Some(s) = &v
+            && s.contains(':')
+        {
+            return Err(invalid(format!("{key} must not contain ':'")));
         }
         Ok(v)
     }
@@ -235,12 +238,12 @@ impl<'a> Reader<'a> {
     /// An absolute path for /etc/passwd.
     fn path(&self, key: &str) -> Result<Option<String>, UserError> {
         let v = self.passwd_field(key)?;
-        if let Some(s) = &v {
-            if !s.starts_with('/') {
-                return Err(invalid(format!(
-                    "{key} must be an absolute path, got {s:?}"
-                )));
-            }
+        if let Some(s) = &v
+            && !s.starts_with('/')
+        {
+            return Err(invalid(format!(
+                "{key} must be an absolute path, got {s:?}"
+            )));
         }
         Ok(v)
     }
@@ -824,6 +827,7 @@ pub fn parse_passwd(
     o.format = r.format()?;
     o.dry_run = r.flag("dry_run", false)?;
     o.ignore_if_missing = r.flag("ignore_if_missing", true)?;
+    o.force = r.flag("force", false)?;
     o.timeout_ms = r.timeout_ms()?;
     o.username = username(&r, target, "passwd")?;
     if o.username.is_none() {

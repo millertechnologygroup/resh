@@ -152,7 +152,7 @@ Exactly one new-password source is required (`user.passwd_missing_new_password`,
 | -------------------------- | ------- |
 | `new_password_env=<VAR>`   | Read from the environment variable `VAR` (`"source": "env"`) |
 | `new_password_stdin=true`  | Read all of standard input; one trailing newline is dropped (`"source": "stdin"`) |
-| `new_password_plain=<pw>`  | Given inline (`"source": "plain"`). **It is visible in the process list and shell history**; prefer the two above. |
+| `new_password_plain=<pw>`  | Given inline (`"source": "plain"`). **Insecure: it is visible in the process list and shell history.** Every use prints a warning on stderr; use one of the two above. |
 | `new_password_hash=<hash>` | A precomputed crypt hash (`"source": "hash"`) |
 
 A plaintext password must not be empty or contain a line break or NUL. It is hashed with `hash_scheme`:
@@ -168,9 +168,11 @@ A plaintext password must not be empty or contain a line break or NUL. It is has
 
 The system backend writes `<user>:<hash>` to `chpasswd -e` on standard input, then reads the shadow entry back (when it can) and fails with `user.passwd_backend_failure` if it does not hold the new hash.
 
-`require_old_password=true` with `old_password_plain=` or `old_password_env=<VAR>` checks the current password first. The system backend reads `/etc/shadow` for it (root only). sha512_crypt, sha256_crypt, bcrypt and argon2 hashes can be checked (a `!` lock prefix is ignored); yescrypt, MD5 and DES hashes give `user.old_password_verification_unsupported`. A wrong password is `user.old_password_mismatch`. An old password without `require_old_password=true` is refused (exit 2).
+`require_old_password=true` with `old_password_plain=` or `old_password_env=<VAR>` checks the current password first. The system backend reads `/etc/shadow` for it (root only). The check uses the system crypt library (`crypt_r` from libcrypt, loaded at run time), which knows every scheme PAM does, yescrypt included; when the library is missing or does not know the scheme, resh's own sha512_crypt, sha256_crypt, bcrypt and argon2 verifiers are used. A `!` lock prefix is ignored. A hash neither can check gives `user.old_password_verification_unsupported`; a wrong password is `user.old_password_mismatch`. An old password without `require_old_password=true` is refused (exit 2).
 
-Other options: `username=`, `ignore_if_missing` (default `true`). `passwd` has no system-account protection and refuses `force`.
+`passwd` protects system accounts like `delete`, `lock` and `unlock`: an account with a UID below 1000, root included, is refused with `user.protected_account` (exit 2, also in a dry run) unless `force=true`, which proceeds with a warning.
+
+Other options: `username=`, `ignore_if_missing` (default `true`), `force`.
 
 ### lock / unlock
 
@@ -200,6 +202,7 @@ Every verb refuses (exit 2, nothing done) an argument it does not accept, naming
 ### System-account protection and force
 
 * `delete`, `lock`, and `unlock` refuse a user whose UID is below `min_uid_for_delete` / `min_uid_for_lock` / `min_uid_for_unlock` (default 1000). That includes `root` (UID 0). The error is `user.system_user_protected`; the check runs in dry runs too.
+* `passwd` refuses an account with a UID below 1000, root included, with `user.protected_account` (exit 2), in dry runs too.
 * `delete mode=group` refuses a group whose GID is below `min_gid_for_delete` (default 1000) (`user.group_system_protected`) and a group that still has members (`only_if_empty`, `user.group_not_empty`).
 * **`force=true` overrides all of these protections**, and on `add` it also allows a UID/GID below 1000. The operation then proceeds with a warning. Use it only deliberately, never as a default in scripts.
 * Setting `protect_system_users=false`, or lowering `min_uid_for_*`, also disables the user protection.
@@ -289,6 +292,7 @@ A failure prints `Error: [<code>] <message>` on stderr. With `format=json` (the 
 | `user.hash_scheme_unsupported` | 2 | `argon2id` on the system backend |
 | `user.hash_params_invalid` | 2 | A malformed hash, or a password bcrypt would truncate |
 | `user.old_password_required` | 2 | `require_old_password=true` without an old password |
+| `user.protected_account` | 2 | `passwd` on an account with a UID below 1000 (root included) without `force=true` |
 | `user.username_conflict` | 1 | The user exists and `ignore_if_exists=false` |
 | `user.group_conflict` | 1 | The group exists and `ignore_if_exists=false` |
 | `user.uid_conflict` | 1 | `uid` is in use |
@@ -328,7 +332,7 @@ Linux only. The system backend needs the shadow-utils tools (`useradd`, `usermod
 ## 7. Usage Guidance
 
 * Preview every change with `dry_run=true` and review `planned_commands`.
-* Pass passwords with `new_password_env=` or `new_password_stdin=true`, not `new_password_plain=`.
+* Pass passwords with `new_password_env=` or `new_password_stdin=true`, not `new_password_plain=` (insecure; it always prints a warning).
 * Keep `protect_system_users=true` and avoid `force=true` in automation.
 * For idempotent provisioning, rely on the defaults `ignore_if_exists=true` (add) and `ignore_if_missing=true` (delete), and check `existed` / `missing` in the output.
 * Check `ok` and the exit status; for `exists`, check `user.exists`.

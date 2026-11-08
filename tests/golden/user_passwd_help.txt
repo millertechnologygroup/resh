@@ -11,8 +11,8 @@ Usage:
     [hash_scheme=backend_default|sha512_crypt|bcrypt|argon2id]
     [require_old_password=true|false] [old_password_plain=<pw>]
     [old_password_env=<VAR>] [ignore_if_missing=true|false]
-    [dry_run=true|false] [backend=system|mock] [format=json|text]
-    [timeout_ms=<ms>]
+    [force=true|false] [dry_run=true|false] [backend=system|mock]
+    [format=json|text] [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty user://alice.passwd new_password_env=NEW_PW dry_run=true
@@ -44,6 +44,9 @@ Example Output:
   Shown for the system backend with --json-pretty, NEW_PW holding the
   password. resh hashes it (backend_default is sha512_crypt) and passes
   the hash to chpasswd -e on stdin (needs root); the system backend
-  rejects argon2id. new_password_plain= is visible in the process list.
-  require_old_password needs read access to /etc/shadow and checks
-  sha512_crypt, sha256_crypt, bcrypt and argon2 hashes, not yescrypt.
+  rejects argon2id. new_password_plain= is visible in the process list
+  and always prints a warning. Accounts with a UID below 1000 (root
+  included) need force=true. require_old_password needs read access to
+  /etc/shadow and checks every scheme the system crypt library knows
+  (yescrypt included), plus sha512_crypt, sha256_crypt, bcrypt and
+  argon2.

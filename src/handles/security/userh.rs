@@ -25,6 +25,7 @@ use crate::core::{
 mod args;
 mod backend;
 mod exec;
+mod libcrypt;
 mod sha_crypt;
 mod verbs;
 
@@ -235,8 +236,8 @@ bounds them. userdel removes the account from every group."#,
                     [hash_scheme=backend_default|sha512_crypt|bcrypt|argon2id]\n  \
                     [require_old_password=true|false] [old_password_plain=<pw>]\n  \
                     [old_password_env=<VAR>] [ignore_if_missing=true|false]\n  \
-                    [dry_run=true|false] [backend=system|mock] [format=json|text]\n  \
-                    [timeout_ms=<ms>]",
+                    [force=true|false] [dry_run=true|false] [backend=system|mock]\n  \
+                    [format=json|text] [timeout_ms=<ms>]",
                 example: "resh --json-pretty user://alice.passwd \
                     new_password_env=NEW_PW dry_run=true",
                 example_output: Some(
@@ -266,9 +267,12 @@ bounds them. userdel removes the account from every group."#,
 Shown for the system backend with --json-pretty, NEW_PW holding the
 password. resh hashes it (backend_default is sha512_crypt) and passes
 the hash to chpasswd -e on stdin (needs root); the system backend
-rejects argon2id. new_password_plain= is visible in the process list.
-require_old_password needs read access to /etc/shadow and checks
-sha512_crypt, sha256_crypt, bcrypt and argon2 hashes, not yescrypt."#,
+rejects argon2id. new_password_plain= is visible in the process list
+and always prints a warning. Accounts with a UID below 1000 (root
+included) need force=true. require_old_password needs read access to
+/etc/shadow and checks every scheme the system crypt library knows
+(yescrypt included), plus sha512_crypt, sha256_crypt, bcrypt and
+argon2."#,
                 ),
             }),
         },
@@ -493,6 +497,11 @@ pub enum UserError {
 
     #[error("{0}")]
     PartialFailure(String),
+
+    #[error(
+        "refusing to change the password of system account '{0}' (uid={1}, below 1000) without force=true"
+    )]
+    ProtectedAccount(String, u32),
 }
 
 /// Every error code the handle reports, with its exit status: 2 for invalid
@@ -517,6 +526,7 @@ pub(crate) const ERROR_CODES: &[(&str, i32)] = &[
     ("user.hash_scheme_unsupported", exit::USAGE),
     ("user.hash_params_invalid", exit::USAGE),
     ("user.old_password_required", exit::USAGE),
+    ("user.protected_account", exit::USAGE),
     ("user.username_conflict", exit::FAILED),
     ("user.group_conflict", exit::FAILED),
     ("user.uid_conflict", exit::FAILED),
@@ -594,6 +604,7 @@ impl UserError {
             Self::ToolNotFound(_) => "tool_not_found",
             Self::Timeout(_) => "timeout",
             Self::PartialFailure(_) => "partial_failure",
+            Self::ProtectedAccount(_, _) => "protected_account",
         };
         format!("user.{c}")
     }
@@ -2008,8 +2019,9 @@ impl Parsed {
 }
 
 /// Prints a failure (the JSON error object on stdout for format=json) and
-/// returns its status; `main` prints `Error: [<code>] <message>`.
-fn report(io: &mut IoStreams, json: bool, err: &UserError) -> Result<Status> {
+/// returns its status; `main` prints `Error: [<code>] <message>`, unless
+/// the handle already wrote to stderr (`warned`): then it is written here.
+fn report(io: &mut IoStreams, json: bool, warned: bool, err: &UserError) -> Result<Status> {
     if json {
         writeln!(
             io.stdout,
@@ -2018,8 +2030,20 @@ fn report(io: &mut IoStreams, json: bool, err: &UserError) -> Result<Status> {
         )?;
         io.stdout.flush()?;
     }
+    if warned {
+        writeln!(
+            io.stderr,
+            "{}",
+            crate::core::status::error_line(&err.code(), &err.to_string())
+        )?;
+    }
     Ok(Status::coded(err.exit_code(), &err.code(), err.to_string()))
 }
+
+/// Printed on stderr whenever `new_password_plain=` is used.
+const PLAIN_PASSWORD_WARNING: &str = "Warning: new_password_plain= puts the password on the \
+    command line, where the process list and shell history can show it; use \
+    new_password_env=<VAR> or new_password_stdin=true instead.";
 
 impl UserHandle {
     fn backend_for(
@@ -2187,16 +2211,21 @@ impl Handle for UserHandle {
                 args::hint(verb, args::VERBS),
                 args::VERBS.join(", ")
             ));
-            return report(io, json, &err);
+            return report(io, json, false, &err);
+        }
+        // Warned before anything else, even when the call is refused.
+        let warned = verb == "passwd" && args.contains_key("new_password_plain");
+        if warned {
+            writeln!(io.stderr, "{PLAIN_PASSWORD_WARNING}")?;
         }
         let parsed = match self.parse(verb, args, io.stdin) {
             Ok(p) => p,
-            Err(e) => return report(io, json, &e),
+            Err(e) => return report(io, json, warned, &e),
         };
         let json = matches!(parsed.format(), OutputFormat::Json);
         let mut backend = match self.backend_for(parsed.backend(), parsed.timeout_ms()) {
             Ok(b) => b,
-            Err(e) => return report(io, json, &e),
+            Err(e) => return report(io, json, warned, &e),
         };
         match self.run(&parsed, backend.as_mut()) {
             Ok(out) => {
@@ -2212,7 +2241,7 @@ impl Handle for UserHandle {
                     Ok(u) => u,
                     Err(other) => UserError::BackendOperationFailed(format!("{other:#}")),
                 };
-                report(io, json, &err)
+                report(io, json, warned, &err)
             }
         }
     }

@@ -220,7 +220,13 @@ sh -c 'echo "dave:SysSha512" | chpasswd -c SHA512'
 r pw_sys_sha    resh user://dave.passwd new_password_plain=After1 require_old_password=true old_password_plain=SysSha512
 sh -c 'echo "dave:SysDefault" | chpasswd'
 check dave_hash sh -c 'getent shadow dave | cut -d: -f2 | cut -c1-3'
+r pw_sys_default_bad resh user://dave.passwd new_password_plain=After2 require_old_password=true old_password_plain=WrongOld
+check dave_unchanged crypt_ok dave SysDefault
 r pw_sys_default resh user://dave.passwd new_password_plain=After2 require_old_password=true old_password_plain=SysDefault
+check dave_after crypt_ok dave After2
+r pw_protected  env P=x resh user://daemon.passwd new_password_env=P
+r pw_root_forced env P=RootPw9 resh user://root.passwd new_password_env=P force=true
+check root_crypt crypt_ok root RootPw9
 
 # lock / unlock
 r lock          resh user://alice.lock
@@ -353,16 +359,31 @@ fn assert_lifecycle(c: &Ctr, image: &str) {
     c.fails("pw_missing", 1, "user.not_found");
     // A hash made by the system's chpasswd is checked by resh.
     c.ok("pw_sys_sha");
-    let default_hash = c.check("dave_hash").1;
-    if default_hash.trim() == "$y$" {
-        c.fails(
-            "pw_sys_default",
-            1,
-            "user.old_password_verification_unsupported",
-        );
-    } else {
-        c.ok("pw_sys_default");
-    }
+    // chpasswd's default is yescrypt on both images; resh checks it
+    // through the system crypt library.
+    assert_eq!(c.check("dave_hash").1.trim(), "$y$", "{}", ctx("yescrypt"));
+    c.fails("pw_sys_default_bad", 1, "user.old_password_mismatch");
+    assert_eq!(c.check("dave_unchanged").0, 0, "unchanged after a mismatch");
+    assert_eq!(
+        c.ok("pw_sys_default")["password"]["old_password_verified"],
+        true
+    );
+    assert_eq!(c.check("dave_after").0, 0);
+    c.fails("pw_protected", 2, "user.protected_account");
+    let v = c.ok("pw_root_forced");
+    assert!(
+        v["warnings"][0].as_str().unwrap().contains("force=true"),
+        "{v}"
+    );
+    assert_eq!(c.check("root_crypt").0, 0);
+    // new_password_plain always warns on stderr.
+    assert!(
+        c.get("pw_old_ok")
+            .err
+            .contains("Warning: new_password_plain="),
+        "{}",
+        c.get("pw_old_ok").err
+    );
 
     // lock / unlock
     let v = c.ok("lock");
