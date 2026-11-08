@@ -1210,16 +1210,42 @@ fn systemd_calendar_translations() {
         ("@annually", "yearly"),
     ] {
         assert_eq!(
-            convert_cron_to_oncalendar(sched).as_deref(),
-            Ok(want),
+            convert_cron_to_oncalendar(sched),
+            Ok(vec![want.to_string()]),
             "{sched}"
         );
     }
     assert!(convert_cron_to_oncalendar("@reboot").is_err());
-    assert!(
-        convert_cron_to_oncalendar("0 0 13 * 5")
-            .unwrap_err()
-            .contains("either the day of month or the weekday")
+    // Both day fields restricted: cron's OR becomes two expressions.
+    assert_eq!(
+        convert_cron_to_oncalendar("0 0 13 * 5"),
+        Ok(s(&["*-*-13 0:0", "Fri *-*-* 0:0"]))
+    );
+    assert_eq!(
+        convert_cron_to_oncalendar("30 6 1,15 1-6 mon,sat"),
+        Ok(s(&[
+            "*-1,2,3,4,5,6-1,15 6:30",
+            "Mon,Sat *-1,2,3,4,5,6-* 6:30"
+        ]))
+    );
+    let mut o = add_options("systemd");
+    o.schedule = "0 0 13 * 5".into();
+    o.timezone = Some("UTC".into());
+    let t = systemd_trigger(&o).unwrap();
+    assert_eq!(
+        t.label(),
+        "OnCalendar=*-*-13 0:0 UTC; OnCalendar=Fri *-*-* 0:0 UTC"
+    );
+    assert_eq!(
+        t.unit_lines(),
+        "OnCalendar=*-*-13 0:0 UTC\nOnCalendar=Fri *-*-* 0:0 UTC\n"
+    );
+    o.schedule = "@REBOOT".into();
+    let t = systemd_trigger(&o).unwrap();
+    assert_eq!(t, TimerTrigger::Boot);
+    assert_eq!(
+        (t.label().as_str(), t.unit_lines().as_str()),
+        ("OnBootSec=0", "OnBootSec=0\n")
     );
 }
 
@@ -1943,19 +1969,8 @@ fn add_refuses_options_of_the_other_backend() {
         o.fails(2, "cron.add_invalid_argument").field(want);
         assert!(o.message().contains("applies"), "{}", o.message());
     }
-    // backend=auto resolves to systemd here, so cron options are refused.
-    run(
-        &h,
-        "add",
-        &[
-            ("schedule", "0 2 * * *"),
-            ("command", "/x"),
-            ("scope", "user"),
-        ],
-    )
-    .fails(2, "cron.add_invalid_argument")
-    .field("scope");
-    // ... and to cron where systemctl is missing.
+    // backend=auto without backend-specific options: cron where systemctl
+    // is missing.
     host.state().no_systemctl = true;
     let o = run(
         &h,
@@ -2377,12 +2392,156 @@ fn add_systemd_scopes_timezones_and_duplicates() {
 }
 
 #[test]
+fn add_systemd_reboot_and_either_day_schedules() {
+    let (h, host) = setup(None);
+    // @reboot: OnBootSec=0, enabled for the next boot but not started (a
+    // started boot timer would run the job at once).
+    let o = add_systemd(
+        &h,
+        &[
+            ("schedule", "@reboot"),
+            ("command", "/opt/boot.sh"),
+            ("unit_name", "boot"),
+        ],
+    );
+    let job = &o.ok()["job"];
+    assert_eq!(job["schedule"], "OnBootSec=0");
+    assert!(job.get("next_run_unix").is_none());
+    let timer = host.state().files["/units/user/boot.timer"].clone();
+    assert!(timer.contains("[Timer]\nOnBootSec=0\n"), "{timer}");
+    assert!(
+        !timer.contains("OnCalendar") && !timer.contains("Persistent"),
+        "{timer}"
+    );
+    assert_eq!(
+        host.changes(),
+        s(&["user: daemon-reload", "user: enable -- boot.timer"])
+    );
+    assert_eq!(
+        host.timer("user", "boot.timer")
+            .map(|t| (t.enabled, t.active)),
+        Some((true, false))
+    );
+    // enable after a disable: again not started, with a warning.
+    run(
+        &h,
+        "disable",
+        &[("unit_name", "boot"), ("backend", "systemd")],
+    )
+    .ok();
+    let o = run(
+        &h,
+        "enable",
+        &[("unit_name", "boot"), ("backend", "systemd")],
+    );
+    assert_eq!(o.ok()["enabled"]["systemd"][0]["started_now"], false);
+    assert!(
+        o.json["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("next boot")
+    );
+    assert_eq!(host.changes().last().unwrap(), "user: enable -- boot.timer");
+    let o = run(
+        &h,
+        "enable",
+        &[("unit_name", "boot"), ("backend", "systemd")],
+    );
+    assert_eq!(o.ok()["already_enabled_count"]["systemd"], 1);
+
+    // Both day fields restricted: two OnCalendar= lines (systemd ORs them).
+    let o = add_systemd(
+        &h,
+        &[
+            ("schedule", "0 0 13 * fri"),
+            ("command", "/opt/f13.sh"),
+            ("unit_name", "f13"),
+            ("now_unix", "1768435200"),
+        ],
+    );
+    let job = &o.ok()["job"];
+    assert_eq!(
+        job["schedule"],
+        "OnCalendar=*-*-13 0:0; OnCalendar=Fri *-*-* 0:0"
+    );
+    // cron's OR: Friday 2026-01-16 comes before the 13th.
+    assert_eq!(job["next_run_iso8601"], "2026-01-16T00:00:00+00:00");
+    let timer = host.state().files["/units/user/f13.timer"].clone();
+    assert!(
+        timer.contains("OnCalendar=*-*-13 0:0\nOnCalendar=Fri *-*-* 0:0\nPersistent=true\n"),
+        "{timer}"
+    );
+}
+
+#[test]
+fn backend_auto_is_chosen_by_the_options_given() {
+    let (h, host) = setup(None);
+    let base = [
+        ("schedule", "0 2 * * *"),
+        ("command", "/x"),
+        ("dry_run", "true"),
+    ];
+    let with = |extra: &[(&str, &str)]| {
+        let mut a = base.to_vec();
+        a.extend_from_slice(extra);
+        run(&h, "add", &a)
+    };
+    // Neither kind: systemd wherever systemctl runs.
+    assert_eq!(with(&[]).ok()["backend_used"], "systemd");
+    for (k, v) in [
+        ("scope", "user"),
+        ("user", "bob"),
+        ("cron_file", "/etc/cron.d/x"),
+    ] {
+        let mut extra = vec![(k, v)];
+        if k != "scope" {
+            extra.push(("scope", if k == "user" { "user" } else { "system" }));
+        }
+        assert_eq!(with(&extra).ok()["backend_used"], "cron", "{k}");
+    }
+    for (k, v) in [
+        ("unit_scope", "user"),
+        ("unit_name", "j"),
+        ("persistent", "false"),
+        ("accuracy_sec", "1min"),
+        ("service_user", "bob"),
+        ("env_A", "1"),
+    ] {
+        assert_eq!(with(&[(k, v)]).ok()["backend_used"], "systemd", "{k}");
+    }
+    // Both kinds: refused, naming the conflict.
+    let o = with(&[("scope", "user"), ("unit_scope", "user")]);
+    o.fails(2, "cron.add_invalid_argument").field("scope");
+    assert!(o.message().contains("unit_scope"), "{}", o.message());
+    // An explicit backend keeps refusing the other backend's options.
+    let mut a = base.to_vec();
+    a.extend([("backend", "systemd"), ("scope", "user")]);
+    run(&h, "add", &a)
+        .fails(2, "cron.add_invalid_argument")
+        .field("scope");
+    // A chosen backend that is missing is unavailable, not swapped.
+    host.state().no_crontab = true;
+    with(&[("scope", "user")]).fails(1, "cron.add_backend_unavailable");
+    host.state().no_crontab = false;
+    host.state().no_systemctl = true;
+    with(&[("unit_name", "j")]).fails(1, "cron.add_backend_unavailable");
+    assert_eq!(host.state().crontab_writes, 0);
+}
+
+#[test]
 fn add_systemd_refusals_and_failures() {
     let (h, host) = setup(None);
-    for sched in ["@reboot", "0 0 13 * 5"] {
-        add_systemd(&h, &[("schedule", sched), ("command", "/x")])
-            .fails(2, "cron.add_schedule_translation_unsupported");
-    }
+    // Persistent= has no meaning for a boot timer.
+    add_systemd(
+        &h,
+        &[
+            ("schedule", "@reboot"),
+            ("command", "/x"),
+            ("persistent", "true"),
+        ],
+    )
+    .fails(2, "cron.add_invalid_argument")
+    .field("persistent");
     assert!(host.state().files.is_empty());
     // The service manager does not answer: nothing is written.
     host.state().managers_down.insert("user".into());

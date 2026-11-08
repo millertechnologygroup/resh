@@ -29,7 +29,6 @@ const ERROR_CODES: &[&str] = &[
     "cron.add_missing_command",
     "cron.add_invalid_schedule",
     "cron.add_timezone_unsupported",
-    "cron.add_schedule_translation_unsupported",
     "cron.add_backend_unavailable",
     "cron.add_systemd_unavailable",
     "cron.add_error",
@@ -583,11 +582,12 @@ fn usage_errors_exit_2_and_change_nothing() {
         (
             &[
                 "cron://local.add",
-                "backend=systemd",
-                "schedule=@reboot",
+                "schedule=@daily",
                 "command=/x",
+                "scope=user",
+                "unit_name=x",
             ][..],
-            "cron.add_schedule_translation_unsupported",
+            "cron.add_invalid_argument",
         ),
         (
             &[

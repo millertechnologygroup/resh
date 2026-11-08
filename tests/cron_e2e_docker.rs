@@ -554,6 +554,71 @@ r both resh cron://local.disable unit_name=x unit_scope=user require_match=false
     assert!(w.contains("systemd timers were skipped"), "{w}");
 }
 
+/// `@reboot` becomes a boot timer that is enabled but not started (so the
+/// job does not run when it is added); started, it runs the job once. A
+/// schedule restricting both day fields becomes a timer with two calendars.
+#[test]
+fn systemd_reboot_and_either_day_timers() {
+    let b = SystemdBox::start("boot");
+    let c = b.run(
+        r#"
+r boot resh cron://local.add backend=systemd schedule=@reboot 'command=/usr/bin/touch /tmp/boot-ran' unit_name=resh-boot
+check bunit cat /etc/systemd/system/resh-boot.timer
+check benabled systemctl is-enabled resh-boot.timer
+check bactive systemctl is-active resh-boot.timer
+check bmono systemctl show --property=TimersMonotonic resh-boot.timer
+check bran_before ls /tmp/boot-ran
+systemctl start resh-boot.timer
+sleep 2
+check bran_after ls /tmp/boot-ran
+r bdis resh cron://local.disable unit_name=resh-boot backend=systemd
+r ben resh cron://local.enable unit_name=resh-boot backend=systemd
+check benabled2 systemctl is-enabled resh-boot.timer
+r or resh cron://local.add backend=systemd 'schedule=0 0 13 * fri' command=/bin/true unit_name=resh-f13
+check ocal systemctl show --property=TimersCalendar resh-f13.timer
+check otimers systemctl list-timers --all --no-legend --plain
+"#,
+    );
+    assert_eq!(c.ok("boot")["job"]["schedule"], "OnBootSec=0");
+    let unit = c.check("bunit");
+    assert!(
+        unit.contains("OnBootSec=0\n") && !unit.contains("OnCalendar"),
+        "{unit}"
+    );
+    assert_eq!(c.check("benabled").trim(), "enabled");
+    assert_eq!(c.check("bactive").trim(), "inactive");
+    assert!(
+        c.check("bmono").contains("OnBootUSec"),
+        "{}",
+        c.check("bmono")
+    );
+    assert!(
+        c.check("bran_before").contains("No such file"),
+        "the job ran when added"
+    );
+    assert_eq!(
+        c.check("bran_after").trim(),
+        "/tmp/boot-ran",
+        "started, it runs"
+    );
+    c.ok("bdis");
+    let en = c.ok("ben");
+    assert_eq!(en["enabled"]["systemd"][0]["started_now"], false);
+    assert!(en["warnings"][0].as_str().unwrap().contains("next boot"));
+    assert_eq!(c.check("benabled2").trim(), "enabled");
+    assert_eq!(
+        c.ok("or")["job"]["schedule"],
+        "OnCalendar=*-*-13 0:0; OnCalendar=Fri *-*-* 0:0"
+    );
+    let cal = c.check("ocal");
+    assert_eq!(cal.matches("OnCalendar=").count(), 2, "{cal}");
+    assert!(
+        c.check("otimers").contains("resh-f13.timer"),
+        "{}",
+        c.check("otimers")
+    );
+}
+
 /// Every translated schedule is a valid calendar expression with the runs
 /// cron would have.
 #[test]
@@ -569,6 +634,9 @@ fn systemd_accepts_every_translated_schedule() {
         ("0 0 */2 * 1", "2026-01-19 00:00:00"),
         ("@weekly", "2026-01-18 00:00:00"),
         ("@monthly", "2026-02-01 00:00:00"),
+        // Both day fields restricted: two expressions; the Friday comes
+        // first, as with cron's OR (the 13th is 2026-02-13).
+        ("0 0 13 * fri", "2026-01-16 00:00:00"),
     ];
     let mut script = String::new();
     for (i, (s, _)) in schedules.iter().enumerate() {
@@ -578,20 +646,29 @@ fn systemd_accepts_every_translated_schedule() {
     }
     let c = b.run(&script);
     let mut script = String::new();
+    let mut counts = Vec::new();
     for (i, _) in schedules.iter().enumerate() {
-        let cal = c.ok(&format!("s{i}"))["job"]["schedule"]
+        let cals: Vec<String> = c.ok(&format!("s{i}"))["job"]["schedule"]
             .as_str()
             .unwrap()
-            .trim_start_matches("OnCalendar=")
-            .to_string();
+            .split("; ")
+            .map(|e| format!("'{}'", e.trim_start_matches("OnCalendar=")))
+            .collect();
+        counts.push(cals.len());
         script.push_str(&format!(
-            "check c{i} systemd-analyze calendar --base-time='2026-01-15 00:00:00 UTC' '{cal}'\n"
+            "check c{i} systemd-analyze calendar --base-time='2026-01-15 00:00:00 UTC' {}\n",
+            cals.join(" ")
         ));
     }
+    assert_eq!(
+        counts.last(),
+        Some(&2),
+        "the OR schedule has two expressions"
+    );
     let c = b.run(&script);
     for (i, (s, next)) in schedules.iter().enumerate() {
         let out = c.check(&format!("c{i}"));
-        assert!(out.contains("Next elapse:"), "{s}: {out}");
+        assert_eq!(out.matches("Next elapse:").count(), counts[i], "{s}: {out}");
         assert!(out.contains(next), "{s}: expected {next} in {out}");
     }
 }

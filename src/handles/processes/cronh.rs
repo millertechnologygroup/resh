@@ -118,6 +118,10 @@ users, and the match_* filters are case-insensitive substring matches."#,
                     [accuracy_sec=<span>] [random_delay_sec=<span>]\n  \
                     [service_user=<name>] [service_working_dir=<path>]\n  \
                     [env=<KEY=VAL,...>] [env_<KEY>=<value>]\n  \
+                    backend auto: options of only one backend choose it (both\n  \
+                    kinds are refused); else systemd when systemctl runs\n  \
+                    systemd: @reboot runs once per boot; a schedule restricting\n  \
+                    both day fields gets two OnCalendar lines (either matches)\n  \
                     timezone: systemd adds it to the timer's OnCalendar; the cron\n  \
                     backend writes a CRON_TZ line and is refused unless cron is cronie\n  \
                     next run: computed in timezone (default: the host's local zone)\n  \
@@ -462,7 +466,6 @@ pub(crate) const ERROR_CODES: &[(&str, i32)] = &[
     ("cron.add_missing_command", exit::USAGE),
     ("cron.add_invalid_schedule", exit::USAGE),
     ("cron.add_timezone_unsupported", exit::USAGE),
-    ("cron.add_schedule_translation_unsupported", exit::USAGE),
     ("cron.add_backend_unavailable", exit::FAILED),
     ("cron.add_systemd_unavailable", exit::FAILED),
     ("cron.add_error", exit::FAILED),
@@ -1163,7 +1166,60 @@ pub(crate) fn parse_add_args(args: &Args) -> Result<CronAddOptions, Fail> {
     };
     // The checks that do not depend on the backend.
     r.check(validate_add_options(&options, "", None))?;
+    let mut options = options;
+    options.backend = resolve_auto_backend(args, &options.backend)?.to_string();
     Ok(options)
+}
+
+/// `add` options that only the cron backend uses.
+const CRON_ONLY_ADD_ARGS: &[&str] = &["scope", "user", "cron_file"];
+/// `add` options that only the systemd backend uses (`env_<KEY>` too).
+const SYSTEMD_ONLY_ADD_ARGS: &[&str] = &[
+    "unit_name",
+    "unit_scope",
+    "persistent",
+    "accuracy_sec",
+    "random_delay_sec",
+    "service_user",
+    "service_working_dir",
+    "env",
+];
+
+/// With `backend=auto`, options of one backend choose it: cron-only
+/// options select cron, systemd-only options select systemd, and both kinds
+/// together are refused. With neither, `auto` stays (systemd when systemctl
+/// runs, cron otherwise). An explicit backend is returned unchanged.
+fn resolve_auto_backend(args: &Args, backend: &str) -> Result<&'static str, Fail> {
+    let explicit = match backend {
+        "cron" => Some("cron"),
+        "systemd" => Some("systemd"),
+        _ => None,
+    };
+    if let Some(b) = explicit {
+        return Ok(b);
+    }
+    let mut keys: Vec<&String> = args.keys().collect();
+    keys.sort();
+    let cron = keys
+        .iter()
+        .find(|k| CRON_ONLY_ADD_ARGS.contains(&k.as_str()));
+    let systemd = keys
+        .iter()
+        .find(|k| SYSTEMD_ONLY_ADD_ARGS.contains(&k.as_str()) || k.starts_with("env_"));
+    match (cron, systemd) {
+        (Some(c), Some(s)) => Err(Fail::arg(
+            "add",
+            c,
+            format!(
+                "{c} (cron backend only) and {s} (systemd backend only) cannot be combined; \
+                 pass backend=cron or backend=systemd with the options of that backend; \
+                 nothing was written"
+            ),
+        )),
+        (Some(_), None) => Ok("cron"),
+        (None, Some(_)) => Ok("systemd"),
+        (None, None) => Ok("auto"),
+    }
 }
 
 /// The arguments shared by `rm`, `enable` and `disable`.
@@ -2743,6 +2799,9 @@ struct TimerFacts {
     description: String,
     /// The service's ExecStart= value, as written in the unit file.
     exec_start: Option<String>,
+    /// A boot timer (`OnBootSec=` without `OnCalendar=`), as `add` writes
+    /// for `@reboot`.
+    boot: bool,
 }
 
 impl TimerFacts {
@@ -3117,6 +3176,8 @@ impl SystemCronProvider {
         .collect::<Vec<_>>()
         .join(" ");
         facts.exec_start = unit_value(&service, "ExecStart");
+        facts.boot =
+            unit_value(&timer, "OnBootSec").is_some() && unit_value(&timer, "OnCalendar").is_none();
         Ok(facts)
     }
 
@@ -3201,13 +3262,22 @@ impl SystemCronProvider {
                         out.timers.push(hit(false));
                     }
                     Action::Enable => {
-                        if enabled && (!req.flag || active) {
+                        // A boot timer (@reboot) started now would run its
+                        // job at once: it is only enabled, for the next boot.
+                        let start = req.flag && !facts.boot;
+                        if enabled && (!start || active) {
                             out.timers_already += 1;
                             continue;
                         }
+                        if req.flag && facts.boot {
+                            out.warnings.push(format!(
+                                "{name} runs at boot (@reboot): enabled for the next boot, \
+                                 not started now"
+                            ));
+                        }
                         if !req.dry_run {
                             let mut args = vec!["enable"];
-                            if req.flag {
+                            if start {
                                 args.push("--now");
                             }
                             args.extend(["--", name.as_str()]);
@@ -3216,7 +3286,7 @@ impl SystemCronProvider {
                                 continue;
                             }
                         }
-                        out.timers.push(hit(req.flag));
+                        out.timers.push(hit(start));
                     }
                     Action::Disable => {
                         if !enabled && (!req.flag || !active) {
@@ -3966,21 +4036,21 @@ impl SystemCronProvider {
             warnings,
         };
 
-        // The schedule must have a calendar equivalent (with the time zone).
-        let on_calendar = match systemd_on_calendar(options) {
-            Ok(calendar) => calendar,
-            Err(e) => {
-                return Ok(fail(
-                    "cron.add_schedule_translation_unsupported",
-                    format!(
-                        "Cannot convert cron schedule '{}' to systemd OnCalendar: {}; nothing \
-                         was written",
-                        options.schedule, e
-                    ),
-                    warnings,
-                ));
-            }
-        };
+        // The schedule is checked when the arguments are parsed, so it
+        // always translates.
+        let trigger = systemd_trigger(options).map_err(|e| anyhow::anyhow!(e))?;
+        // Persistent= only affects OnCalendar=, so it cannot apply at boot.
+        if trigger == TimerTrigger::Boot && options.persistent.is_some() {
+            return Ok(CronAddResponse {
+                error: Some(error_value(
+                    "cron.add_invalid_argument",
+                    "persistent applies to calendar schedules, not @reboot (which runs once \
+                     per boot); nothing was written",
+                    Some("persistent"),
+                )),
+                ..fail("", String::new(), warnings)
+            });
+        }
 
         if let Some(reason) = manager_reachable(ed, user_mode)? {
             return Ok(fail(
@@ -4018,7 +4088,7 @@ impl SystemCronProvider {
         }
 
         let service_content = self.build_service_unit(options, &unit_name)?;
-        let timer_content = self.build_timer_unit(options, &unit_name, &on_calendar)?;
+        let timer_content = self.build_timer_unit(options, &unit_name, &trigger)?;
 
         if options.dry_run {
             return Ok(CronAddResponse {
@@ -4045,8 +4115,16 @@ impl SystemCronProvider {
         ed.create_directory(&unit_dir)?;
         ed.write_unit_file(&service_path, &service_content)?;
         ed.write_unit_file(&timer_path, &timer_content)?;
+        // A boot timer is enabled only: started now, OnBootSec=0 would
+        // already have passed and the job would run at once. It starts
+        // with the next boot and runs the job once.
+        let mut enable = vec!["enable"];
+        if trigger != TimerTrigger::Boot {
+            enable.push("--now");
+        }
+        enable.extend(["--", timer_name.as_str()]);
         systemctl_ok(ed, user_mode, &["daemon-reload"])
-            .and_then(|()| systemctl_ok(ed, user_mode, &["enable", "--now", "--", &timer_name]))
+            .and_then(|()| systemctl_ok(ed, user_mode, &enable))
             .map_err(|e| {
                 e.context(format!(
                     "{service_path} and {timer_path} were written, but the timer was not \
@@ -4126,10 +4204,9 @@ impl SystemCronProvider {
         Ok(CronAddJobInfo {
             id: options.id.clone(),
             backend: "systemd".to_string(),
-            schedule: format!(
-                "OnCalendar={}",
-                systemd_on_calendar(options).map_err(|e| anyhow::anyhow!(e))?
-            ),
+            schedule: systemd_trigger(options)
+                .map_err(|e| anyhow::anyhow!(e))?
+                .label(),
             command: options.command.clone(),
             location: CronAddJobLocation {
                 scope: format!("{}-unit", unit_scope),
@@ -4419,7 +4496,7 @@ impl SystemCronProvider {
         &self,
         options: &CronAddOptions,
         unit_name: &str,
-        on_calendar: &str,
+        trigger: &TimerTrigger,
     ) -> Result<String> {
         let mut content = String::new();
 
@@ -4440,9 +4517,11 @@ impl SystemCronProvider {
 
         // [Timer] section
         content.push_str("[Timer]\n");
-        content.push_str(&format!("OnCalendar={}\n", on_calendar));
+        content.push_str(&trigger.unit_lines());
 
-        if options.persistent.unwrap_or(true) {
+        // Persistent= catches up missed OnCalendar= runs; it has no meaning
+        // for a boot timer.
+        if *trigger != TimerTrigger::Boot && options.persistent.unwrap_or(true) {
             content.push_str("Persistent=true\n");
         }
 
@@ -5353,32 +5432,27 @@ fn calendar_list(bits: u64, min: u32, max: u32, render: impl Fn(u32) -> String) 
     }
 }
 
-/// The systemd `OnCalendar=` expression for a crontab schedule. Lists are
+/// The systemd `OnCalendar=` expressions for a crontab schedule. Lists are
 /// written out value by value, so every crontab range and step keeps its
 /// meaning. A schedule whose day-of-month and weekday fields are both
-/// restricted cannot be expressed: cron runs it when either matches,
-/// systemd only when both do.
-fn convert_cron_to_oncalendar(schedule: &str) -> Result<String, String> {
+/// restricted runs when either matches (cron's rule), so it becomes two
+/// expressions, one per day field: a timer elapses when any of its
+/// `OnCalendar=` lines does. `@reboot` has no calendar expression.
+fn convert_cron_to_oncalendar(schedule: &str) -> Result<Vec<String>, String> {
     let schedule = schedule.trim();
+    let one = |s: &str| Ok(vec![s.to_string()]);
     match schedule.to_ascii_lowercase().as_str() {
         "@reboot" => {
-            return Err("@reboot has no systemd calendar equivalent (it runs at boot)".into());
+            return Err("@reboot has no calendar expression (it runs at boot)".into());
         }
-        "@hourly" => return Ok("hourly".into()),
-        "@daily" | "@midnight" => return Ok("daily".into()),
-        "@monthly" => return Ok("monthly".into()),
-        "@yearly" | "@annually" => return Ok("yearly".into()),
-        "@weekly" => return Ok("Sun *-*-* 0:0".into()),
+        "@hourly" => return one("hourly"),
+        "@daily" | "@midnight" => return one("daily"),
+        "@monthly" => return one("monthly"),
+        "@yearly" | "@annually" => return one("yearly"),
+        "@weekly" => return one("Sun *-*-* 0:0"),
         _ => {}
     }
     let spec = parse_schedule(schedule)?.ok_or("no time to convert")?;
-    if !spec.day_star && !spec.weekday_star {
-        return Err(
-            "cron runs this job when either the day of month or the weekday matches, \
-             and a systemd calendar expression needs both to match"
-                .into(),
-        );
-    }
     let minute = calendar_list(spec.minutes, 0, 59, |v| v.to_string());
     let hour = calendar_list(spec.hours as u64, 0, 23, |v| v.to_string());
     let day = calendar_list(spec.days as u64, 1, 31, |v| v.to_string());
@@ -5386,14 +5460,8 @@ fn convert_cron_to_oncalendar(schedule: &str) -> Result<String, String> {
     let weekday = calendar_list(spec.weekdays as u64, 0, 6, |v| {
         SYSTEMD_WEEKDAYS[v as usize].to_string()
     });
-    Ok(
-        match (
-            minute.as_str(),
-            hour.as_str(),
-            day.as_str(),
-            month.as_str(),
-            weekday.as_str(),
-        ) {
+    let expr = |d: &str, w: &str| -> String {
+        match (minute.as_str(), hour.as_str(), d, month.as_str(), w) {
             ("0", "*", "*", "*", "*") => "hourly".into(),
             ("0", "0", "*", "*", "*") => "daily".into(),
             ("0", "0", "1", "*", "*") => "monthly".into(),
@@ -5401,19 +5469,64 @@ fn convert_cron_to_oncalendar(schedule: &str) -> Result<String, String> {
             (m, h, "*", "*", "*") => format!("{h}:{m}"),
             (m, h, d, mo, "*") => format!("*-{mo}-{d} {h}:{m}"),
             (m, h, d, mo, w) => format!("{w} *-{mo}-{d} {h}:{m}"),
-        },
-    )
+        }
+    };
+    if !spec.day_star && !spec.weekday_star {
+        // cron's OR: the listed days of the month, and the listed weekdays.
+        return Ok(vec![expr(&day, "*"), expr("*", &weekday)]);
+    }
+    Ok(vec![expr(&day, &weekday)])
 }
 
-/// The timer's `OnCalendar=` value: the translated schedule, followed by the
-/// IANA time zone when `timezone` is given (systemd evaluates the expression
-/// in that zone, e.g. `2:0 Europe/Berlin`).
-fn systemd_on_calendar(options: &CronAddOptions) -> Result<String, String> {
-    let calendar = convert_cron_to_oncalendar(&options.schedule)?;
-    Ok(match &options.timezone {
-        Some(tz) => format!("{} {}", calendar, tz),
-        None => calendar,
-    })
+/// What starts a timer that `add` writes.
+#[derive(Debug, Clone, PartialEq)]
+enum TimerTrigger {
+    /// `@reboot`: `OnBootSec=0`, once per boot.
+    Boot,
+    /// One or more `OnCalendar=` expressions (with the time zone).
+    Calendar(Vec<String>),
+}
+
+impl TimerTrigger {
+    /// The `[Timer]` lines that start the timer.
+    fn unit_lines(&self) -> String {
+        match self {
+            TimerTrigger::Boot => "OnBootSec=0\n".to_string(),
+            TimerTrigger::Calendar(c) => c.iter().map(|e| format!("OnCalendar={e}\n")).collect(),
+        }
+    }
+
+    /// How `add` reports the schedule: `OnBootSec=0`, or the `OnCalendar=`
+    /// lines joined by `; `.
+    fn label(&self) -> String {
+        match self {
+            TimerTrigger::Boot => "OnBootSec=0".to_string(),
+            TimerTrigger::Calendar(c) => c
+                .iter()
+                .map(|e| format!("OnCalendar={e}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        }
+    }
+}
+
+/// The timer's trigger: `OnBootSec=0` for `@reboot`, else the translated
+/// schedule, each expression followed by the IANA time zone when `timezone`
+/// is given (systemd evaluates it in that zone, e.g. `2:0 Europe/Berlin`).
+fn systemd_trigger(options: &CronAddOptions) -> Result<TimerTrigger, String> {
+    if options.schedule.trim().eq_ignore_ascii_case("@reboot") {
+        return Ok(TimerTrigger::Boot);
+    }
+    let calendars = convert_cron_to_oncalendar(&options.schedule)?;
+    Ok(TimerTrigger::Calendar(
+        calendars
+            .into_iter()
+            .map(|c| match &options.timezone {
+                Some(tz) => format!("{} {}", c, tz),
+                None => c,
+            })
+            .collect(),
+    ))
 }
 
 /// The backend `add` uses: `cron` or `systemd` when available, and for

@@ -16,6 +16,10 @@ Usage:
     [accuracy_sec=<span>] [random_delay_sec=<span>]
     [service_user=<name>] [service_working_dir=<path>]
     [env=<KEY=VAL,...>] [env_<KEY>=<value>]
+    backend auto: options of only one backend choose it (both
+    kinds are refused); else systemd when systemctl runs
+    systemd: @reboot runs once per boot; a schedule restricting
+    both day fields gets two OnCalendar lines (either matches)
     timezone: systemd adds it to the timer's OnCalendar; the cron
     backend writes a CRON_TZ line and is refused unless cron is cronie
     next run: computed in timezone (default: the host's local zone)
