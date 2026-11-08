@@ -14,7 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (user, pkg, system, cert, backup,
+  `<handle>.invalid_argument`. Handles not yet aligned (pkg, system, cert, backup,
   plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
@@ -314,6 +314,26 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
 - `backend=auto` prefers a running firewalld and an active ufw over
   nftables; failed listings are errors, not empty lists.
 - Not tested: iptables-legacy (the test host kernel has no legacy tables).
+
+### user
+
+- Every verb refuses unknown arguments, options of another mode and invalid
+  values with exit 2 before looking anything up. Errors are `[user.<code>]`
+  with exits 0/1/2/124 (all failures were 1); with `format=json` the error
+  object is printed on stdout.
+- `passwd` hashes passwords itself with real sha512-crypt, bcrypt and
+  argon2id (the previous "hashes" were PBKDF2 stand-ins with those labels)
+  and passes the hash to `chpasswd -e` on stdin. `new_password_env=`,
+  `new_password_stdin=true` and `old_password_env=` keep passwords off the
+  command line. `force` is refused on `passwd`.
+- `add`: `create_home` and `password_hash` work; everything is checked
+  before the first change; uid/gid conflicts are reported; a group created
+  for a failed `useradd` is removed again. `delete` reports partial
+  failures and refuses `remove_from_all_groups=false`. `lock`/`unlock`
+  check the state after the change.
+- Every shadow-utils command takes its operands after `--`, runs under
+  `timeout_ms` (default 60000; exit 124), and a change without root is
+  refused before any tool runs.
 
 ### http and https
 
@@ -1097,7 +1117,6 @@ The per-handle `*_HELP_TEXT` constants (shown by forms like `svc://--help`)
 disagree with the code in many places, including wrong argument names,
 wrong defaults and non-working URL forms. Examples:
 
-- **user:** the examples use the `user://alice` host form.
 - **pkg:** the examples omit `manager`.
 - **plugin:** the examples use `plugin://aws.enable()`.
 
