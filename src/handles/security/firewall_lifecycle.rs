@@ -73,6 +73,74 @@ impl ApplyUnit {
     }
 }
 
+/// The planned backup steps of a change (one per iptables family, or the
+/// nftables ruleset).
+fn backup_plan(backend: &FirewallBackend, families: &[&str]) -> Vec<String> {
+    if *backend == FirewallBackend::Nftables {
+        vec!["backup of the nftables ruleset".to_string()]
+    } else {
+        families
+            .iter()
+            .map(|f| format!("backup of the {f} iptables rules"))
+            .collect()
+    }
+}
+
+/// A failure that happened after a backup was written, carrying its path.
+#[derive(Debug)]
+pub(crate) struct AfterBackup {
+    pub(crate) error: anyhow::Error,
+    pub(crate) backup: String,
+}
+
+impl std::fmt::Display for AfterBackup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+
+impl std::error::Error for AfterBackup {}
+
+/// Marks `e` as happening after the backup at `backup` (when there is one).
+fn attach_backup(e: anyhow::Error, backup: Option<String>) -> anyhow::Error {
+    match backup {
+        Some(backup) => anyhow::Error::new(AfterBackup { error: e, backup }),
+        None => e,
+    }
+}
+
+/// The backup written before the failure `e`, if any.
+fn backup_of(e: &anyhow::Error) -> Option<String> {
+    e.downcast_ref::<AfterBackup>().map(|a| a.backup.clone())
+}
+
+/// Adds the progress of a change that failed (or was stopped at the
+/// deadline) to `error.details`: the steps `applied`, the step it
+/// `stopped_at` (after a timeout its outcome is unknown), the steps
+/// `not_applied`, and whether a backup was taken. Nothing is added when the
+/// failure came before any step was planned.
+fn attach_progress(
+    error: &mut Option<Value>,
+    applied: &[String],
+    planned: &[String],
+    backup: Option<&String>,
+) {
+    if planned.is_empty() {
+        return;
+    }
+    if let Some(details) = error.as_mut().and_then(|e| e.get_mut("details")) {
+        if !details.is_object() {
+            *details = json!({});
+        }
+        let at = applied.len().min(planned.len());
+        details["applied"] = json!(applied);
+        details["stopped_at"] = json!(planned.get(at));
+        details["not_applied"] = json!(planned.get(at + 1..).unwrap_or_default());
+        details["backup_taken"] = json!(backup.is_some());
+        details["backup_path"] = json!(backup);
+    }
+}
+
 const BACKENDS: [FirewallBackend; 4] = [
     FirewallBackend::Iptables,
     FirewallBackend::Nftables,
@@ -97,7 +165,7 @@ impl FwResponse for StatusResponse {
                 family: StatusFamily::Any,
                 include_metrics: true,
                 include_rules_summary: false,
-                timeout_ms: 5000,
+                timeout_ms: 30000,
                 output_format: format,
             },
             error,
@@ -261,7 +329,7 @@ impl FirewallHandle {
             include_rules_summary: fw_args::bool_or(args, "include_rules_summary", false)?,
             timeout_ms: match args.get("timeout_ms") {
                 Some(t) => t.parse()?,
-                None => 5000,
+                None => 30000,
             },
             output_format: format_of(args),
         })
@@ -559,7 +627,7 @@ impl FirewallHandle {
             fail_if_already: verb != "rules.reload" && fw_args::bool_or(args, fail_key, false)?,
             timeout_ms: match args.get("timeout_ms") {
                 Some(t) => t.parse()?,
-                None => 10000,
+                None => 60000,
             },
             format_output: format_of(args),
         })
@@ -814,7 +882,6 @@ impl FirewallHandle {
             };
             let mut args: Vec<&str> = flags.clone();
             args.push(&file);
-            actions.push(unit.describe(check));
             let outcome = run_command_with_timeout(tool, &args, timeout_ms).await;
             if temporary {
                 let _ = fs::remove_file(&file);
@@ -828,6 +895,7 @@ impl FirewallHandle {
                 }
                 .into());
             }
+            actions.push(unit.describe(check));
         }
         Ok(())
     }
@@ -840,18 +908,20 @@ impl FirewallHandle {
         timeout_ms: u64,
         actions: &mut Vec<String>,
     ) -> Result<Option<String>> {
-        let mut first = None;
-        let mut written = Vec::new();
+        let mut first: Option<String> = None;
         if *backend == FirewallBackend::Nftables {
-            written.push(self.create_nftables_backup(timeout_ms).await?);
+            let path = self.create_nftables_backup(timeout_ms).await?;
+            actions.push(format!("backup -> {path}"));
+            first = Some(path);
         } else {
             for family in families {
-                written.push(self.create_iptables_backup(family, timeout_ms).await?);
+                let path = self
+                    .create_iptables_backup(family, timeout_ms)
+                    .await
+                    .map_err(|e| attach_backup(e, first.clone()))?;
+                actions.push(format!("backup -> {path}"));
+                first.get_or_insert(path);
             }
-        }
-        for path in written {
-            actions.push(format!("backup -> {path}"));
-            first.get_or_insert(path);
         }
         Ok(first)
     }
@@ -915,7 +985,6 @@ impl FirewallHandle {
     ) -> Result<()> {
         for argv in steps {
             let line = display_command(argv);
-            actions.push(line.clone());
             let (code, _, stderr) = run_argv(argv, timeout_ms).await?;
             if code != 0 {
                 return Err(FirewallError::CommandFailed {
@@ -925,6 +994,7 @@ impl FirewallHandle {
                 }
                 .into());
             }
+            actions.push(line);
         }
         Ok(())
     }
@@ -936,10 +1006,22 @@ impl FirewallHandle {
     pub(super) fn handle_rules_reload(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let mut response = RulesReloadResponse::new();
         response.format_output = format_of(args);
-        let outcome = block_on(self.rules_reload_async(args, &mut response));
+        let mut planned = Vec::new();
+        let outcome = block_on(self.rules_reload_async(args, &mut response, &mut planned));
         if let Err(e) = outcome {
             response.ok = false;
+            let backup = backup_of(&e);
             response.error = Some(as_firewall_error(&e).error_object());
+            attach_progress(
+                &mut response.error,
+                &response.actions,
+                &planned,
+                backup.as_ref(),
+            );
+            response.result = Some(RulesReloadResult {
+                changed: false,
+                backup_path: backup,
+            });
         }
         finish(io, &response)
     }
@@ -948,6 +1030,7 @@ impl FirewallHandle {
         &self,
         args: &Args,
         response: &mut RulesReloadResponse,
+        planned: &mut Vec<String>,
     ) -> Result<()> {
         let opts = self.parse_apply_options("rules.reload", args)?;
         response.query = self.apply_query("rules.reload", &opts);
@@ -976,6 +1059,7 @@ impl FirewallHandle {
                     .warnings
                     .push(format!("Dry run: {} not executed.", display_command(&argv)));
             } else {
+                planned.push(display_command(&argv));
                 self.run_steps(&[argv], opts.timeout_ms, &mut response.actions)
                     .await?;
             }
@@ -1000,9 +1084,10 @@ impl FirewallHandle {
                 &opts,
                 &mut response.actions,
                 &mut response.warnings,
+                planned,
             )
             .await
-            .map_err(|(e, _)| e)?;
+            .map_err(|(e, backup)| attach_backup(e, backup))?;
         response.result = Some(RulesReloadResult {
             changed: changed.is_some(),
             backup_path: changed.flatten(),
@@ -1022,8 +1107,10 @@ impl FirewallHandle {
         opts: &ApplyOptions,
         actions: &mut Vec<String>,
         warnings: &mut Vec<String>,
+        planned: &mut Vec<String>,
     ) -> std::result::Result<Option<Option<String>>, (anyhow::Error, Option<String>)> {
         if opts.validate_only {
+            planned.extend(units.iter().map(|u| u.describe(true)));
             self.run_units(units, true, opts.timeout_ms, actions)
                 .await
                 .map_err(|e| (e, None))?;
@@ -1042,10 +1129,17 @@ impl FirewallHandle {
             warnings.push("Dry run: no firewall changes applied.".to_string());
             return Ok(None);
         }
+        if opts.backup_before_apply {
+            planned.extend(backup_plan(backend, &families));
+        }
+        planned.extend(units.iter().map(|u| u.describe(false)));
         let backup = if opts.backup_before_apply {
             self.backup_before(backend, &families, opts.timeout_ms, actions)
                 .await
-                .map_err(|e| (e, None))?
+                .map_err(|e| {
+                    let backup = backup_of(&e);
+                    (e, backup)
+                })?
         } else {
             None
         };
@@ -1066,9 +1160,11 @@ impl FirewallHandle {
             already_enabled: false,
             backup_path: None,
         };
+        let mut planned = Vec::new();
         let outcome = block_on(self.switch_async(
             "enable",
             args,
+            &mut planned,
             &mut response.query,
             &mut response.backend,
             &mut response.previous_state,
@@ -1079,11 +1175,19 @@ impl FirewallHandle {
             &mut result.already_enabled,
             &mut result.backup_path,
         ));
-        response.result = Some(result);
         match outcome {
             Ok(()) => response.ok = true,
-            Err(e) => response.error = Some(as_firewall_error(&e).error_object()),
+            Err(e) => {
+                response.error = Some(as_firewall_error(&e).error_object());
+                attach_progress(
+                    &mut response.error,
+                    &response.actions,
+                    &planned,
+                    result.backup_path.as_ref(),
+                );
+            }
         }
+        response.result = Some(result);
         finish(io, &response)
     }
 
@@ -1094,9 +1198,11 @@ impl FirewallHandle {
             already_disabled: false,
             backup_path: None,
         };
+        let mut planned = Vec::new();
         let outcome = block_on(self.switch_async(
             "disable",
             args,
+            &mut planned,
             &mut response.query,
             &mut response.backend,
             &mut response.previous_state,
@@ -1107,11 +1213,19 @@ impl FirewallHandle {
             &mut result.already_disabled,
             &mut result.backup_path,
         ));
-        response.result = Some(result);
         match outcome {
             Ok(()) => response.ok = true,
-            Err(e) => response.error = Some(as_firewall_error(&e).error_object()),
+            Err(e) => {
+                response.error = Some(as_firewall_error(&e).error_object());
+                attach_progress(
+                    &mut response.error,
+                    &response.actions,
+                    &planned,
+                    result.backup_path.as_ref(),
+                );
+            }
         }
+        response.result = Some(result);
         finish(io, &response)
     }
 
@@ -1122,6 +1236,7 @@ impl FirewallHandle {
         &self,
         verb: &str,
         args: &Args,
+        planned: &mut Vec<String>,
         query: &mut Value,
         backend_name: &mut String,
         previous_state: &mut Option<FirewallStateSnapshot>,
@@ -1191,6 +1306,7 @@ impl FirewallHandle {
                 warnings.push("Dry run: no firewall changes applied.".to_string());
                 return Ok(());
             }
+            planned.extend(steps.iter().map(|s| display_command(s)));
             self.run_steps(&steps, opts.timeout_ms, actions).await?;
             *changed = true;
             *current_state = Some(self.current_state(&backend, opts.timeout_ms).await?);
@@ -1201,7 +1317,7 @@ impl FirewallHandle {
         if opts.path.is_some() {
             let (units, _) = self.plan_units(&backend, &opts)?;
             match self
-                .apply_units(&backend, &units, &opts, actions, warnings)
+                .apply_units(&backend, &units, &opts, actions, warnings, planned)
                 .await
             {
                 Ok(None) => return Ok(()),
@@ -1269,9 +1385,20 @@ impl FirewallHandle {
                 return Ok(());
             }
             if opts.backup_before_apply {
-                *backup_path = self
+                planned.extend(backup_plan(&backend, &families));
+            }
+            planned.extend(steps.iter().map(|s| display_command(s)));
+            if opts.backup_before_apply {
+                match self
                     .backup_before(&backend, &families, opts.timeout_ms, actions)
-                    .await?;
+                    .await
+                {
+                    Ok(path) => *backup_path = path,
+                    Err(e) => {
+                        *backup_path = backup_of(&e);
+                        return Err(e);
+                    }
+                }
             }
             self.run_steps(&steps, opts.timeout_ms, actions).await?;
             *changed = true;

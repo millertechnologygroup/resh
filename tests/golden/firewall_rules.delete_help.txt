@@ -12,7 +12,8 @@ Usage:
     [direction=<direction>] [action=<action>] [proto=<proto>]
     [sport=<port>] [dport=<port>] [saddr=<cidr>] [daddr=<cidr>]
     [in_iface=<iface>] [out_iface=<iface>] [comment_contains=<text>]
-    [limit=<n>] [dry_run=true|false] [require_match=true|false]
+    [to=<addr>] [limit=<n>] [dry_run=true|false]
+    [require_match=true|false]
     [timeout_ms=<ms>] [format_output=json|text]
 
 Example:
@@ -40,7 +41,8 @@ Example Output:
         "rule_id": "INPUT:3",
         "saddr": null,
         "sport": null,
-        "table": "filter"
+        "table": "filter",
+        "to": null
       }
     ],
     "ok": true,
@@ -65,7 +67,8 @@ Example Output:
       "saddr": null,
       "sport": null,
       "table": null,
-      "timeout_ms": 5000,
+      "timeout_ms": 30000,
+      "to": null,
       "zone": null
     },
     "result": {

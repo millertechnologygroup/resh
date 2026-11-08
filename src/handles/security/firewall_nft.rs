@@ -112,12 +112,14 @@ impl FirewallHandle {
     /// chain, or else the first base chain of the right type hooked on the
     /// requested direction, preferring an inet table over ip/ip6. A
     /// `family=any` request whose two rules land in the same inet chain
-    /// becomes one rule there.
+    /// becomes one rule there. A NAT rule with no NAT chain to go into (and
+    /// no table/chain given) goes into resh's own `inet resh` table; the
+    /// commands that create it are returned with the specs.
     pub(super) async fn resolve_nft_targets(
         &self,
         specs: Vec<FirewallRuleSpec>,
         opts: &RulesAddOptions,
-    ) -> Result<Vec<FirewallRuleSpec>> {
+    ) -> Result<(Vec<FirewallRuleSpec>, Vec<Vec<String>>)> {
         let (code, out, err) =
             run_command_with_timeout("nft", &["list", "ruleset"], opts.timeout_ms).await?;
         if code != 0 {
@@ -128,12 +130,54 @@ impl FirewallHandle {
             }
             .into());
         }
-        let chains = parse_nft_chains(&out);
+        let mut chains = parse_nft_chains(&out);
+        let mut setup: Vec<Vec<String>> = Vec::new();
         let nat = matches!(
             opts.action.as_str(),
             "masquerade" | "snat" | "dnat" | "redirect"
         ) || matches!(opts.direction.as_str(), "prerouting" | "postrouting");
         let kind = if nat { "nat" } else { "filter" };
+        let needs_own_chain = |chains: &[NftChain]| {
+            nat && opts.table.is_none()
+                && opts.chain.is_none()
+                && !chains.iter().any(|c| {
+                    c.kind.as_deref() == Some("nat")
+                        && c.hook.as_deref() == Some(opts.direction.as_str())
+                        && matches!(c.family.as_str(), "inet" | "ip" | "ip6")
+                })
+        };
+        if needs_own_chain(&chains) {
+            let priority = match opts.direction.as_str() {
+                "prerouting" | "output" => "dstnat",
+                _ => "srcnat",
+            };
+            let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+            setup.push(words(&["nft", "add", "table", "inet", "resh"]));
+            setup.push(words(&[
+                "nft",
+                "add",
+                "chain",
+                "inet",
+                "resh",
+                &opts.direction,
+                "{",
+                "type",
+                "nat",
+                "hook",
+                &opts.direction,
+                "priority",
+                priority,
+                ";",
+                "}",
+            ]));
+            chains.push(NftChain {
+                family: "inet".to_string(),
+                table: "resh".to_string(),
+                chain: opts.direction.clone(),
+                kind: Some("nat".to_string()),
+                hook: Some(opts.direction.clone()),
+            });
+        }
         let pick = |family: &str| -> Option<NftChain> {
             let families: &[&str] = match family {
                 "ipv4" => &["inet", "ip"],
@@ -171,11 +215,11 @@ impl FirewallHandle {
                     one.family = "any".to_string();
                     one.saddr = None;
                     one.daddr = None;
-                    return Ok(vec![place(one, &a)]);
+                    return Ok((vec![place(one, &a)], setup));
                 }
             }
         }
-        specs
+        let placed = specs
             .into_iter()
             .map(|spec| match pick(&spec.family) {
                 Some(chain) => Ok(place(spec, &chain)),
@@ -196,7 +240,8 @@ impl FirewallHandle {
                 }
                 .into()),
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        Ok((placed, setup))
     }
 }
 
@@ -279,6 +324,7 @@ table ip6 filter {
             log_prefix: None,
             rate_limit: None,
             comment: None,
+            to: None,
             nft_family: Some("inet".into()),
         };
         assert_eq!(nft_nfproto(&spec), Some("ipv4"));

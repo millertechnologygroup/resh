@@ -33,7 +33,7 @@ Example Output:
       "format_output": "json",
       "path": null,
       "source_format": "auto",
-      "timeout_ms": 10000,
+      "timeout_ms": 60000,
       "validate_only": false
     },
     "result": {

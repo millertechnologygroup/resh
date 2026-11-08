@@ -547,6 +547,146 @@ check rich_reload firewall-cmd --zone=public --list-rich-rules
     assert!(!c.check("rich_reload").contains("9000"));
 }
 
+// ===========================================================================
+// NAT
+// ===========================================================================
+
+#[test]
+fn nftables_nat() {
+    let c = container(
+        NFT,
+        r#"
+r dnat resh firewall://.rules.add action=dnat proto=tcp dport=80 to=10.0.0.5:8080
+r dnat2 resh firewall://.rules.add action=dnat proto=tcp dport=80 to=10.0.0.5:8080
+r dnat6 resh firewall://.rules.add action=dnat proto=tcp dport=443 to=[2001:db8::5]:8443
+r masq resh firewall://.rules.add action=masquerade out_iface=eth0
+r snat resh firewall://.rules.add action=snat saddr=10.1.0.0/16 to=192.0.2.1
+r snat2 resh firewall://.rules.add action=snat saddr=10.1.0.0/16 to=192.0.2.1
+check rules nft list ruleset
+r list resh firewall://.rules.list action=dnat
+r del resh firewall://.rules.delete action=dnat proto=tcp dport=80 to=10.0.0.5:8080
+check after_del nft list table inet resh
+"#,
+    );
+    let j = c.ok("dnat");
+    assert_eq!(j["backend_commands"][0], "nft add table inet resh", "{j}");
+    assert_eq!(c.ok("dnat2")["result"]["already_exists"], true);
+    c.ok("dnat6");
+    c.ok("masq");
+    c.ok("snat");
+    assert_eq!(c.ok("snat2")["result"]["already_exists"], true);
+    let rules = c.check("rules");
+    for want in [
+        "table inet resh",
+        "type nat hook prerouting priority dstnat",
+        "type nat hook postrouting priority srcnat",
+        "tcp dport 80 dnat ip to 10.0.0.5:8080",
+        "tcp dport 443 dnat ip6 to [2001:db8::5]:8443",
+        "oifname \"eth0\" masquerade",
+        "ip saddr 10.1.0.0/16 snat ip to 192.0.2.1",
+    ] {
+        assert!(rules.contains(want), "{want}:\n{rules}");
+    }
+    assert_eq!(rules.matches("10.0.0.5:8080").count(), 1, "{rules}");
+    let listed = c.ok("list")["rules"].as_array().unwrap().clone();
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    assert_eq!(c.ok("del")["result"]["deleted_count"], 1);
+    assert!(!c.check("after_del").contains("10.0.0.5:8080"));
+}
+
+#[test]
+fn iptables_nat() {
+    let c = container(
+        IPT,
+        r#"
+r dnat resh firewall://.rules.add action=dnat proto=tcp dport=80 to=10.0.0.5:8080
+r dnat2 resh firewall://.rules.add action=dnat proto=tcp dport=80 to=10.0.0.5:8080
+r dnat6 resh firewall://.rules.add action=dnat proto=tcp dport=443 to=[2001:db8::5]:8443
+r snat resh firewall://.rules.add action=snat saddr=10.1.0.0/16 out_iface=eth0 to=192.0.2.1
+r masq resh firewall://.rules.add action=masquerade out_iface=eth1
+r masq2 resh firewall://.rules.add action=masquerade out_iface=eth1
+check v4 iptables-save -t nat
+check v6 ip6tables-save -t nat
+r del resh firewall://.rules.delete action=snat to=192.0.2.1 family=ipv4 match_mode=subset
+check v4_del iptables-save -t nat
+"#,
+    );
+    c.ok("dnat");
+    assert_eq!(c.ok("dnat2")["result"]["already_exists"], true);
+    c.ok("dnat6");
+    c.ok("snat");
+    c.ok("masq");
+    assert_eq!(c.ok("masq2")["result"]["already_exists"], true);
+    let v4 = c.check("v4");
+    for want in [
+        "-A PREROUTING -p tcp -m tcp --dport 80 -j DNAT --to-destination 10.0.0.5:8080",
+        "-A POSTROUTING -s 10.1.0.0/16 -o eth0 -j SNAT --to-source 192.0.2.1",
+        "-A POSTROUTING -o eth1 -j MASQUERADE",
+    ] {
+        assert!(v4.contains(want), "{want}:\n{v4}");
+    }
+    assert_eq!(v4.matches("--to-destination").count(), 1, "{v4}");
+    assert_eq!(v4.matches("MASQUERADE").count(), 1, "{v4}");
+    assert!(
+        c.check("v6")
+            .contains("-j DNAT --to-destination [2001:db8::5]:8443"),
+        "{}",
+        c.check("v6")
+    );
+    assert_eq!(c.ok("del")["result"]["deleted_count"], 1);
+    assert!(!c.check("v4_del").contains("SNAT"));
+}
+
+#[test]
+fn firewalld_and_ufw_nat() {
+    let c = container(
+        FWD,
+        r#"
+mkdir -p /run/dbus
+dbus-daemon --system --fork
+firewalld --nofork --nopid > /tmp/fwd.log 2>&1 &
+i=0; while [ $i -lt 150 ]; do firewall-cmd --state >/dev/null 2>&1 && break; sleep 0.2; i=$((i+1)); done
+r dnat resh firewall://.rules.add zone=public action=dnat proto=tcp dport=80 to=10.0.0.5:8080
+r dnat2 resh firewall://.rules.add zone=public action=dnat proto=tcp dport=80 to=10.0.0.5:8080
+r masq resh firewall://.rules.add zone=public action=masquerade saddr=10.0.0.0/8
+r masq2 resh firewall://.rules.add zone=public action=masquerade saddr=10.0.0.0/8
+r snat resh firewall://.rules.add zone=public action=snat to=192.0.2.1
+check rich firewall-cmd --zone=public --list-rich-rules
+r list resh firewall://.rules.list action=dnat
+r del resh firewall://.rules.delete zone=public action=dnat proto=tcp dport=80 to=10.0.0.5:8080
+check rich_del firewall-cmd --zone=public --list-rich-rules
+"#,
+    );
+    c.ok("dnat");
+    assert_eq!(c.ok("dnat2")["result"]["already_exists"], true);
+    c.ok("masq");
+    assert_eq!(c.ok("masq2")["result"]["already_exists"], true);
+    c.fails("snat", 2, "firewall.unsupported_option");
+    let rich = c.check("rich");
+    assert!(
+        rich.contains(
+            "forward-port port=\"80\" protocol=\"tcp\" to-port=\"8080\" to-addr=\"10.0.0.5\""
+        ),
+        "{rich}"
+    );
+    assert!(
+        rich.contains("source address=\"10.0.0.0/8\" masquerade"),
+        "{rich}"
+    );
+    assert_eq!(rich.matches("forward-port").count(), 1, "{rich}");
+    assert_eq!(c.ok("list")["rules"][0]["to"], "10.0.0.5:8080");
+    assert_eq!(c.ok("del")["result"]["deleted_count"], 1);
+    assert!(!c.check("rich_del").contains("forward-port"));
+
+    let c = container(
+        UFW,
+        r#"
+r dnat resh firewall://.rules.add backend=ufw action=dnat proto=tcp dport=80 to=10.0.0.5
+"#,
+    );
+    c.fails("dnat", 2, "firewall.unsupported_option");
+}
+
 /// A container running systemd as PID 1 (privileged, its own network
 /// namespace); removed on drop.
 struct SystemdBox(String);

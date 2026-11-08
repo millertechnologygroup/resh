@@ -13,6 +13,7 @@ Usage:
     [table=<table>] [chain=<chain>] [proto=<proto>] [sport=<port>]
     [dport=<port>] [saddr=<cidr>] [daddr=<cidr>] [in_iface=<iface>]
     [out_iface=<iface>] [zone=<zone>] [log_prefix=<text>]
+    [to=<addr>[:port]]
     [rate_limit=<rate>] [comment=<text>] [position=append|insert]
     [dry_run=true|false] [idempotent=true|false] [timeout_ms=<ms>]
     [format_output=json|text]
@@ -48,7 +49,8 @@ Example Output:
       "saddr": null,
       "sport": null,
       "table": null,
-      "timeout_ms": 5000,
+      "timeout_ms": 30000,
+      "to": null,
       "zone": null
     },
     "result": {
@@ -72,6 +74,7 @@ Example Output:
       "saddr": "0.0.0.0/0",
       "sport": null,
       "table": "filter",
+      "to": null,
       "zone": null
     },
     "rules": [
@@ -92,6 +95,7 @@ Example Output:
         "saddr": "0.0.0.0/0",
         "sport": null,
         "table": "filter",
+        "to": null,
         "zone": null
       }
     ],
@@ -108,6 +112,9 @@ Example Output:
   (firewall.rules_add_family_mismatch). On nftables the rule goes into the
   live chain hooked on direction (an inet table first), or the given
   table/chain (firewall.chain_not_found if there is none). sport and dport need
-  proto=tcp or proto=udp; log_prefix needs action=log; dnat and snat are
-  refused; zone is required for firewalld and refused elsewhere
+  proto=tcp or proto=udp; log_prefix needs action=log. dnat and snat need
+  to=<addr>[:port] and default to direction prerouting and postrouting; on
+  nftables a missing NAT chain is created in resh's own inet resh table;
+  firewalld writes dnat as a forward-port and masquerade as a rich rule, and
+  ufw refuses NAT. zone is required for firewalld and refused elsewhere
   (firewall.unsupported_option).

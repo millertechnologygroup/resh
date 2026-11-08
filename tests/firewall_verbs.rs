@@ -39,6 +39,7 @@ fn accepted(verb: &str) -> Vec<&'static str> {
         "daddr",
         "in_iface",
         "out_iface",
+        "to",
     ];
     let mut v: Vec<&'static str> = match verb {
         "status" => vec![
@@ -405,9 +406,9 @@ fn verb_help_matches_golden_and_lists_exactly_the_accepted_options() {
         assert_eq!(listed, accepted(verb), "{verb}: {usage}");
         // The defaults the help states are the ones in force.
         if ["rules.reload", "enable", "disable"].contains(verb) {
-            assert!(out.contains("\"timeout_ms\": 10000"), "{verb}");
+            assert!(out.contains("\"timeout_ms\": 60000"), "{verb}");
         } else {
-            assert!(out.contains("\"timeout_ms\": 5000"), "{verb}");
+            assert!(out.contains("\"timeout_ms\": 30000"), "{verb}");
         }
     }
     assert!(env.calls().is_empty());
@@ -690,11 +691,51 @@ fn enable_and_disable() {
     let r = env.run(&["firewall://.disable", "family=ipv4"]);
     let j = r.fails(1, "firewall.command_failed").json();
     assert!(j["result"]["backup_path"].is_string(), "{j}");
+    assert_eq!(j["error"]["details"]["stopped_at"], "iptables -F", "{j}");
+    assert_eq!(j["error"]["details"]["backup_taken"], true, "{j}");
+}
+
+#[test]
+fn nat_rules_and_whole_verb_deadline() {
+    let env = Env::iptables();
+    let j = env
+        .run(&[
+            "firewall://.rules.add",
+            "action=dnat",
+            "proto=tcp",
+            "dport=80",
+            "to=10.0.0.5:8080",
+        ])
+        .ok()
+        .json();
+    assert_eq!(
+        env.changes(),
+        vec![
+            "iptables -t nat -A PREROUTING -p tcp --dport 80 -j DNAT --to-destination \
+             10.0.0.5:8080"
+        ],
+        "{j}"
+    );
+    env.run(&["firewall://.rules.add", "action=snat"])
+        .fails(2, "firewall.invalid_argument");
+    env.run(&["firewall://.rules.add", "action=dnat", "to=10.0.0.5:80;x"])
+        .fails(2, "firewall.invalid_field");
+
+    // The deadline covers the whole verb; the report says what was done.
+    env.put("sleepon", "iptables -F");
+    let start = Instant::now();
+    let r = env.run(&["firewall://.disable", "family=ipv4", "timeout_ms=2000"]);
+    assert_eq!(r.code, 124, "{} {}", r.out, r.err);
+    assert!(start.elapsed() < Duration::from_secs(10));
+    let j = r.json();
+    let d = &j["error"]["details"];
+    assert_eq!(d["stopped_at"], "iptables -F", "{j}");
+    assert_eq!(d["backup_taken"], true);
+    assert_eq!(d["not_applied"].as_array().unwrap().len(), 2);
     assert!(
-        j["actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|a| a == "iptables -F")
+        r.err
+            .starts_with("Error: [firewall.timeout] outcome unknown: "),
+        "{}",
+        r.err
     );
 }

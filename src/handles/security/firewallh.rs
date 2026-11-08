@@ -19,8 +19,11 @@ use crate::core::{
 mod fw_args;
 #[path = "firewall_lifecycle.rs"]
 mod lifecycle;
+#[path = "firewall_nat.rs"]
+mod nat;
 #[path = "firewall_nft.rs"]
 mod nft;
+use nat::{parse_to, same_to};
 use nft::{nft_addr_family, nft_nfproto};
 #[cfg(test)]
 #[path = "firewall_tests.rs"]
@@ -78,7 +81,7 @@ static FIREWALL_HELP: HandleHelp = HandleHelp {
     "format_output": "json",
     "include_metrics": false,
     "include_rules_summary": false,
-    "timeout_ms": 5000
+    "timeout_ms": 30000
   },
   "timestamp_unix_ms": 1792166145850,
   "warnings": []
@@ -105,7 +108,8 @@ then iptables."#,
                     [direction=<direction>] [action=<action>] [proto=<proto>]\n  \
                     [sport=<port>] [dport=<port>] [saddr=<cidr>] [daddr=<cidr>]\n  \
                     [in_iface=<iface>] [out_iface=<iface>] [comment_contains=<text>]\n  \
-                    [include_backend_raw=true|false] [include_counters=true|false]\n  \
+                    [to=<addr>] [include_backend_raw=true|false]\n  \
+                    [include_counters=true|false]\n  \
                     [max_rules=<n>] [timeout_ms=<ms>] [format_output=json|text]",
                 example: "resh --json-pretty firewall://.rules.list family=ipv4 dport=22",
                 example_output: Some(
@@ -131,7 +135,8 @@ then iptables."#,
     "saddr": null,
     "sport": null,
     "table": null,
-    "timeout_ms": 5000
+    "timeout_ms": 30000,
+    "to": null
   },
   "rules": [
     {
@@ -152,7 +157,8 @@ then iptables."#,
       "raw": null,
       "saddr": "203.0.113.0/24",
       "sport": null,
-      "table": "filter"
+      "table": "filter",
+      "to": null
     }
   ],
   "summary": {
@@ -183,6 +189,7 @@ Shown for a host where iptables is detected, with --json-pretty."#,
                     [table=<table>] [chain=<chain>] [proto=<proto>] [sport=<port>]\n  \
                     [dport=<port>] [saddr=<cidr>] [daddr=<cidr>] [in_iface=<iface>]\n  \
                     [out_iface=<iface>] [zone=<zone>] [log_prefix=<text>]\n  \
+                    [to=<addr>[:port]]\n  \
                     [rate_limit=<rate>] [comment=<text>] [position=append|insert]\n  \
                     [dry_run=true|false] [idempotent=true|false] [timeout_ms=<ms>]\n  \
                     [format_output=json|text]",
@@ -216,7 +223,8 @@ Shown for a host where iptables is detected, with --json-pretty."#,
     "saddr": null,
     "sport": null,
     "table": null,
-    "timeout_ms": 5000,
+    "timeout_ms": 30000,
+    "to": null,
     "zone": null
   },
   "result": {
@@ -240,6 +248,7 @@ Shown for a host where iptables is detected, with --json-pretty."#,
     "saddr": "0.0.0.0/0",
     "sport": null,
     "table": "filter",
+    "to": null,
     "zone": null
   },
   "rules": [
@@ -260,6 +269,7 @@ Shown for a host where iptables is detected, with --json-pretty."#,
       "saddr": "0.0.0.0/0",
       "sport": null,
       "table": "filter",
+      "to": null,
       "zone": null
     }
   ],
@@ -276,8 +286,11 @@ an explicit family that differs is rejected
 (firewall.rules_add_family_mismatch). On nftables the rule goes into the
 live chain hooked on direction (an inet table first), or the given
 table/chain (firewall.chain_not_found if there is none). sport and dport need
-proto=tcp or proto=udp; log_prefix needs action=log; dnat and snat are
-refused; zone is required for firewalld and refused elsewhere
+proto=tcp or proto=udp; log_prefix needs action=log. dnat and snat need
+to=<addr>[:port] and default to direction prerouting and postrouting; on
+nftables a missing NAT chain is created in resh's own inet resh table;
+firewalld writes dnat as a forward-port and masquerade as a rich rule, and
+ufw refuses NAT. zone is required for firewalld and refused elsewhere
 (firewall.unsupported_option)."#,
                 ),
             }),
@@ -295,7 +308,8 @@ refused; zone is required for firewalld and refused elsewhere
                     [direction=<direction>] [action=<action>] [proto=<proto>]\n  \
                     [sport=<port>] [dport=<port>] [saddr=<cidr>] [daddr=<cidr>]\n  \
                     [in_iface=<iface>] [out_iface=<iface>] [comment_contains=<text>]\n  \
-                    [limit=<n>] [dry_run=true|false] [require_match=true|false]\n  \
+                    [to=<addr>] [limit=<n>] [dry_run=true|false]\n  \
+                    [require_match=true|false]\n  \
                     [timeout_ms=<ms>] [format_output=json|text]",
                 example: "resh --json-pretty firewall://.rules.delete rule_id=INPUT:3 \
                     dry_run=true",
@@ -321,7 +335,8 @@ refused; zone is required for firewalld and refused elsewhere
       "rule_id": "INPUT:3",
       "saddr": null,
       "sport": null,
-      "table": "filter"
+      "table": "filter",
+      "to": null
     }
   ],
   "ok": true,
@@ -346,7 +361,8 @@ refused; zone is required for firewalld and refused elsewhere
     "saddr": null,
     "sport": null,
     "table": null,
-    "timeout_ms": 5000,
+    "timeout_ms": 30000,
+    "to": null,
     "zone": null
   },
   "result": {
@@ -403,7 +419,7 @@ table is rejected; add family= or table=."#,
     "include_metadata": true,
     "overwrite": false,
     "path": "/var/backups/firewall.json",
-    "timeout_ms": 5000
+    "timeout_ms": 30000
   },
   "summary": {
     "backends": [
@@ -466,7 +482,7 @@ entry per family."#,
     "format_output": "json",
     "path": null,
     "source_format": "auto",
-    "timeout_ms": 10000,
+    "timeout_ms": 60000,
     "validate_only": false
   },
   "result": {
@@ -532,7 +548,7 @@ validate_only runs iptables-restore --test, nft -c -f, or firewall-cmd
     "format_output": "json",
     "path": null,
     "source_format": "auto",
-    "timeout_ms": 10000,
+    "timeout_ms": 60000,
     "validate_only": false
   },
   "result": {
@@ -596,7 +612,7 @@ path is given; fail_if_already_enabled=true makes that an error."#,
     "format_output": "json",
     "path": null,
     "source_format": "auto",
-    "timeout_ms": 10000,
+    "timeout_ms": 60000,
     "validate_only": false
   },
   "result": {
@@ -702,7 +718,15 @@ impl Handle for FirewallHandle {
             return usage_failure(io, "firewall.invalid_argument", &message);
         }
 
-        match verb {
+        // timeout_ms bounds the whole verb: every backend command gets the
+        // time that is left (core::process enforces the deadline).
+        let timeout_ms = args
+            .get("timeout_ms")
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_else(|| fw_args::default_timeout_ms(verb));
+        crate::core::process::clear_limit();
+        crate::core::process::limit(Duration::from_millis(timeout_ms));
+        let status = match verb {
             "rules.list" => self.handle_rules_list(args, io),
             "rules.add" => self.handle_rules_add(args, io),
             "rules.delete" => self.handle_rules_delete(args, io),
@@ -711,7 +735,9 @@ impl Handle for FirewallHandle {
             "status" => self.handle_status(args, io),
             "enable" => self.handle_enable(args, io),
             _ => self.handle_disable(args, io),
-        }
+        };
+        crate::core::process::clear_limit();
+        status
     }
 }
 
@@ -1432,6 +1458,9 @@ impl FirewallError {
 /// The firewall error an `anyhow` error stands for: a `FirewallError` as is,
 /// anything else as an internal error.
 pub(crate) fn as_firewall_error(e: &anyhow::Error) -> FirewallError {
+    if let Some(after) = e.downcast_ref::<lifecycle::AfterBackup>() {
+        return as_firewall_error(&after.error);
+    }
     match e.downcast_ref::<FirewallError>() {
         Some(fw) => fw.clone(),
         None => FirewallError::InternalError {
@@ -1461,6 +1490,7 @@ pub struct RulesListOptions {
     pub daddr: Option<String>,
     pub in_iface: Option<String>,
     pub out_iface: Option<String>,
+    pub to: Option<String>,
     pub comment_contains: Option<String>,
 
     // Behavior
@@ -1489,11 +1519,12 @@ impl Default for RulesListOptions {
             daddr: None,
             in_iface: None,
             out_iface: None,
+            to: None,
             comment_contains: None,
             include_backend_raw: false,
             include_counters: false,
             max_rules: 10000,
-            timeout_ms: 5000,
+            timeout_ms: 30000,
             format_output: OutputFormat::Json,
         }
     }
@@ -1535,7 +1566,7 @@ impl Default for RulesSaveOptions {
             dry_run: false,
             overwrite: false,
             create_dirs: true,
-            timeout_ms: 5000,
+            timeout_ms: 30000,
             format_output: OutputFormat::Json,
         }
     }
@@ -2066,6 +2097,8 @@ pub struct RulesAddOptions {
     pub daddr: Option<String>,
     pub in_iface: Option<String>,
     pub out_iface: Option<String>,
+    /// NAT target (dnat/snat): `addr`, `addr:port`, `[v6addr]:port`.
+    pub to: Option<String>,
 
     // Backend-specific extensions
     pub zone: Option<String>,
@@ -2099,6 +2132,7 @@ impl Default for RulesAddOptions {
             daddr: None,
             in_iface: None,
             out_iface: None,
+            to: None,
             zone: None,
             log_prefix: None,
             rate_limit: None,
@@ -2106,7 +2140,7 @@ impl Default for RulesAddOptions {
             dry_run: false,
             idempotent: true,
             position: "append".to_string(),
-            timeout_ms: 5000,
+            timeout_ms: 30000,
             format_output: OutputFormat::Json,
         }
     }
@@ -2134,6 +2168,8 @@ pub struct FirewallRuleSpec {
     pub log_prefix: Option<String>,
     pub rate_limit: Option<String>,
     pub comment: Option<String>,
+    /// NAT target (dnat/snat).
+    pub to: Option<String>,
 
     /// nftables only: the family of the table the rule goes into (`ip`,
     /// `ip6` or `inet`), once resolved from the live ruleset.
@@ -2317,6 +2353,9 @@ pub struct FirewallRule {
 
     pub in_iface: Option<String>,
     pub out_iface: Option<String>,
+
+    /// NAT target of a dnat/snat rule (`addr` or `addr:port`).
+    pub to: Option<String>,
 
     pub comment: Option<String>,
     pub packets: Option<u64>,
@@ -2523,6 +2562,7 @@ pub struct RulesDeleteOptions {
     pub daddr: Option<String>,
     pub in_iface: Option<String>,
     pub out_iface: Option<String>,
+    pub to: Option<String>,
     pub comment_contains: Option<String>,
 
     // firewalld-specific
@@ -2557,13 +2597,14 @@ impl Default for RulesDeleteOptions {
             daddr: None,
             in_iface: None,
             out_iface: None,
+            to: None,
             comment_contains: None,
             zone: None,
             match_mode: "exact".to_string(),
             limit: None,
             dry_run: false,
             require_match: true,
-            timeout_ms: 5000,
+            timeout_ms: 30000,
             format_output: OutputFormat::Json,
         }
     }
@@ -2584,6 +2625,7 @@ pub struct MatchedFirewallRule {
     pub daddr: Option<String>,
     pub in_iface: Option<String>,
     pub out_iface: Option<String>,
+    pub to: Option<String>,
     pub comment: Option<String>,
     pub rule_id: Option<String>,
     /// iptables: 1-based line number within the rule's table and chain.
@@ -2919,6 +2961,7 @@ impl FirewallHandle {
             "daddr": opts.daddr,
             "in_iface": opts.in_iface,
             "out_iface": opts.out_iface,
+            "to": opts.to,
             "comment_contains": opts.comment_contains,
             "include_backend_raw": opts.include_backend_raw,
             "include_counters": opts.include_counters,
@@ -3011,6 +3054,7 @@ impl FirewallHandle {
         opts.daddr = args.get("daddr").cloned();
         opts.in_iface = args.get("in_iface").cloned();
         opts.out_iface = args.get("out_iface").cloned();
+        opts.to = args.get("to").and_then(|t| parse_to(t)).map(|t| t.render());
         opts.comment_contains = args.get("comment_contains").cloned();
 
         // Behavior options (values already checked by fw_args::check).
@@ -3300,6 +3344,7 @@ impl FirewallHandle {
             in_iface: None,
             out_iface: None,
             comment: None,
+            to: None,
             packets: None,
             bytes: None,
             raw: if opts.include_backend_raw {
@@ -3366,6 +3411,10 @@ impl FirewallHandle {
                 }
                 "--comment" if i + 1 < parts.len() => {
                     rule.comment = Some(parts[i + 1].clone());
+                    i += 2;
+                }
+                "--to-destination" | "--to-source" if i + 1 < parts.len() => {
+                    rule.to = Some(parts[i + 1].clone());
                     i += 2;
                 }
                 "-c" if i + 2 < parts.len() => {
@@ -3577,6 +3626,7 @@ impl FirewallHandle {
             in_iface: None,
             out_iface: None,
             comment: None,
+            to: None,
             packets: None,
             bytes: None,
             raw: if opts.include_backend_raw {
@@ -3634,6 +3684,7 @@ impl FirewallHandle {
         if let Some(action) = self.extract_nft_action(&line_lower) {
             rule.action = Some(action);
         }
+        rule.to = nat::nft_rule_to(&line_lower);
 
         // Extract comment
         if let Some(comment) = self.extract_nft_comment(line) {
@@ -3901,6 +3952,7 @@ impl FirewallHandle {
             in_iface: None,
             out_iface: None,
             comment: None,
+            to: None,
             packets: None,
             bytes: None,
             raw: if opts.include_backend_raw {
@@ -4181,6 +4233,7 @@ impl FirewallHandle {
                 in_iface: None,
                 out_iface: None,
                 comment: Some(format!("service: {}", service)),
+                to: None,
                 packets: None,
                 bytes: None,
                 raw: if opts.include_backend_raw {
@@ -4246,6 +4299,7 @@ impl FirewallHandle {
                 in_iface: None,
                 out_iface: None,
                 comment: Some(format!("port: {}", port_spec)),
+                to: None,
                 packets: None,
                 bytes: None,
                 raw: if opts.include_backend_raw {
@@ -4308,6 +4362,7 @@ impl FirewallHandle {
                 in_iface: None,
                 out_iface: None,
                 comment: Some("rich rule".to_string()),
+                to: None,
                 packets: None,
                 bytes: None,
                 raw: if opts.include_backend_raw {
@@ -4344,6 +4399,22 @@ impl FirewallHandle {
             // Parse action
             if let Some(action) = self.extract_rich_rule_action(rich_rule_line) {
                 rule.action = Some(action);
+            }
+            // forward-port is a dnat before routing; masquerade after it.
+            if rich_rule_line.contains(" forward-port ") {
+                rule.action = Some("dnat".to_string());
+                rule.direction = Some("prerouting".to_string());
+                let to_port = nat::rich_attr(rich_rule_line, "to-port");
+                rule.to = nat::rich_attr(rich_rule_line, "to-addr").map(|addr| {
+                    match (addr.contains(':'), to_port) {
+                        (true, Some(p)) => format!("[{addr}]:{p}"),
+                        (false, Some(p)) => format!("{addr}:{p}"),
+                        (_, None) => addr,
+                    }
+                });
+            } else if rich_rule_line.ends_with(" masquerade") {
+                rule.action = Some("masquerade".to_string());
+                rule.direction = Some("postrouting".to_string());
             }
 
             rules.push(rule);
@@ -4398,6 +4469,7 @@ impl FirewallHandle {
                 in_iface: None,
                 out_iface: None,
                 comment: Some(format!("source: {}", source)),
+                to: None,
                 packets: None,
                 bytes: None,
                 raw: if opts.include_backend_raw {
@@ -4617,6 +4689,10 @@ impl FirewallHandle {
                 if rule.out_iface.as_ref() != Some(out_iface_filter) {
                     return false;
                 }
+            }
+
+            if opts.to.is_some() && !same_to(opts.to.as_deref(), rule.to.as_deref()) {
+                return false;
             }
 
             // Apply comment filter
@@ -4887,6 +4963,7 @@ impl FirewallHandle {
                 daddr: None,
                 in_iface: None,
                 out_iface: None,
+                to: None,
                 comment_contains: None,
                 include_backend_raw: false,
                 include_counters: true,
@@ -5104,10 +5181,10 @@ impl FirewallHandle {
         }
         // nftables: put the rule into the live table and chain hooked on
         // the requested direction.
-        let rule_specs = if backend_to_use == FirewallBackend::Nftables {
+        let (rule_specs, setup) = if backend_to_use == FirewallBackend::Nftables {
             self.resolve_nft_targets(rule_specs, &opts).await?
         } else {
-            rule_specs
+            (rule_specs, Vec::new())
         };
 
         // Build commands first so invalid combinations fail before any
@@ -5126,6 +5203,10 @@ impl FirewallHandle {
                 match self.check_rule_exists(&spec, &opts).await {
                     Ok(true) => existing += 1,
                     Ok(false) => to_add.push((spec, commands)),
+                    // A tool stopped at the deadline stays a timeout.
+                    Err(e) if matches!(as_firewall_error(&e), FirewallError::Timeout { .. }) => {
+                        return Err(e);
+                    }
                     Err(e) => {
                         return Ok(RulesAddResponse::with_error(
                             FirewallError::IdempotencyCheckFailed {
@@ -5164,33 +5245,41 @@ impl FirewallHandle {
             ));
         }
 
-        let commands: Vec<Vec<String>> = planned.into_iter().flat_map(|(_, c)| c).collect();
+        let rule_commands = planned.into_iter().flat_map(|(_, c)| c);
+        let commands: Vec<Vec<String>> = setup.into_iter().chain(rule_commands).collect();
         let command_lines: Vec<String> = commands.iter().map(|c| display_command(c)).collect();
 
         // Execute commands if not dry run
         if !opts.dry_run {
             let mut skipped = 0usize;
             for (done, (argv, line)) in commands.iter().zip(&command_lines).enumerate() {
-                let (exit_code, stdout, stderr) = run_argv(argv, opts.timeout_ms).await?;
-
-                if exit_code != 0 {
-                    let mut failed = RulesAddResponse::with_error(FirewallError::CommandFailed {
+                let outcome = match run_argv(argv, opts.timeout_ms).await {
+                    Ok((0, stdout, _)) => Ok(stdout),
+                    Ok((code, _, stderr)) => Err(FirewallError::CommandFailed {
                         command: line.clone(),
-                        code: exit_code,
+                        code,
                         stderr: stderr.trim().to_string(),
-                    });
-                    failed.query = response.query.clone();
-                    failed.format_output = response.format_output.clone();
-                    // Report what was applied before the failure.
-                    failed.backend_commands = command_lines[..done].to_vec();
-                    if done > 0 {
-                        failed.warnings.push(format!(
-                            "{done} of {} commands were applied before the failure",
-                            command_lines.len()
-                        ));
+                    }),
+                    Err(e) => Err(as_firewall_error(&e)),
+                };
+                let stdout = match outcome {
+                    Ok(stdout) => stdout,
+                    Err(error) => {
+                        let mut failed = RulesAddResponse::with_error(error);
+                        failed.query = response.query.clone();
+                        failed.format_output = response.format_output.clone();
+                        attach_steps(&mut failed.error, &command_lines, done);
+                        // Report what was applied before the failure.
+                        failed.backend_commands = command_lines[..done].to_vec();
+                        if done > 0 {
+                            failed.warnings.push(format!(
+                                "{done} of {} commands were applied before the failure",
+                                command_lines.len()
+                            ));
+                        }
+                        return Ok(failed);
                     }
-                    return Ok(failed);
-                }
+                };
                 // An inactive ufw lists no rules, so the existence check
                 // above cannot see them; ufw itself skips a duplicate.
                 if stdout.contains("Skipping adding existing rule") {
@@ -5260,6 +5349,7 @@ impl FirewallHandle {
         opts.daddr = args.get("daddr").cloned();
         opts.in_iface = args.get("in_iface").cloned();
         opts.out_iface = args.get("out_iface").cloned();
+        opts.to = args.get("to").and_then(|t| parse_to(t)).map(|t| t.render());
         opts.zone = args.get("zone").cloned();
         opts.log_prefix = args.get("log_prefix").cloned();
         opts.rate_limit = args.get("rate_limit").cloned();
@@ -5302,6 +5392,27 @@ impl FirewallHandle {
         opts.direction = opts.direction.to_lowercase();
         opts.action = opts.action.to_lowercase();
         opts.proto = opts.proto.map(|p| p.to_lowercase());
+        // NAT rules belong to the NAT hooks: dnat/redirect before routing
+        // (or on locally generated output), snat/masquerade after it.
+        let (default_direction, allowed): (Option<&str>, &[&str]) = match opts.action.as_str() {
+            "dnat" | "redirect" => (Some("prerouting"), &["prerouting", "output"]),
+            "snat" => (Some("postrouting"), &["postrouting", "input"]),
+            "masquerade" => (Some("postrouting"), &["postrouting"]),
+            _ => (None, &[]),
+        };
+        if let (Some(d), false) = (default_direction, args.contains_key("direction")) {
+            opts.direction = d.to_string();
+        }
+        if !allowed.is_empty() && !allowed.contains(&opts.direction.as_str()) {
+            return Err(FirewallError::InvalidArgument {
+                message: format!(
+                    "action={} needs direction={}",
+                    opts.action,
+                    allowed.join(" or direction=")
+                ),
+            }
+            .into());
+        }
         if let Some(prefix) = &opts.log_prefix {
             // iptables allows 29 characters; the comment character set
             // keeps the value one token for nft.
@@ -5443,7 +5554,8 @@ impl FirewallHandle {
             }
             None => false,
         };
-        let checks: [(&str, &dyn Fn(&str) -> bool); 8] = [
+        let checks: [(&str, &dyn Fn(&str) -> bool); 9] = [
+            ("to", &|v| parse_to(v).is_some()),
             ("table", &|v| name(v, 64)),
             ("chain", &|v| name(v, 64)),
             ("zone", &|v| name(v, 32)),
@@ -5507,6 +5619,7 @@ impl FirewallHandle {
             opts.family_explicit,
             opts.saddr.as_ref(),
             opts.daddr.as_ref(),
+            opts.to.as_ref(),
         )?;
 
         let single_rule_backend =
@@ -5518,7 +5631,8 @@ impl FirewallHandle {
         };
 
         // Determine default table and chain based on direction
-        let (default_table, default_chain) = self.get_default_table_chain(&opts.direction, backend);
+        let (default_table, default_chain) =
+            self.get_default_table_chain(&opts.direction, &opts.action, backend);
         let table = opts.table.clone().or(default_table);
         let chain = opts.chain.clone().or(default_chain);
 
@@ -5550,6 +5664,7 @@ impl FirewallHandle {
                     log_prefix: opts.log_prefix.clone(),
                     rate_limit: opts.rate_limit.clone(),
                     comment: opts.comment.clone(),
+                    to: opts.to.clone(),
                     nft_family: None,
                 }
             })
@@ -5561,13 +5676,16 @@ impl FirewallHandle {
     fn get_default_table_chain(
         &self,
         direction: &str,
+        action: &str,
         backend: &FirewallBackend,
     ) -> (Option<String>, Option<String>) {
         match backend {
             FirewallBackend::Iptables | FirewallBackend::Nftables => {
                 let direction = direction.to_lowercase();
+                let nat = matches!(action, "dnat" | "snat" | "masquerade" | "redirect");
                 let table = match direction.as_str() {
                     "prerouting" | "postrouting" => "nat",
+                    _ if nat => "nat",
                     _ => "filter",
                 };
                 // iptables names its built-in chains in capitals; nft
@@ -5655,6 +5773,7 @@ impl FirewallHandle {
             && normalize_address(spec.daddr.as_ref()) == normalize_address(rule.daddr.as_ref())
             && spec.in_iface == rule.in_iface
             && spec.out_iface == rule.out_iface
+            && same_to(spec.to.as_deref(), rule.to.as_deref())
             // A listed rule shows no rate limit, so one in force cannot be
             // assumed: an unlimited rule would otherwise satisfy this request.
             && spec.rate_limit.is_none()
@@ -5698,7 +5817,12 @@ impl FirewallHandle {
                 // Any long option the parser does not fold into a modeled
                 // field (e.g. --ctstate, --state, --dports, --limit, --mark,
                 // --tcp-flags) narrows the rule.
-                t if t.starts_with("--") && !matches!(t, "--dport" | "--sport" | "--comment") => {
+                t if t.starts_with("--")
+                    && !matches!(
+                        t,
+                        "--dport" | "--sport" | "--comment" | "--to-destination" | "--to-source"
+                    ) =>
+                {
                     return true;
                 }
                 _ => {}
@@ -5743,16 +5867,44 @@ impl FirewallHandle {
             }
             .into())
         };
-        if matches!(rule_spec.action.as_str(), "dnat" | "snat") {
-            return unsupported(
-                &rule_spec.action,
-                "a dnat or snat rule needs a translation address, which rules.add does not take",
-            );
+        let tcp_udp = matches!(rule_spec.proto.as_deref(), Some("tcp") | Some("udp"));
+        if let Some(target) = rule_spec.to.as_deref().and_then(parse_to) {
+            if target.port.is_some() && !tcp_udp {
+                return unsupported("to", "a port in to needs proto=tcp or proto=udp");
+            }
         }
         let position = opts.position.to_lowercase();
         let backend = FirewallBackend::from_str(&rule_spec.backend)?;
         if !matches!(backend, FirewallBackend::Ufw | FirewallBackend::Firewalld) {
             return Ok(());
+        }
+        let action = rule_spec.action.as_str();
+        if backend == FirewallBackend::Ufw && rule_spec.to.is_some() {
+            return unsupported("to", "ufw rules do not translate addresses");
+        }
+        if backend == FirewallBackend::Firewalld {
+            match action {
+                "snat" => {
+                    return unsupported(
+                        "action",
+                        "firewalld cannot translate to a given source address; use \
+                         action=masquerade",
+                    );
+                }
+                "dnat" if !tcp_udp || rule_spec.dport.is_none() => {
+                    return unsupported(
+                        "action",
+                        "a firewalld forward-port needs proto=tcp or proto=udp and dport",
+                    );
+                }
+                "masquerade" if rule_spec.proto.is_some() || rule_spec.dport.is_some() => {
+                    return unsupported(
+                        "proto",
+                        "a firewalld masquerade rule takes addresses only",
+                    );
+                }
+                _ => {}
+            }
         }
         let not_written = [
             ("sport", rule_spec.sport.is_some()),
@@ -5772,16 +5924,29 @@ impl FirewallHandle {
             return unsupported(option, "this backend's rule does not carry it");
         }
         let direction = rule_spec.direction.as_str();
+        // firewalld: forward-port is dnat before routing, masquerade after.
+        let firewalld_nat = backend == FirewallBackend::Firewalld
+            && matches!(
+                (action, direction),
+                ("dnat", "prerouting") | ("masquerade", "postrouting")
+            );
+        if firewalld_nat {
+            return Ok(());
+        }
         let direction_ok =
             direction == "input" || (backend == FirewallBackend::Ufw && direction == "output");
         if !direction_ok {
             return unsupported("direction", "this backend's rule does not carry it");
         }
-        if !matches!(
-            rule_spec.action.to_lowercase().as_str(),
-            "accept" | "drop" | "reject"
-        ) {
-            return unsupported("action", "only accept, drop and reject are written");
+        if !matches!(action, "accept" | "drop" | "reject") {
+            return unsupported(
+                "action",
+                if backend == FirewallBackend::Firewalld {
+                    "only accept, drop, reject, dnat (forward-port) and masquerade are written"
+                } else {
+                    "only accept, drop and reject are written"
+                },
+            );
         }
         Ok(())
     }
@@ -5880,6 +6045,14 @@ impl FirewallHandle {
         if let Some(prefix) = &rule_spec.log_prefix {
             push(&["--log-prefix", prefix]);
         }
+        if let Some(to) = &rule_spec.to {
+            let flag = if rule_spec.action == "snat" {
+                "--to-source"
+            } else {
+                "--to-destination"
+            };
+            push(&[flag, to]);
+        }
 
         Ok(vec![cmd])
     }
@@ -5960,6 +6133,17 @@ impl FirewallHandle {
         }
         // nft takes the comment after the verdict.
         push(&[&rule_spec.action.to_lowercase()]);
+        if let Some(target) = rule_spec.to.as_deref().and_then(parse_to) {
+            // An inet table needs the target's family: `dnat ip to ...`.
+            if family == "inet" {
+                push(&[if target.family() == "ipv6" {
+                    "ip6"
+                } else {
+                    "ip"
+                }]);
+            }
+            push(&["to", &target.render()]);
+        }
         if let Some(prefix) = &rule_spec.log_prefix {
             push(&["prefix", &format!("\"{}\"", prefix)]);
         }
@@ -6034,17 +6218,42 @@ impl FirewallHandle {
         if let Some(daddr) = normalize_address(rule_spec.daddr.as_ref()) {
             rich_rule.push_str(&format!(" destination address=\"{}\"", daddr));
         }
-        match (&rule_spec.proto, &rule_spec.dport) {
-            (Some(proto), Some(dport)) => {
-                rich_rule.push_str(&format!(" port protocol=\"{}\" port=\"{}\"", proto, dport));
+        match rule_spec.action.as_str() {
+            // dnat is a forward-port: port and protocol are its own, and
+            // the target goes to to-addr (and to-port).
+            "dnat" => {
+                let target = rule_spec.to.as_deref().and_then(parse_to).ok_or_else(|| {
+                    FirewallError::InvalidArgument {
+                        message: "action=dnat needs to=<addr>[:port]".to_string(),
+                    }
+                })?;
+                rich_rule.push_str(&format!(
+                    " forward-port port=\"{}\" protocol=\"{}\"",
+                    rule_spec.dport.as_deref().unwrap_or_default(),
+                    rule_spec.proto.as_deref().unwrap_or_default()
+                ));
+                if let Some(port) = &target.port {
+                    rich_rule.push_str(&format!(" to-port=\"{port}\""));
+                }
+                rich_rule.push_str(&format!(" to-addr=\"{}\"", target.addr));
             }
-            // A protocol alone needs its own element, or the rule matches all.
-            (Some(proto), None) if proto != "any" && proto != "all" => {
-                rich_rule.push_str(&format!(" protocol value=\"{}\"", proto));
+            "masquerade" => rich_rule.push_str(" masquerade"),
+            action => {
+                match (&rule_spec.proto, &rule_spec.dport) {
+                    (Some(proto), Some(dport)) => {
+                        rich_rule
+                            .push_str(&format!(" port protocol=\"{}\" port=\"{}\"", proto, dport));
+                    }
+                    // A protocol alone needs its own element, or the rule
+                    // matches all.
+                    (Some(proto), None) if proto != "any" && proto != "all" => {
+                        rich_rule.push_str(&format!(" protocol value=\"{}\"", proto));
+                    }
+                    _ => {}
+                }
+                rich_rule.push_str(&format!(" {action}"));
             }
-            _ => {}
         }
-        rich_rule.push_str(&format!(" {}", rule_spec.action.to_lowercase()));
 
         Ok(vec![vec![
             "firewall-cmd".to_string(),
@@ -6068,6 +6277,7 @@ impl FirewallHandle {
             "daddr": opts.daddr,
             "in_iface": opts.in_iface,
             "out_iface": opts.out_iface,
+            "to": opts.to,
             "zone": opts.zone,
             "log_prefix": opts.log_prefix,
             "rate_limit": opts.rate_limit,
@@ -6155,15 +6365,19 @@ impl FirewallHandle {
         // Execute commands if not dry run
         let deleted_count = if !opts.dry_run {
             for (done, (argv, line)) in commands.iter().zip(&command_lines).enumerate() {
-                let (exit_code, _stdout, stderr) = run_argv(argv, opts.timeout_ms).await?;
-
-                if exit_code != 0 {
-                    let mut failed =
-                        RulesDeleteResponse::with_error(FirewallError::CommandFailed {
-                            command: line.clone(),
-                            code: exit_code,
-                            stderr,
-                        });
+                let error = match run_argv(argv, opts.timeout_ms).await {
+                    Ok((0, _, _)) => None,
+                    Ok((code, _, stderr)) => Some(FirewallError::CommandFailed {
+                        command: line.clone(),
+                        code,
+                        stderr: stderr.trim().to_string(),
+                    }),
+                    Err(e) => Some(as_firewall_error(&e)),
+                };
+                if let Some(error) = error {
+                    let mut failed = RulesDeleteResponse::with_error(error);
+                    attach_steps(&mut failed.error, &command_lines, done);
+                    failed.matched_rules = rules_to_delete.clone();
                     failed.query = response.query.clone();
                     failed.format_output = response.format_output.clone();
                     failed.backend_commands = command_lines.clone();
@@ -6231,6 +6445,7 @@ impl FirewallHandle {
         opts.daddr = args.get("daddr").cloned();
         opts.in_iface = args.get("in_iface").cloned();
         opts.out_iface = args.get("out_iface").cloned();
+        opts.to = args.get("to").and_then(|t| parse_to(t)).map(|t| t.render());
         opts.comment_contains = args.get("comment_contains").cloned();
         opts.zone = args.get("zone").cloned();
 
@@ -6288,6 +6503,7 @@ impl FirewallHandle {
             &opts.daddr,
             &opts.in_iface,
             &opts.out_iface,
+            &opts.to,
             &opts.comment_contains,
             &opts.zone,
         ]
@@ -6341,6 +6557,7 @@ impl FirewallHandle {
             "daddr": opts.daddr,
             "in_iface": opts.in_iface,
             "out_iface": opts.out_iface,
+            "to": opts.to,
             "comment_contains": opts.comment_contains,
             "zone": opts.zone,
             "match_mode": opts.match_mode,
@@ -6417,6 +6634,7 @@ impl FirewallHandle {
             daddr: opts.daddr.clone(),
             in_iface: opts.in_iface.clone(),
             out_iface: opts.out_iface.clone(),
+            to: opts.to.clone(),
             comment_contains: opts.comment_contains.clone(),
             ..RulesListOptions::default()
         };
@@ -6470,6 +6688,7 @@ impl FirewallHandle {
                 daddr: rule.daddr,
                 in_iface: rule.in_iface,
                 out_iface: rule.out_iface,
+                to: rule.to,
                 comment: rule.comment,
                 line_number: rule.priority,
                 raw: rule.raw,
@@ -7041,6 +7260,22 @@ fn save_parent(target: &Path) -> std::path::PathBuf {
     }
 }
 
+/// Adds the progress of a multi-step change to a failure's
+/// `error.details`: the steps `applied` before step `at`, the step that
+/// failed or was stopped at the deadline (`stopped_at`; after a timeout its
+/// outcome is unknown), and the steps `not_applied`.
+fn attach_steps(error: &mut Option<Value>, steps: &[String], at: usize) {
+    if let Some(details) = error.as_mut().and_then(|e| e.get_mut("details")) {
+        if !details.is_object() {
+            *details = json!({});
+        }
+        let at = at.min(steps.len());
+        details["applied"] = json!(steps[..at]);
+        details["stopped_at"] = json!(steps.get(at));
+        details["not_applied"] = json!(steps.get(at + 1..).unwrap_or_default());
+    }
+}
+
 /// The first non-empty line of a tool's output.
 fn first_line(text: &str) -> Option<&str> {
     text.lines().map(str::trim).find(|l| !l.is_empty())
@@ -7147,8 +7382,11 @@ fn resolve_add_families(
     family_explicit: bool,
     saddr: Option<&String>,
     daddr: Option<&String>,
+    to: Option<&String>,
 ) -> Result<Vec<&'static str>, FirewallError> {
-    let addrs: Vec<&String> = [saddr, daddr]
+    // A NAT target address sets the family like saddr and daddr do.
+    let to_addr: Option<String> = to.and_then(|t| parse_to(t)).map(|t| t.addr.to_string());
+    let addrs: Vec<&String> = [saddr, daddr, to_addr.as_ref()]
         .into_iter()
         .flatten()
         .filter(|a| normalize_address(Some(a)).is_some())
@@ -7291,6 +7529,7 @@ fn rule_matches_exactly(rule: &FirewallRule, opts: &RulesDeleteOptions) -> bool 
         || normalize_address(rule.daddr.as_ref()) != normalize_address(opts.daddr.as_ref())
         || rule.in_iface != opts.in_iface
         || rule.out_iface != opts.out_iface
+        || !same_to(rule.to.as_deref(), opts.to.as_deref())
     {
         return false;
     }
@@ -7373,7 +7612,7 @@ mod tests {
         assert_eq!(opts.backend, FirewallBackend::Auto);
         assert_eq!(opts.family, IpFamily::Any);
         assert_eq!(opts.max_rules, 10000);
-        assert_eq!(opts.timeout_ms, 5000);
+        assert_eq!(opts.timeout_ms, 30000);
         assert!(!opts.include_backend_raw);
         assert!(!opts.include_counters);
     }
@@ -7800,6 +8039,7 @@ COMMIT
             in_iface: None,
             out_iface: None,
             comment: None,
+            to: None,
             packets: None,
             bytes: None,
             raw: Some(raw.to_string()),

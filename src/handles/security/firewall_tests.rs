@@ -78,6 +78,7 @@ D='@DIR@'
 name=${0##*/}
 key="$name${*:+ $*}"
 echo "$key" >> "$D/calls.log"
+if [ -f "$D/slow" ]; then sleep "$(cat "$D/slow")"; fi
 if [ -f "$D/sleepon" ]; then
   case "$key" in $(cat "$D/sleepon")) sleep 30 ;; esac
 fi
@@ -738,7 +739,7 @@ fn rules_add_refusals() {
             2,
             "firewall.invalid_field",
         ),
-        (vec![("action", "dnat")], 2, "firewall.unsupported_option"),
+        (vec![("action", "dnat")], 2, "firewall.invalid_argument"),
         (vec![("zone", "public")], 2, "firewall.unsupported_option"),
         (
             vec![("family", "ipv6"), ("saddr", "10.0.0.1")],
@@ -1322,4 +1323,394 @@ fn backend_unavailable_and_none_available() {
     for verb in ["rules.list", "rules.reload", "enable", "disable"] {
         m.run(verb, &[]).fails(1, "firewall.no_backend_available");
     }
+}
+
+// ---------------------------------------------------------------------------
+// NAT (dnat/snat with to=, masquerade)
+// ---------------------------------------------------------------------------
+
+const V4_SAVE_NAT: &str = "*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+-A PREROUTING -p tcp -m tcp --dport 80 -j DNAT --to-destination 10.0.0.5:8080
+-A POSTROUTING -s 10.0.0.0/8 -o eth0 -j SNAT --to-source 192.0.2.1
+COMMIT
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+COMMIT
+";
+
+#[test]
+fn nat_rules_on_iptables() {
+    let m = ipt_host();
+    m.put("v4.save", V4_SAVE_NAT);
+    let j = m
+        .run(
+            "rules.add",
+            &[
+                ("action", "dnat"),
+                ("proto", "tcp"),
+                ("dport", "443"),
+                ("to", "10.0.0.6:8443"),
+                ("dry_run", "true"),
+            ],
+        )
+        .ok()
+        .clone();
+    assert_eq!(
+        j["backend_commands"],
+        json!([
+            "iptables -t nat -A PREROUTING -p tcp --dport 443 -j DNAT --to-destination 10.0.0.6:8443"
+        ])
+    );
+    assert_eq!(j["rule"]["to"], "10.0.0.6:8443");
+    let j = m
+        .run(
+            "rules.add",
+            &[
+                ("action", "snat"),
+                ("saddr", "10.1.0.0/16"),
+                ("out_iface", "eth0"),
+                ("to", "192.0.2.2"),
+                ("dry_run", "true"),
+            ],
+        )
+        .ok()
+        .clone();
+    assert_eq!(
+        j["backend_commands"][0],
+        "iptables -t nat -A POSTROUTING -s 10.1.0.0/16 -o eth0 -j SNAT --to-source 192.0.2.2"
+    );
+    // The family follows the target address.
+    let j = m
+        .run(
+            "rules.add",
+            &[
+                ("action", "dnat"),
+                ("proto", "tcp"),
+                ("dport", "443"),
+                ("to", "[2001:db8::5]:443"),
+                ("dry_run", "true"),
+            ],
+        )
+        .ok()
+        .clone();
+    assert_eq!(
+        j["backend_commands"][0],
+        "ip6tables -t nat -A PREROUTING -p tcp --dport 443 -j DNAT --to-destination \
+         '[2001:db8::5]:443'"
+    );
+    // Existing NAT rules are recognized, also with a different spelling.
+    for (pairs, exists) in [
+        (
+            vec![("proto", "tcp"), ("dport", "80"), ("to", "10.0.0.5:8080")],
+            true,
+        ),
+        (
+            vec![("proto", "tcp"), ("dport", "80"), ("to", "10.0.0.5:8081")],
+            false,
+        ),
+    ] {
+        let mut args = vec![("action", "dnat")];
+        args.extend(pairs);
+        let j = m.run("rules.add", &args).ok().clone();
+        assert_eq!(j["result"]["already_exists"], exists, "{args:?}: {j}");
+    }
+    let j = m
+        .run(
+            "rules.list",
+            &[("table", "nat"), ("action", "snat"), ("to", "192.0.2.1")],
+        )
+        .ok()
+        .clone();
+    assert_eq!(j["rules"][0]["to"], "192.0.2.1", "{j}");
+    let j = m
+        .run(
+            "rules.delete",
+            &[
+                ("action", "dnat"),
+                ("proto", "tcp"),
+                ("dport", "80"),
+                ("to", "10.0.0.5:8080"),
+                ("family", "ipv4"),
+            ],
+        )
+        .ok()
+        .clone();
+    assert_eq!(j["matched_rules"][0]["to"], "10.0.0.5:8080");
+    let changes = m.changes();
+    assert_eq!(
+        changes.last().unwrap(),
+        "iptables -t nat -D PREROUTING -p tcp -m tcp --dport 80 -j DNAT --to-destination \
+         10.0.0.5:8080"
+    );
+}
+
+#[test]
+fn nat_refusals() {
+    let m = ipt_host();
+    for (pairs, code) in [
+        (vec![("action", "snat")], "firewall.invalid_argument"),
+        (vec![("to", "10.0.0.5")], "firewall.invalid_argument"),
+        (
+            vec![("action", "dnat"), ("to", "10.0.0.5;flush")],
+            "firewall.invalid_field",
+        ),
+        (
+            vec![("action", "dnat"), ("to", "10.0.0.5:080")],
+            "firewall.invalid_field",
+        ),
+        (
+            vec![("action", "dnat"), ("to", "host.example")],
+            "firewall.invalid_field",
+        ),
+        (
+            vec![("action", "dnat"), ("to", "10.0.0.5:80")],
+            "firewall.unsupported_option",
+        ),
+        (
+            vec![
+                ("action", "dnat"),
+                ("to", "10.0.0.5"),
+                ("direction", "input"),
+            ],
+            "firewall.invalid_argument",
+        ),
+        (
+            vec![("action", "dnat"), ("to", "10.0.0.5"), ("family", "ipv6")],
+            "firewall.rules_add_family_mismatch",
+        ),
+    ] {
+        m.run("rules.add", &pairs).fails(2, code);
+    }
+    m.run("rules.list", &[("to", "10.0.0.5:x")])
+        .fails(2, "firewall.invalid_field");
+    assert!(m.changes().is_empty());
+
+    let m = ufw_host();
+    m.run("rules.add", &[("action", "dnat"), ("to", "10.0.0.5")])
+        .fails(2, "firewall.unsupported_option");
+    let m = Mock::new(&["firewall-cmd"]);
+    for pairs in [
+        vec![("action", "snat"), ("to", "192.0.2.1")],
+        vec![("action", "dnat"), ("to", "10.0.0.5")],
+        vec![("action", "masquerade"), ("proto", "tcp")],
+    ] {
+        let mut args = pairs.clone();
+        args.push(("zone", "public"));
+        m.run("rules.add", &args)
+            .fails(2, "firewall.unsupported_option");
+    }
+    assert!(m.changes().is_empty());
+}
+
+#[test]
+fn nat_on_nftables_creates_its_own_chain_when_needed() {
+    let m = nft_host();
+    let j = m
+        .run(
+            "rules.add",
+            &[
+                ("action", "dnat"),
+                ("proto", "tcp"),
+                ("dport", "80"),
+                ("to", "10.0.0.5:8080"),
+            ],
+        )
+        .ok()
+        .clone();
+    assert_eq!(
+        m.changes(),
+        vec![
+            "nft add table inet resh",
+            "nft add chain inet resh prerouting { type nat hook prerouting priority dstnat ; }",
+            "nft add rule inet resh prerouting meta nfproto ipv4 tcp dport 80 dnat ip to 10.0.0.5:8080",
+        ],
+        "{j}"
+    );
+    assert_eq!(j["rule"]["table"], "resh");
+
+    // An existing NAT chain is used as is, and the listed rule is the same
+    // rule.
+    let ruleset = "table ip nat { # handle 3
+\tchain POSTROUTING { # handle 1
+\t\ttype nat hook postrouting priority srcnat; policy accept;
+\t\tip saddr 10.0.0.0/8 oifname \"eth0\" snat to 192.0.2.1 # handle 2
+\t\tmasquerade # handle 4
+\t}
+}
+";
+    let m = nft_host();
+    m.put("nft.ruleset", ruleset);
+    let j = m
+        .run(
+            "rules.add",
+            &[
+                ("action", "snat"),
+                ("saddr", "10.0.0.0/8"),
+                ("out_iface", "eth0"),
+                ("to", "192.0.2.1"),
+            ],
+        )
+        .ok()
+        .clone();
+    assert_eq!(j["result"]["already_exists"], true, "{j}");
+    m.run("rules.add", &[("action", "masquerade")]).ok();
+    m.run("rules.add", &[("action", "snat"), ("to", "192.0.2.9")])
+        .ok();
+    assert_eq!(
+        m.changes(),
+        vec!["nft add rule ip nat POSTROUTING snat to 192.0.2.9"]
+    );
+    let j = m
+        .run(
+            "rules.delete",
+            &[
+                ("action", "snat"),
+                ("to", "192.0.2.1"),
+                ("match_mode", "subset"),
+            ],
+        )
+        .ok()
+        .clone();
+    assert_eq!(j["matched_rules"][0]["rule_id"], "2");
+}
+
+#[test]
+fn nat_on_firewalld() {
+    let m = Mock::new(&["firewall-cmd"]);
+    m.run(
+        "rules.add",
+        &[
+            ("zone", "public"),
+            ("action", "dnat"),
+            ("proto", "tcp"),
+            ("dport", "80"),
+            ("to", "10.0.0.5:8080"),
+        ],
+    )
+    .ok();
+    m.run(
+        "rules.add",
+        &[
+            ("zone", "public"),
+            ("action", "masquerade"),
+            ("saddr", "10.0.0.0/8"),
+        ],
+    )
+    .ok();
+    assert_eq!(
+        m.changes(),
+        vec![
+            "firewall-cmd --zone=public --add-rich-rule=rule family=\"ipv4\" forward-port \
+             port=\"80\" protocol=\"tcp\" to-port=\"8080\" to-addr=\"10.0.0.5\"",
+            "firewall-cmd --zone=public --add-rich-rule=rule family=\"ipv4\" source \
+             address=\"10.0.0.0/8\" masquerade",
+        ]
+    );
+    // Listed forward-port rules are dnat rules with their target.
+    m.put(
+        "fwd.rich",
+        "rule family=\"ipv4\" forward-port port=\"80\" protocol=\"tcp\" to-port=\"8080\" \
+         to-addr=\"10.0.0.5\"\nrule family=\"ipv4\" source address=\"10.0.0.0/8\" masquerade\n",
+    );
+    let j = m.run("rules.list", &[("action", "dnat")]).ok().clone();
+    assert_eq!(j["rules"][0]["to"], "10.0.0.5:8080", "{j}");
+    assert_eq!(j["rules"][0]["direction"], "prerouting");
+    let j = m
+        .run(
+            "rules.add",
+            &[
+                ("zone", "public"),
+                ("action", "dnat"),
+                ("proto", "tcp"),
+                ("dport", "80"),
+                ("to", "10.0.0.5:8080"),
+            ],
+        )
+        .ok()
+        .clone();
+    assert_eq!(j["result"]["already_exists"], true, "{j}");
+}
+
+// ---------------------------------------------------------------------------
+// Whole-verb deadline and progress reports
+// ---------------------------------------------------------------------------
+
+#[test]
+fn timeout_ms_bounds_the_whole_verb() {
+    // Every call takes 0.3 s: each one fits in 1 s, all together do not.
+    let m = ipt_host();
+    m.put("slow", "0.3");
+    let start = std::time::Instant::now();
+    let out = m.run("disable", &[("timeout_ms", "1000")]);
+    let j = out.fails(124, "firewall.timeout");
+    assert!(start.elapsed() < Duration::from_secs(5));
+    crate::core::process::take_lost();
+    // The state was being read: nothing was planned or changed.
+    assert!(j["error"]["details"].get("applied").is_none(), "{j}");
+    assert!(m.changes().is_empty(), "{:?}", m.changes());
+}
+
+#[test]
+fn a_timeout_reports_the_steps_applied_and_not_applied() {
+    let m = ipt_host();
+    m.put("sleepon", "iptables -F");
+    let out = m.run("disable", &[("family", "ipv4"), ("timeout_ms", "2000")]);
+    let j = out.fails(124, "firewall.timeout").clone();
+    crate::core::process::take_lost();
+    let d = &j["error"]["details"];
+    assert_eq!(d["backup_taken"], true, "{j}");
+    assert!(d["backup_path"].is_string());
+    assert_eq!(
+        d["applied"].as_array().unwrap().len(),
+        4,
+        "backup and three policies: {d}"
+    );
+    assert_eq!(d["stopped_at"], "iptables -F");
+    assert_eq!(
+        d["not_applied"],
+        json!(["iptables -t nat -F", "iptables -t mangle -F"])
+    );
+    assert_eq!(j["result"]["backup_path"], d["backup_path"]);
+
+    let m = ipt_host();
+    m.put("sleepon", "ip6tables -t*");
+    let out = m.run(
+        "rules.add",
+        &[
+            ("family", "any"),
+            ("proto", "tcp"),
+            ("dport", "993"),
+            ("timeout_ms", "2000"),
+        ],
+    );
+    let j = out.fails(124, "firewall.timeout").clone();
+    crate::core::process::take_lost();
+    let d = &j["error"]["details"];
+    assert_eq!(
+        d["applied"],
+        json!(["iptables -t filter -A INPUT -p tcp --dport 993 -j ACCEPT"])
+    );
+    assert_eq!(
+        d["stopped_at"],
+        "ip6tables -t filter -A INPUT -p tcp --dport 993 -j ACCEPT"
+    );
+    assert_eq!(d["not_applied"], json!([]));
+
+    // A failure (not a timeout) reports the same way.
+    let m = ipt_host();
+    m.put("failon", "iptables -t nat -F")
+        .put("failmsg", "busy\n");
+    let out = m.run("disable", &[("family", "ipv4")]);
+    let j = out.fails(1, "firewall.command_failed").clone();
+    assert_eq!(j["error"]["details"]["stopped_at"], "iptables -t nat -F");
+    assert_eq!(
+        j["error"]["details"]["not_applied"],
+        json!(["iptables -t mangle -F"])
+    );
 }

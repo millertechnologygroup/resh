@@ -36,7 +36,7 @@ Example Output:
       "format_output": "json",
       "include_metrics": false,
       "include_rules_summary": false,
-      "timeout_ms": 5000
+      "timeout_ms": 30000
     },
     "timestamp_unix_ms": 1792166145850,
     "warnings": []

@@ -11,7 +11,8 @@ Usage:
     [direction=<direction>] [action=<action>] [proto=<proto>]
     [sport=<port>] [dport=<port>] [saddr=<cidr>] [daddr=<cidr>]
     [in_iface=<iface>] [out_iface=<iface>] [comment_contains=<text>]
-    [include_backend_raw=true|false] [include_counters=true|false]
+    [to=<addr>] [include_backend_raw=true|false]
+    [include_counters=true|false]
     [max_rules=<n>] [timeout_ms=<ms>] [format_output=json|text]
 
 Example:
@@ -40,7 +41,8 @@ Example Output:
       "saddr": null,
       "sport": null,
       "table": null,
-      "timeout_ms": 5000
+      "timeout_ms": 30000,
+      "to": null
     },
     "rules": [
       {
@@ -61,7 +63,8 @@ Example Output:
         "raw": null,
         "saddr": "203.0.113.0/24",
         "sport": null,
-        "table": "filter"
+        "table": "filter",
+        "to": null
       }
     ],
     "summary": {

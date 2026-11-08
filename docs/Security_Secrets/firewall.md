@@ -75,7 +75,7 @@ There are no `add`, `list`, or `delete` verbs without the `rules.` prefix.
 resh firewall://.status backend=nftables include_metrics=false
 ```
 
-Options: `backend=auto|all|iptables|nftables|ufw|firewalld`, `family=any|ipv4|ipv6`, `include_metrics` (default `true`), `include_rules_summary` (default `false`), `timeout_ms` (default 5000), `format_output`.
+Options: `backend=auto|all|iptables|nftables|ufw|firewalld`, `family=any|ipv4|ipv6`, `include_metrics` (default `true`), `include_rules_summary` (default `false`), `timeout_ms` (default 30000), `format_output`.
 
 * `available` is whether the backend's tool is installed. A backend that is not installed is reported with `available: false` and a warning; a tool that is installed but fails (for example without root) is an error (`firewall.permission_denied` or `firewall.command_failed`). With `backend=all`, such a failure becomes a warning on that backend instead.
 * `active`/`enabled`: iptables has rules or a filter policy other than ACCEPT; nftables has at least one table; ufw reports `Status: active`; firewalld is running.
@@ -89,7 +89,7 @@ Options: `backend=auto|all|iptables|nftables|ufw|firewalld`, `family=any|ipv4|ip
 resh firewall://.rules.list backend=iptables family=ipv4
 ```
 
-Filters: `table`, `chain`, `direction`, `action`, `proto`, `sport`, `dport`, `saddr`, `daddr`, `in_iface`, `out_iface`, `comment_contains`. Other options: `backend` (not `all`), `family`, `include_backend_raw`, `include_counters`, `max_rules` (default 10000; more matching rules is `firewall.max_rules_exceeded`), `timeout_ms` (default 5000), `format_output`. Filter values are validated as for `rules.add`.
+Filters: `table`, `chain`, `direction`, `action`, `proto`, `sport`, `dport`, `saddr`, `daddr`, `in_iface`, `out_iface`, `to` (the NAT target of dnat/snat rules), `comment_contains`. Other options: `backend` (not `all`), `family`, `include_backend_raw`, `include_counters`, `max_rules` (default 10000; more matching rules is `firewall.max_rules_exceeded`), `timeout_ms` (default 30000), `format_output`. Every listed rule has a `to` field (`null` unless it is a NAT rule with a target). Filter values are validated as for `rules.add`.
 
 `family=ipv4`/`ipv6` also lists rules that serve both families (see `status`). With `family=any`, iptables lists both families; a family whose save tool is not installed is skipped. A listing that fails is an error, never an empty list.
 
@@ -123,7 +123,7 @@ resh firewall://.rules.add backend=iptables direction=input action=accept proto=
 resh firewall://.rules.add backend=firewalld zone=public proto=tcp dport=443
 ```
 
-Options: `family=ipv4|ipv6|any` (default `ipv4`), `direction=input|output|forward|prerouting|postrouting`, `action=accept|drop|reject|log|masquerade|dnat|snat|redirect`, `table`, `chain`, `proto`, `sport`, `dport`, `saddr`, `daddr`, `in_iface`, `out_iface`, `zone` (firewalld only, and required there), `log_prefix` (with `action=log`), `rate_limit`, `comment`, `position=append|insert`, `idempotent` (default `true`), `dry_run`, `timeout_ms` (default 5000), `format_output`.
+Options: `family=ipv4|ipv6|any` (default `ipv4`), `direction=input|output|forward|prerouting|postrouting`, `action=accept|drop|reject|log|masquerade|dnat|snat|redirect`, `table`, `chain`, `proto`, `sport`, `dport`, `saddr`, `daddr`, `in_iface`, `out_iface`, `to` (with `action=dnat` or `snat`, see [NAT](#nat)), `zone` (firewalld only, and required there), `log_prefix` (with `action=log`), `rate_limit`, `comment`, `position=append|insert`, `idempotent` (default `true`), `dry_run`, `timeout_ms` (default 30000), `format_output`.
 
 * `sport`/`dport` need `proto=tcp` or `proto=udp`.
 * With `family=any` and no address, iptables gets one rule per family; ufw and firewalld write one rule that covers both.
@@ -135,6 +135,23 @@ Options: `family=ipv4|ipv6|any` (default `ipv4`), `direction=input|output|forwar
 * `idempotent=true` skips the add only when an existing rule matches the request exactly: same table/chain (firewalld: zone), direction, action, protocol, ports, addresses and interfaces, and no other match conditions. An existing rule with extra match conditions that resh does not model (for example `conntrack --ctstate NEW` or `multiport`) is narrower than the request, so it does not count, and the requested rule is added. A request with `rate_limit` is never considered present. An inactive ufw lists no rules; ufw itself skips a duplicate, which is reported as `already_exists: true`.
 * If a later command fails after earlier ones succeeded (`family=any` on iptables), `backend_commands` lists the commands that were applied and a warning says how many.
 * firewalld rules are added to the runtime configuration only; `firewall-cmd --reload` (and `rules.reload` on firewalld) discards them.
+
+#### NAT
+
+`action=dnat` (destination NAT) and `action=snat` (source NAT) need `to=<addr>[:port]`; `to` is refused with any other action (both `firewall.invalid_argument`, exit 2). `to` is one IPv4 address, or one IPv6 address (in brackets when a port follows), with an optional port or port range `low-high` in plain decimal: `10.0.0.5`, `10.0.0.5:8080`, `[2001:db8::5]:8443`. Anything else is `firewall.invalid_field` (exit 2). A port in `to` needs `proto=tcp` or `proto=udp`. The address family of `to` sets the rule's family like `saddr`/`daddr` do.
+
+NAT rules use the NAT hooks: `dnat` and `redirect` default to `direction=prerouting` (also allowed: `output`), `snat` and `masquerade` to `direction=postrouting` (`snat` also allows `input`); another direction is `firewall.invalid_argument`. What each backend writes:
+
+| Backend | `dnat` | `snat` | `masquerade` |
+| ------- | ------ | ------ | ------------ |
+| iptables | `-t nat -A PREROUTING ... -j DNAT --to-destination <to>` (ip6tables for an IPv6 target) | `-t nat -A POSTROUTING ... -j SNAT --to-source <to>` | `-t nat -A POSTROUTING ... -j MASQUERADE` |
+| nftables | `... dnat [ip\|ip6] to <to>` in a NAT chain hooked on the direction | `... snat [ip\|ip6] to <to>` | `... masquerade` |
+| firewalld | rich rule `forward-port port="<dport>" protocol="<proto>" [to-port="<port>"] to-addr="<addr>"` (needs `proto=tcp\|udp` and `dport`) | refused: firewalld cannot translate to a given source address; use `masquerade` | rich rule `[source address=...] masquerade` (no ports or protocol) |
+| ufw | refused | refused | refused |
+
+On nftables the rule goes into the first existing NAT chain hooked on the direction (an `inet` table first, then `ip`/`ip6`). If there is none and no `table`/`chain` is given, resh creates its own table and chain first: `nft add table inet resh` and `nft add chain inet resh <direction> { type nat hook <direction> priority dstnat|srcnat ; }`; these commands are listed first in `backend_commands`.
+
+Idempotence and `rules.delete` compare `to` too (`10.0.0.5:8080` and the backend's own spelling of the same target are equal); `rules.delete action=dnat to=...` selects NAT rules by their target, and `rule_id` works for NAT rules like for any other rule.
 
 #### Input validation
 
@@ -152,15 +169,16 @@ Since v1.0.6-beta, `rules.add` and `rules.delete` (and the `rules.list` filters)
 | `log_prefix` | 1 to 29 characters of the `comment` set | `firewall.invalid_field` |
 | `rate_limit` | `<count>/<unit>`, unit `second`, `minute`, `hour`, `day` or `sec`, `min`, `s`, `m`, `h`, `d` | `firewall.invalid_field` |
 | `rule_id` | Up to 1024 characters, no control characters | `firewall.invalid_field` |
+| `to` | One address with an optional plain-decimal port or range (see [NAT](#nat)) | `firewall.invalid_field` |
 
 "Plain decimal" means digits only, with no leading zero: `22` and `/10` are accepted, `022` and `/010` are refused. Backends read a leading-zero number as octal (`022` is port 18), so resh does not guess.
 
 A rule that the chosen backend cannot write in full is refused with `firewall.unsupported_option` (exit 2), instead of being written without the option, which would make it broader than requested:
 
 * `sport`/`dport` need `proto=tcp` or `proto=udp`.
-* `dnat` and `snat` need a translation address, which `rules.add` does not take, so they are refused on every backend.
+* NAT rules as described in [NAT](#nat) (ufw refuses NAT; firewalld refuses `snat`).
 * `zone` is refused outside firewalld; firewalld requires it (`firewall.rules_add_zone_required`).
-* On ufw and firewalld: `sport`, `in_iface`, `out_iface`, `rate_limit`, `log_prefix`, `table`, `chain` and `position=insert` are refused, `direction` must be `input` (ufw also allows `output`), and `action` must be `accept`, `drop` or `reject`. firewalld also refuses `comment`.
+* On ufw and firewalld: `sport`, `in_iface`, `out_iface`, `rate_limit`, `log_prefix`, `table`, `chain` and `position=insert` are refused, `direction` must be `input` (ufw also allows `output`), and `action` must be `accept`, `drop` or `reject`, except firewalld's `dnat` (prerouting) and `masquerade` (postrouting). firewalld also refuses `comment`.
 
 ### rules.delete
 
@@ -171,7 +189,7 @@ resh firewall://.rules.delete backend=iptables direction=input proto=tcp dport=2
 
 * `rule_id` is the id that `rules.delete` reports in `matched_rules` (run it with filters and `dry_run=true` to see the ids; `rules.list` does not print them): `CHAIN:LINE` for iptables, the handle for nftables, the rule number for ufw, `ZONE:KIND:VALUE` for firewalld. Any filters given with it must also hold. An id found in more than one family or table is refused (`firewall.rules_delete_ambiguous_rule_id`, exit 1); add `family=` or `table=`. A malformed id is `firewall.rules_delete_invalid_rule_id` (exit 2).
 * Without `rule_id`, at least one filter is required (`firewall.rules_delete_missing_criteria`, exit 2). `match_mode=exact` (default) selects rules whose fields equal the given ones and that have no other match conditions; `match_mode=subset` selects every rule the filters fit. `match_mode` cannot be given with `rule_id`. **Review a `subset` delete with `dry_run=true` first.**
-* Other options: `limit=<n>` (delete at most n of the matches), `require_match` (default `true`; no match is then `firewall.rules_delete_no_match`, exit 1), `zone` (firewalld only), `family`, `table`, `timeout_ms` (default 5000), `format_output`.
+* Other options: `limit=<n>` (delete at most n of the matches), `require_match` (default `true`; no match is then `firewall.rules_delete_no_match`, exit 1), `zone` (firewalld only), `family`, `table`, `to` (NAT target filter), `timeout_ms` (default 30000), `format_output`.
 * iptables rules are deleted by their full rule specification; ufw rules by number, highest first; nftables rules by handle; firewalld rules by their rich-rule, service, port or source text.
 * A rule's `action` is read from the rule itself, never from its comment, so `action=accept` cannot select a `drop` rule whose comment mentions "accept".
 * If a delete command fails, `result.deleted_count` says how many were deleted before it.
@@ -183,7 +201,7 @@ resh firewall://.rules.delete backend=iptables direction=input proto=tcp dport=2
 resh firewall://.rules.save backend=iptables path=/var/backups/firewall.json
 ```
 
-Options: `path` (required unless `dry_run`; `firewall.path_required`, exit 2), `format=normalized_json|backend_native|both` (default `normalized_json`), `compress=none|gzip`, `include_metadata` (default `true`), `include_all_backends` (default `false`), `backend`, `family`, `overwrite` (default `false`; an existing file is `firewall.rules_save_path_exists`, exit 1), `create_dirs` (default `true`; otherwise a missing directory is `firewall.rules_save_missing_directory`), `dry_run`, `timeout_ms` (default 5000), `format_output`. `format` is the file content; `format_output` is the response format.
+Options: `path` (required unless `dry_run`; `firewall.path_required`, exit 2), `format=normalized_json|backend_native|both` (default `normalized_json`), `compress=none|gzip`, `include_metadata` (default `true`), `include_all_backends` (default `false`), `backend`, `family`, `overwrite` (default `false`; an existing file is `firewall.rules_save_path_exists`, exit 1), `create_dirs` (default `true`; otherwise a missing directory is `firewall.rules_save_missing_directory`), `dry_run`, `timeout_ms` (default 30000), `format_output`. `format` is the file content; `format_output` is the response format.
 
 * The snapshot is `{"version": 1, "backend_mode": "single"|"multi", "backends": [...], "metadata": {...}}`. Each `backends` entry has `backend`, `family`, `host`, `timestamp_unix_ms`, `rules` (normalized) and, with `backend_native` or `both`, `native: {"format", "data"}` (`iptables-save`/`ip6tables-save` output, `nft list ruleset`, `ufw status numbered`, or `firewall-cmd --list-all-zones`).
 * iptables with `family=any` gives one entry per family (`ipv4`, `ipv6`), each with its own native data. `include_all_backends=true` saves every installed backend (firewalld only when running).
@@ -213,7 +231,7 @@ resh firewall://.enable backend=nftables path=/etc/nftables.conf dry_run=true
 resh firewall://.disable backend=iptables family=ipv4 dry_run=true
 ```
 
-Options: `path`, `backend`, `family`, `source_format`, `dry_run`, `validate_only`, `backup_before_apply` (default `true`), `fail_if_already_enabled` / `fail_if_already_disabled` (default `false`), `timeout_ms` (default 10000), `format_output`.
+Options: `path`, `backend`, `family`, `source_format`, `dry_run`, `validate_only`, `backup_before_apply` (default `true`), `fail_if_already_enabled` / `fail_if_already_disabled` (default `false`), `timeout_ms` (default 60000), `format_output`.
 
 | Backend    | `enable`                                              | `disable`                                               |
 | ---------- | ----------------------------------------------------- | ------------------------------------------------------- |
@@ -249,14 +267,23 @@ Options: `path`, `backend`, `family`, `source_format`, `dry_run`, `validate_only
 
 ## 5. Timeouts
 
-`timeout_ms` is accepted by every verb and is **enforced on every backend command**: each command runs in its own process group, and when the deadline passes resh stops the command and every process it started. resh then exits with status **124** and prints `Error: [firewall.timeout] outcome unknown: <tool> was stopped; it may already have made changes, so check before retrying` on stderr; the JSON result carries `firewall.timeout`. Check the firewall state before you retry.
+`timeout_ms` is accepted by every verb and is **one deadline for the whole verb**: every backend command gets only the time that is left. Each command runs in its own process group, and when the deadline passes resh stops the command and every process it started; a command that would start after the deadline is not started. resh then exits with status **124** and prints `Error: [firewall.timeout] outcome unknown: <tool> was stopped; it may already have made changes, so check before retrying` (or `was not started; nothing was done`) on stderr; the JSON result carries `firewall.timeout`.
+
+When the deadline (or a failure) hits a change that was under way, `error.details` reports its progress:
+
+* `applied`: the steps that completed (for `enable`/`disable`/`rules.reload` including `backup -> <path>` entries);
+* `stopped_at`: the step that was running (after a timeout its outcome is unknown);
+* `not_applied`: the steps that were never started;
+* `backup_taken` and `backup_path` (`enable`, `disable`, `rules.reload`).
+
+`rules.add` and `rules.delete` report the same `applied`/`stopped_at`/`not_applied` for their backend commands. A timeout while the state or rules were still being read changed nothing and has no progress report. Check the firewall state before you retry.
 
 | Verbs                                              | Default  |
 | -------------------------------------------------- | -------- |
-| `status`, `rules.list`, `rules.add`, `rules.delete`, `rules.save` | 5000 ms |
-| `rules.reload`, `enable`, `disable`                | 10000 ms |
+| `status`, `rules.list`, `rules.add`, `rules.delete`, `rules.save` | 30000 ms |
+| `rules.reload`, `enable`, `disable`                | 60000 ms |
 
-The timeout applies to each command separately, not to the whole verb (firewalld listings run several commands per zone).
+firewalld listings run several `firewall-cmd` calls per zone, so give firewalld verbs room.
 
 ---
 
@@ -286,7 +313,7 @@ Failures produce a JSON object with `"ok": false` and an `error` object on stdou
 Error: [firewall.invalid_argument] invalid value for backend: "bogus" (expected auto, iptables, nftables, ufw, firewalld)
 ```
 
-The error object is `{"code", "message", "details"}`. Verbs that fail after they started also report their usual fields (`query`, `actions`, `previous_state`, `result`, ...); a refusal of the arguments carries only `ok`, `error` and `warnings`.
+The error object is `{"code", "message", "details"}`; for a change that failed or timed out part-way, `details` carries the progress report of section 5. Verbs that fail after they started also report their usual fields (`query`, `actions`, `previous_state`, `result`, ...); a refusal of the arguments carries only `ok`, `error` and `warnings`.
 
 | Exit status | Meaning                                                   |
 | ----------- | --------------------------------------------------------- |
@@ -339,7 +366,7 @@ The error object is `{"code", "message", "details"}`. Verbs that fail after they
 
 ## 8. Limitations
 
-* Rule matching and idempotence use the fields resh models (table/chain, direction, action, protocol, ports, addresses, interfaces). iptables rules with other match extensions are recognized as narrower; nftables rules with other expressions (`ct state`, sets) are compared on the modeled fields only.
+* Rule matching and idempotence use the fields resh models (table/chain, direction, action, protocol, ports, addresses, interfaces, NAT target). iptables rules with other match extensions are recognized as narrower; nftables rules with other expressions (`ct state`, sets) are compared on the modeled fields only.
 * firewalld `rules.add` changes the runtime configuration only.
 * `rules.save` native data for ufw and firewalld is their status listing, which `rules.reload` cannot apply (it reloads ufw/firewalld from their own configuration).
 * Input validation, `rules.add`, `rules.delete`, `rules.save`, `rules.reload`, `status`, `enable` and `disable` are tested against real nftables, iptables (nf_tables) and ufw in disposable containers, and against firewalld running in a container (with and without systemd). iptables-legacy needs the kernel's legacy `ip_tables` modules; it is tested only where the test host provides them.

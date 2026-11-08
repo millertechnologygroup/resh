@@ -86,7 +86,7 @@ resh firewall://.rules.add proto=tcp dport=443 dry_run=true
 
 | Handle     | `timeout_ms`                                                                   |
 | ---------- | ------------------------------------------------------------------------------ |
-| `firewall` | Enforced on every backend command (the command and its children are stopped at the deadline; exit 124) |
+| `firewall` | One deadline for the whole verb; each backend command gets the time left and is stopped (with its children) at the deadline; exit 124 with a report of the steps applied and not applied |
 | `user`     | Ignored; system commands run with no deadline                                  |
 | `secret`   | Enforced on `local` and `vault` (keystore lock, keyring calls, Vault requests, RSA generation; exit 124); refused on `env` |
 | `cert`     | Ignored (local work only)                                                      |

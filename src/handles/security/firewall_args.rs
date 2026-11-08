@@ -29,6 +29,14 @@ pub(crate) const MAX_MAX_RULES: u64 = 1_000_000;
 /// Largest accepted `limit` (rules.delete).
 pub(crate) const MAX_DELETE_LIMIT: u64 = 100_000;
 
+/// The default whole-verb deadline of `verb`, in milliseconds.
+pub(crate) fn default_timeout_ms(verb: &str) -> u64 {
+    match verb {
+        "rules.reload" | "enable" | "disable" => 60_000,
+        _ => 30_000,
+    }
+}
+
 /// The options `verb` accepts, exactly as its help usage lists them.
 pub(crate) fn accepted(verb: &str) -> &'static [&'static str] {
     match verb {
@@ -54,6 +62,7 @@ pub(crate) fn accepted(verb: &str) -> &'static [&'static str] {
             "daddr",
             "in_iface",
             "out_iface",
+            "to",
             "comment_contains",
             "include_backend_raw",
             "include_counters",
@@ -75,6 +84,7 @@ pub(crate) fn accepted(verb: &str) -> &'static [&'static str] {
             "daddr",
             "in_iface",
             "out_iface",
+            "to",
             "zone",
             "log_prefix",
             "rate_limit",
@@ -102,6 +112,7 @@ pub(crate) fn accepted(verb: &str) -> &'static [&'static str] {
             "daddr",
             "in_iface",
             "out_iface",
+            "to",
             "comment_contains",
             "limit",
             "dry_run",
@@ -363,6 +374,19 @@ pub(crate) fn check(verb: &str, args: &Args) -> Result<(), String> {
                 .to_string()
                 + &args["backend"],
         );
+    }
+    if verb == "rules.add" {
+        let action = args.get("action").map(|a| a.to_ascii_lowercase());
+        let nat = matches!(action.as_deref(), Some("dnat") | Some("snat"));
+        if nat && !args.contains_key("to") {
+            return Err(format!(
+                "action={} needs to=<addr>[:port]",
+                action.unwrap_or_default()
+            ));
+        }
+        if !nat && args.contains_key("to") {
+            return Err("to applies to action=dnat or action=snat".to_string());
+        }
     }
     if verb == "rules.add" && args.contains_key("log_prefix") {
         let action = args.get("action").map(|a| a.to_ascii_lowercase());
