@@ -273,7 +273,9 @@ fn main() -> Result<()> {
     // made of the error: what it did before it stopped is unknown.
     if let Some(lost) = core::process::take_lost() {
         let state = match lost.stopped {
-            core::process::Stopped::NotStarted => "was not started; nothing was done",
+            // Earlier steps of the verb may have run; handles that do several
+            // steps report what was applied in their JSON result.
+            core::process::Stopped::NotStarted => "was not started before the deadline",
             core::process::Stopped::Terminated => {
                 "was stopped; it may already have made changes, so check before retrying"
             }
