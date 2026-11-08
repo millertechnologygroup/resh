@@ -334,8 +334,9 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   values with exit 2 before looking anything up. Errors are `[user.<code>]`
   with exits 0/1/2/124 (all failures were 1); with `format=json` the error
   object is printed on stdout.
-- `passwd` hashes passwords itself (real sha512-crypt, bcrypt and argon2id;
-  the previous "hashes" were PBKDF2 stand-ins) and passes the hash to
+- `passwd` hashes passwords itself (real sha512-crypt and bcrypt on the
+  system backend, argon2id only on the mock backend; the previous "hashes"
+  were PBKDF2 stand-ins) and passes the hash to
   `chpasswd -e` on stdin. `new_password_env=`, `new_password_stdin=true` and
   `old_password_env=` keep passwords off the command line;
   `new_password_plain=` still works but prints a warning on stderr every

@@ -346,8 +346,9 @@ Dry run output (always indented):
 
 ## 4. Limitations
 
-* `ttl` is enforced only when snapshots are accessed (by `create` and
-  `ls` of the same target); nothing runs in the background.
+* `ttl` is enforced only when snapshots are accessed: `create` and `ls`
+  delete expired snapshots of their target, and `diff` and `restore`
+  refuse them; nothing runs in the background.
 * Symbolic links are copied as the files they point to; sockets, FIFOs and
   device files are skipped with a warning.
 * Ownership is kept only when resh runs as root; otherwise copies belong

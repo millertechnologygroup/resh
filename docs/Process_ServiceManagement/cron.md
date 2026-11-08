@@ -182,7 +182,7 @@ resh cron://<label>.add schedule=<expr> command=<cmd>
   [env=<KEY=VAL,...>] [env_<KEY>=<value>]
 ```
 
-* `backend` defaults to `auto`. With `auto`, **the options choose the backend**: cron-only options (`scope`, `user`, `cron_file`) select cron, and systemd-only options (`unit_name`, `unit_scope`, `persistent`, `accuracy_sec`, `random_delay_sec`, `service_user`, `service_working_dir`, `env`, `env_<KEY>`) select systemd. Options of both kinds together are refused (exit 2, `cron.add_invalid_argument`, the message naming both). With neither kind, `auto` uses **systemd whenever `systemctl --version` runs**, and cron otherwise; pass `backend=cron` to get a crontab line on a systemd host. A requested backend whose tool is missing gives `cron.add_backend_unavailable` (exit 1).
+* `backend` defaults to `auto`. With `auto`, **the options choose the backend**: cron-only options (`scope`, `user`, `cron_file`) select cron, and systemd-only options (`unit_name`, `unit_scope`, `persistent`, `accuracy_sec`, `random_delay_sec`, `service_user`, `service_working_dir`, `env`, `env_<KEY>`) select systemd. Options of both kinds together are refused (exit 2, `cron.add_invalid_argument`, the message naming both). With neither kind, `auto` uses **systemd when it is the running init system** (`/run/systemd/system` exists and `systemctl --version` runs; a `systemctl` binary alone, as in many containers, does not count), and cron otherwise; pass `backend=cron` to get a crontab line on a systemd host. A requested backend whose tool is missing gives `cron.add_backend_unavailable` (exit 1).
 * **Options of the other backend are refused** (exit 2, `cron.add_invalid_argument`, `field` naming the option), so nothing passed is silently ignored: the cron backend refuses `unit_name`, `unit_scope`, `persistent`, `accuracy_sec`, `random_delay_sec`, `service_user`, `service_working_dir`, `env` and `env_<KEY>`; the systemd backend refuses `scope`, `user` and `cron_file`. Before this release they were ignored.
 * Cron backend: `scope=current` (default) adds to the current user's crontab, `scope=user` to the crontab of `user=` (default: the current user), both through `crontab`; `scope=system` appends to `/etc/crontab` or `cron_file=` with a user column (`user=`, default `root`). `user` is refused with `scope=current`, and `cron_file` with any scope but `system`. `id` and `description` are written as a comment line above the job: `# job-id=<id> description=<text>`. `crontab` is run without `-u` for the user running resh, because cronie refuses `-u` to anyone but root.
 * A crontab or cron file that exists but cannot be read is never replaced: `add` fails (`cron.add_error`, exit 1). A user without a crontab starts with an empty one.
@@ -452,7 +452,7 @@ Linux only. Nothing was built or tested on macOS, BSD or Windows.
 
 * Use `dry_run` first for every `add`, `rm`, `enable` and `disable`.
 * Give jobs an `id` so they can be selected exactly later.
-* Pass `backend=cron` or `backend=systemd` explicitly; `auto` picks systemd whenever `systemctl` exists.
+* Pass `backend=cron` or `backend=systemd` explicitly; `auto` picks systemd whenever systemd is the running init system.
 * Narrow `scope` and `backend` for `rm`, `enable` and `disable` (the defaults are `all` and `both`).
 * Prefer `disable` over `rm` for temporary changes.
 

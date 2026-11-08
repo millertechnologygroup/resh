@@ -20,7 +20,7 @@ Where:
 * `<verb>` is one of `create`, `list`, `restore`, `verify`, `prune`, `schedule`. Any other verb fails with `backup.unknown_verb` (exit 2) and a "did you mean" hint.
 * `key=value` words are the verb's arguments. The form `'backup://db.list(backend=restic)'` (quoted for the shell) is also accepted.
 
-The profile is only used in the reported schedule (the backup command, the cron job label and `definition_path`). Everything else about the repository comes from the arguments.
+The profile is only used by `schedule` (the installed backup command and the cron job id `resh-backup-<profile>`). Everything else about the repository comes from the arguments.
 
 ---
 

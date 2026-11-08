@@ -153,7 +153,7 @@ Every failure printed by the handle carries one of these codes, in the project-w
 
 `dry_run=true` is refused (exit 2) by resh before the handle runs, with a message saying the verb does not support dry_run.
 
-**Change note (breaking):** earlier versions printed `Error: <reason>` with no code (for example `Error: not found`, `Error: invalid json`). Scripts that matched those lines must match the `[config.<code>]` prefix instead; the exit codes are unchanged.
+**Change note (breaking):** earlier versions printed `Error: <reason>` with no code (for example `Error: not found`, `Error: invalid json`). Scripts that matched those lines must match the `[config.<code>]` prefix instead. Exit codes also changed to the shared 0/1/2/124 convention: I/O errors (were 3) and a corrupt stored value (was 2) now exit 1; usage errors such as `set` without `value` or an empty key (were 1) now exit 2.
 
 ---
 
