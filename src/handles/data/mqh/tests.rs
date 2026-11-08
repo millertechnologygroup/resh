@@ -802,9 +802,18 @@ fn get_wait_times_out_with_124_and_creates_the_queue() {
     let e = env();
     let h = e.q("none");
     let t = Instant::now();
-    call(&h, "get", &[("wait", "true"), ("timeout_ms", "150")])
-        .fails(124, "mq.timeout")
-        .says("no message arrived");
+    let r = call(&h, "get", &[("wait", "true"), ("timeout_ms", "150")]);
+    r.fails(124, "mq.timeout");
+    // Usually the wait for a message runs out. Under heavy load the deadline
+    // can instead pass while taking the queue lock: another test thread's
+    // fork briefly shares the lock's descriptor until its exec. Both are the
+    // same timeout (exit 124, mq.timeout, nothing taken).
+    assert!(
+        r.reason().contains("no message arrived") || r.reason().contains("waiting for the lock"),
+        "{}",
+        r.reason()
+    );
+    assert!(r.reason().contains("nothing"), "{}", r.reason());
     assert!(t.elapsed() >= Duration::from_millis(150));
     assert!(e.qdir("none").is_dir());
     // wait=false keeps the old behaviour.
