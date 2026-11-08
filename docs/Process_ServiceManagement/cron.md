@@ -359,7 +359,7 @@ stderr: `Error: [cron.add_invalid_schedule] Invalid cron schedule '0 0 * * 8': .
 
 | Code | Exit | When |
 | ---- | ---- | ---- |
-| `cron.invalid_argument` | 2 | Unknown verb, an argument that is not `key=value`, or a malformed `dry_run` (the last two are reported by resh before the handle runs, without JSON) |
+| `cron.invalid_argument` | 2 | Unknown verb (and, for an unknown verb, an argument that is not `key=value` or a malformed `dry_run`) |
 | `cron.list_invalid_argument` | 2 | A `list` argument is unknown or invalid (`field` names it) |
 | `cron.add_invalid_argument` | 2 | An `add` argument is unknown or invalid, belongs to the other backend, or options of both backends are given with `backend=auto` |
 | `cron.add_missing_schedule` | 2 | `add` without `schedule` |
@@ -376,6 +376,8 @@ stderr: `Error: [cron.add_invalid_schedule] Invalid cron schedule '0 0 * * 8': .
 | `cron.rm_error`, `cron.enable_error`, `cron.disable_error` | 1 | A crontab that was named could not be read, or a change could not be made (partial failure: the response lists what was done) |
 | `cron.failed` | 1 | An unexpected handle error reported by resh (such as standard output closed) |
 | `cron.timeout` | 124 | `timeout_ms` passed; the running tool was stopped and the outcome is unknown |
+
+An argument that is not `key=value`, a misspelled `dry_run` key, a malformed `dry_run` value and `dry_run=true` on `list` are refused by resh before the handle runs, without JSON, with the verb's own code (`cron.list_invalid_argument`, `cron.add_invalid_argument`, ...).
 
 ---
 

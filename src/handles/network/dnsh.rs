@@ -1782,6 +1782,8 @@ impl DnsTraceResponse {
 }
 
 // DNS Error codes
+/// A verb the handle does not have (exit 2).
+pub const DNS_UNKNOWN_VERB: &str = "dns.unknown_verb";
 pub const DNS_LOOKUP_INVALID_NAME: &str = "dns.lookup_invalid_name";
 pub const DNS_LOOKUP_INVALID_TYPE: &str = "dns.lookup_invalid_type";
 pub const DNS_LOOKUP_INVALID_SERVER: &str = "dns.lookup_invalid_server";
@@ -2093,10 +2095,13 @@ impl Handle for DnsHandle {
             "trace" => self.verb_trace(args, io),
             "zone.fetch" => self.verb_zone_fetch(args, io),
             "zone.update" => self.verb_zone_update(args, io),
-            _ => bail!(
-                "unknown verb for dns://: {} (available: lookup, resolve, trace, zone.fetch, zone.update, --help, -h, help)",
-                verb
-            ),
+            _ => Ok(Status::coded(
+                crate::core::status::exit::USAGE,
+                DNS_UNKNOWN_VERB,
+                format!(
+                    "unknown verb for dns://: {verb} (verbs: lookup, resolve, trace, zone.fetch, zone.update); nothing was done"
+                ),
+            )),
         }
     }
 }

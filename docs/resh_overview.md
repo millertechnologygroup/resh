@@ -129,12 +129,24 @@ Every failure prints one line on stderr in the same format, with an error code t
 Error: [git.repository_not_found] repository not found: /srv/project
 ```
 
-Verbs that print a JSON result on failure carry the same code and message in it as `"error": {"code": "<handle>.<code>", "message": "..."}` (some handles add fields such as `details`). Errors raised before a handle runs use `resh.invalid_stage` (the stage cannot be parsed), `resh.unknown_handle`, `<handle>.invalid_target` and `<handle>.invalid_argument` (all exit 2). Each handle's page lists its codes and which exit code each one has.
+Verbs that print a JSON result on failure carry the same code and message in it as `"error": {"code": "<handle>.<code>", "message": "..."}` (some handles add fields such as `details`). Each handle's page lists its codes and which exit code each one has.
+
+resh itself reports a few codes for every handle (`https://` stages use the
+`http.` codes), before or around the handle's own work:
+
+| Code | Exit | When |
+| ---- | ---- | ---- |
+| `resh.invalid_stage` | 2 | The stage cannot be parsed. |
+| `resh.unknown_handle` | 2 | No handle has that scheme. |
+| `<handle>.invalid_target` | 2 | The handle cannot accept the target (for example a malformed URL). |
+| the handle's argument code | 2 | A word that is not `key=value`, a misspelled `dry_run` key, a malformed `dry_run` value, or `dry_run=true` on a verb without a dry-run mode (see 3.4). The code is the one the handle uses for an argument the verb does not take (for example `file.invalid_arg`, `cron.list_invalid_argument`, `http.unknown_argument`); `<handle>.invalid_argument` for a verb the handle does not have. |
+| `<handle>.failed` | 1 | An unexpected error the handle did not classify (for example standard output was closed). |
+| `<handle>.timeout` | 124 | An external tool reached its deadline and was stopped, or could not be stopped: `Error: [<handle>.timeout] outcome unknown: <tool> ...`. The tool may already have made changes, so check the resource before retrying. |
 
 ### 3.4 Dry Run
 
 * A bare `dry_run` word means `dry_run=true`. Any other bare word (for example `dry-run` or `dryrun`) and any misspelled key (`dry-run=true`, `DRY_RUN=true`, `dryRun=1`) is an error (exit 2) and nothing runs.
-* **A dry-run request never runs a verb that has no dry-run mode.** If a verb's usage (`resh <handle> <verb> --help`) does not list `dry_run`, then `dry_run=true` (or a bare `dry_run`, or a malformed value) is refused before the handle runs: `Error: <handle> <verb> does not support dry_run; nothing was done`, exit 2. `dry_run=false` is accepted everywhere.
+* **A dry-run request never runs a verb that has no dry-run mode.** If a verb's usage (`resh <handle> <verb> --help`) does not list `dry_run`, then `dry_run=true` (or a bare `dry_run`, or a malformed value) is refused before the handle runs: `Error: [<code>] <handle> <verb> does not support dry_run; nothing was done`, exit 2, with the code the handle uses for an argument the verb does not take. `dry_run=false` is accepted everywhere.
 * `dry_run`, like every boolean, accepts `true/false/1/0/yes/no/on/off` (any case). Any other value (such as `dry_run=maybe` or `dry_run=ture`) is an error and nothing runs.
 * **Not every verb has a dry run.** Examples:
   * `svc` has no dry run; `dry_run=true` is refused and nothing runs.

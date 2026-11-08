@@ -294,6 +294,8 @@ pub const MAIL_SEND_MISSING_FROM: &str = "mail.send_missing_from";
 pub const MAIL_SEND_INVALID_HEADER: &str = "mail.send_invalid_header";
 pub const MAIL_SEND_TIMEOUT: &str = "mail.send_timeout";
 pub const MAIL_TEST_TIMEOUT: &str = "mail.test_timeout";
+/// A verb the handle does not have (exit 2).
+pub const MAIL_UNKNOWN_VERB: &str = "mail.unknown_verb";
 /// Arguments that are unknown, malformed or conflicting (exit 2).
 pub const MAIL_INVALID_ARGUMENT: &str = "mail.invalid_argument";
 
@@ -502,6 +504,7 @@ fn did_you_mean(bad: &str, allowed: &[&str]) -> String {
 /// for every other failure.
 pub fn exit_code_for(code: &str) -> i32 {
     const USAGE: &[&str] = &[
+        MAIL_UNKNOWN_VERB,
         MAIL_INVALID_ARGUMENT,
         MAIL_SEND_MISSING_RECIPIENTS,
         MAIL_SEND_MISSING_SUBJECT,
@@ -4491,7 +4494,14 @@ impl Handle for MailHandle {
             "send_template" => self.verb_send_template(args, io),
             "test" => self.verb_test(args, io),
             "config" => self.verb_config(args, io),
-            _ => bail!("unknown verb for mail://: {}", verb),
+            _ => Ok(Status::coded(
+                crate::core::status::exit::USAGE,
+                MAIL_UNKNOWN_VERB,
+                format!(
+                    "unknown verb for mail://: {verb} (verbs: {}); nothing was done",
+                    self.verbs().join(", ")
+                ),
+            )),
         }
     }
 }

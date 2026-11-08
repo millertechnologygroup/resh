@@ -2588,6 +2588,8 @@ pub const ARCHIVE_REMOVE_INTERNAL_ERROR: &str = "archive.remove_internal_error";
 /// `error` object, or on a `test` entry). Each one is listed in
 /// docs/Filesystem_Storage/archive.md.
 pub const ERROR_CODES: &[&str] = &[
+    // any verb
+    "archive.unknown_verb",
     // create
     "archive.create_invalid_argument",
     "archive.create_internal_error",
@@ -2983,7 +2985,14 @@ impl Handle for ArchiveHandle {
                 |o| o.format_output.clone(),
                 |o, _| remove_archive(o),
             ),
-            _ => bail!("unknown verb for archive://: {}", verb),
+            _ => Ok(Status::coded(
+                crate::core::status::exit::USAGE,
+                "archive.unknown_verb",
+                format!(
+                    "unknown verb for archive://: {verb} (verbs: {}); nothing was done",
+                    self.verbs().join(", ")
+                ),
+            )),
         }
     }
 }
@@ -9212,6 +9221,7 @@ mod error_code_tests {
             let want = if code.ends_with("_timeout") {
                 124
             } else if code.contains("_invalid_")
+                || *code == "archive.unknown_verb"
                 || code.ends_with("_7z_unsupported")
                 || code.ends_with("_unsupported_for_raw")
             {

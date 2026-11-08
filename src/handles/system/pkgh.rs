@@ -1,5 +1,5 @@
 use crate::core::process::AsyncBoundedOutput as _;
-use anyhow::{Result, bail};
+use anyhow::Result;
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -609,9 +609,6 @@ pub enum PkgError {
     UpgradeIndexFailed(String),
     #[error("Upgrade check failed: {0}")]
     UpgradeCheckFailed(String),
-    #[error("Upgrade permission denied: {0}")]
-    #[allow(dead_code)]
-    UpgradePermissionDenied(String),
     #[error("Upgrade timeout")]
     UpgradeTimeout,
     #[error("Upgrade failed: {0}")]
@@ -623,9 +620,6 @@ pub enum PkgError {
     InfoTimeout,
     #[error("Info query failed: {0}")]
     InfoQueryFailed(String),
-    #[error("Info partial failure: {0}")]
-    #[allow(dead_code)]
-    InfoPartialFailure(String),
     // Search errors
     #[error("Invalid search configuration: {0}")]
     InvalidSearchConfig(String),
@@ -647,9 +641,6 @@ pub enum PkgError {
     SnapshotTimeout,
     #[error("Snapshot failed: {0}")]
     SnapshotFailed(String),
-    #[error("Snapshot scope unsupported: {0}")]
-    #[allow(dead_code)]
-    SnapshotScopeUnsupported(String),
     // Restore errors
     #[error("Invalid restore configuration: {0}")]
     InvalidRestoreConfig(String),
@@ -663,9 +654,6 @@ pub enum PkgError {
     RestoreTimeout,
     #[error("Restore apply failed: {0}")]
     RestoreApplyFailed(String),
-    #[error("Repository not available: {0}")]
-    #[allow(dead_code)]
-    RestoreRepoNotAvailable(String),
     #[error("Repository mismatch: {0}")]
     RestoreRepoMismatch(String),
     /// A request that this manager cannot honor; refused before anything ran.
@@ -711,8 +699,7 @@ impl PkgError {
             | PkgError::RemoveNotInstalled(_) => (FAILED, "pkg.not_found"),
             PkgError::InstallPermissionDenied(_)
             | PkgError::RemovePermissionDenied(_)
-            | PkgError::UpdatePermissionDenied(_)
-            | PkgError::UpgradePermissionDenied(_) => (FAILED, "pkg.permission_denied"),
+            | PkgError::UpdatePermissionDenied(_) => (FAILED, "pkg.permission_denied"),
             PkgError::InstallDependencyFailure(_) | PkgError::RemoveDependencyFailure(_) => {
                 (FAILED, "pkg.dependency_failure")
             }
@@ -738,13 +725,10 @@ impl PkgError {
             | PkgError::UpgradeCheckFailed(_)
             | PkgError::UpgradeFailed(_)
             | PkgError::InfoQueryFailed(_)
-            | PkgError::InfoPartialFailure(_)
             | PkgError::SearchFailed(_)
             | PkgError::ListInstalledFailed(_)
             | PkgError::SnapshotFailed(_)
-            | PkgError::SnapshotScopeUnsupported(_)
-            | PkgError::RestoreApplyFailed(_)
-            | PkgError::RestoreRepoNotAvailable(_) => (FAILED, "pkg.command_failed"),
+            | PkgError::RestoreApplyFailed(_) => (FAILED, "pkg.command_failed"),
         }
     }
 }
@@ -1756,13 +1740,7 @@ pub struct SearchResult {
     /// The source URL of that repository, where the manager reports one.
     pub repository_url: Option<String>,
     pub homepage: Option<String>,
-    #[serde(default = "default_score")]
     pub score: f64,
-}
-
-#[allow(dead_code)]
-fn default_score() -> f64 {
-    1.0
 }
 
 /// Search results container
@@ -2331,7 +2309,14 @@ impl Handle for PkgHandle {
         }
 
         if !PKG_VERBS.contains(&verb) {
-            bail!("unknown verb for pkg://: {}", verb);
+            return Ok(Status::coded(
+                crate::core::status::exit::USAGE,
+                "pkg.unknown_verb",
+                format!(
+                    "unknown verb for pkg://: {verb} (verbs: {}); nothing was done",
+                    PKG_VERBS.join(", ")
+                ),
+            ));
         }
         self.call_verb(verb, args, io)
     }

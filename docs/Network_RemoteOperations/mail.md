@@ -351,6 +351,7 @@ line (no JSON).
 
 | Code | Exit | When |
 | ---- | ---- | ---- |
+| `mail.unknown_verb` | 2 | A verb the handle does not have. |
 | `mail.invalid_argument` | 2 | Unknown argument, malformed value (including an unreadable `ca_file`), conflicting options, `dry_run` on a verb without one. |
 | `mail.send_missing_recipients` | 2 | No `to`/`cc`/`bcc` (send), no `to` (send_template). |
 | `mail.send_missing_subject` | 2 | Blank subject. |

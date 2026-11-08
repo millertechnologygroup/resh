@@ -49,9 +49,10 @@ pub fn dispatch_stage(
         .unwrap_or_default()
         .to_ascii_lowercase();
     let known = reg.list_schemes().iter().any(|s| *s == scheme);
-    let invalid_argument = format!("{scheme}.invalid_argument");
+    let prefix = status::error_prefix(&scheme);
 
     // Add CLI arguments to parsed arguments
+    let mut bare_word = None;
     for arg in cli_args {
         if let Some((key, value)) = arg.split_once('=') {
             // The value is kept exactly as the shell passed it: leading or
@@ -69,11 +70,11 @@ pub fn dispatch_stage(
             // Any other bare word used to be dropped silently, so a
             // misspelled `dry-run` ran the real change.
             let msg = format!("argument {arg:?} is not key=value; nothing was done");
-            return Ok(if known {
-                Status::coded(exit::USAGE, &invalid_argument, msg)
-            } else {
-                Status::coded(exit::USAGE, "resh.invalid_argument", msg)
-            });
+            if !known {
+                return Ok(Status::coded(exit::USAGE, "resh.invalid_argument", msg));
+            }
+            // Refused below, with the handle's code, once the handle is known.
+            bare_word.get_or_insert(msg);
         }
     }
 
@@ -95,13 +96,19 @@ pub fn dispatch_stage(
         Err(e) => {
             return Ok(Status::coded(
                 exit::USAGE,
-                &format!("{scheme}.invalid_target"),
+                &format!("{prefix}.invalid_target"),
                 format!("{e:#}"),
             ));
         }
     };
-    if let Some(refusal) = dry_run_refusal(h.as_ref(), &parsed.target, &parsed.verb, &parsed.args) {
-        return Ok(Status::coded(exit::USAGE, &invalid_argument, refusal));
+    let refusal = match bare_word {
+        Some(msg) => Some((status::ArgProblem::Unsupported, msg)),
+        None => dry_run_refusal(h.as_ref(), &parsed.target, &parsed.verb, &parsed.args),
+    };
+    if let Some((problem, msg)) = refusal {
+        let verb_known = h.verbs().contains(&parsed.verb.as_str());
+        let code = status::argument_error_code(&scheme, &parsed.verb, verb_known, problem);
+        return Ok(Status::coded(exit::USAGE, &code, msg));
     }
     match h.call(&parsed.verb, &parsed.args, &mut io) {
         Ok(status) => Ok(status),
@@ -111,7 +118,7 @@ pub fn dispatch_stage(
         // is written here because the handle may already have written
         // warnings, and then the caller would not print the reason.
         Err(e) => {
-            let code = format!("{scheme}.failed");
+            let code = format!("{prefix}.failed");
             let msg = format!("{e:#}");
             let _ = writeln!(io.stderr, "{}", status::error_line(&code, &msg));
             Ok(Status::coded(exit::FAILED, &code, msg))
@@ -128,12 +135,19 @@ pub fn dispatch_stage(
 ///   otherwise ignore it and make the change. A verb has a dry-run mode when
 ///   its help usage lists `dry_run` (`help_coverage` keeps every verb's
 ///   usage present, and the handles were checked against it).
-fn dry_run_refusal(h: &dyn Handle, target: &str, verb: &str, args: &Args) -> Option<String> {
+fn dry_run_refusal(
+    h: &dyn Handle,
+    target: &str,
+    verb: &str,
+    args: &Args,
+) -> Option<(status::ArgProblem, String)> {
+    use status::ArgProblem::{Invalid, Unsupported};
     if let Some(k) = args.keys().find(|k| {
         k.as_str() != "dry_run" && k.to_ascii_lowercase().replace(['-', '_'], "") == "dryrun"
     }) {
-        return Some(format!(
-            "unrecognized argument {k:?}: use dry_run; nothing was done"
+        return Some((
+            Unsupported,
+            format!("unrecognized argument {k:?} (did you mean `dry_run`?); nothing was done"),
         ));
     }
     if !args.contains_key("dry_run")
@@ -144,12 +158,15 @@ fn dry_run_refusal(h: &dyn Handle, target: &str, verb: &str, args: &Args) -> Opt
     }
     let scheme = target.split("://").next().unwrap_or(target);
     match lenient::dry_run(args) {
-        Err(e) => Some(format!("{e}; nothing was done")),
+        Err(e) => Some((Invalid, format!("{e}; nothing was done"))),
         Ok(false) => None,
         // Handles configured by an `input=` JSON document (pkg) read
         // dry_run only from inside it and would ignore this one.
-        Ok(true) if args.contains_key("input") => Some(format!(
-            "{scheme} {verb} reads dry_run from its input JSON; put \"dry_run\":true inside input=; nothing was done"
+        Ok(true) if args.contains_key("input") => Some((
+            Unsupported,
+            format!(
+                "{scheme} {verb} reads dry_run from its input JSON; put \"dry_run\":true inside input=; nothing was done"
+            ),
         )),
         Ok(true) => {
             let detail = h
@@ -159,8 +176,9 @@ fn dry_run_refusal(h: &dyn Handle, target: &str, verb: &str, args: &Args) -> Opt
             // Fail closed: only a verb whose usage lists dry_run gets it.
             match detail {
                 Some(d) if d.usage.contains("dry_run") => None,
-                _ => Some(format!(
-                    "{scheme} {verb} does not support dry_run; nothing was done"
+                _ => Some((
+                    Unsupported,
+                    format!("{scheme} {verb} does not support dry_run; nothing was done"),
                 )),
             }
         }

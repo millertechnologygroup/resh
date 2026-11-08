@@ -324,6 +324,7 @@ fn check_env(env: &Value) -> Result<(), String> {
 /// documents each one (a test checks it).
 #[cfg(test)]
 pub(crate) const ERROR_CODES: &[(&str, i32)] = &[
+    ("pkg.unknown_verb", 2),
     ("pkg.invalid_argument", 2),
     ("pkg.unsupported_option", 2),
     ("pkg.invalid_lockfile", 2),

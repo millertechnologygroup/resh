@@ -289,7 +289,7 @@ fn main() -> Result<()> {
         eprintln!(
             "{}",
             core::status::error_line(
-                &format!("{scheme}.timeout"),
+                &format!("{}.timeout", core::status::error_prefix(&scheme)),
                 &format!("outcome unknown: {} {state}", lost.tool)
             )
         );

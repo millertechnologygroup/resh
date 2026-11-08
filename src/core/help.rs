@@ -113,7 +113,9 @@ impl HelpError {
     pub fn code(&self) -> String {
         match self {
             HelpError::UnknownHandle { .. } => "resh.unknown_handle".to_string(),
-            HelpError::UnknownVerb { handle, .. } => format!("{handle}.unknown_verb"),
+            HelpError::UnknownVerb { handle, .. } => {
+                format!("{}.unknown_verb", super::status::error_prefix(handle))
+            }
             HelpError::NoHelp { .. } => "resh.no_help".to_string(),
         }
     }

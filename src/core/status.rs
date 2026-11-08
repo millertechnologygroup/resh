@@ -76,6 +76,50 @@ pub fn error_json(code: &str, message: &str) -> Value {
     serde_json::json!({ "code": code, "message": message })
 }
 
+/// The handle name that prefixes error codes for a stage on `scheme`. A
+/// scheme served by another handle uses that handle's codes: `https://` is
+/// the http handle, documented with `http.` codes.
+pub fn error_prefix(scheme: &str) -> &str {
+    match scheme {
+        "https" => "http",
+        s => s,
+    }
+}
+
+/// What is wrong with an argument resh refuses before the handle runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgProblem {
+    /// The verb does not take it: `dry_run=true` without a dry-run mode, a
+    /// misspelled `dry_run` key, a bare word that is not `key=value`.
+    Unsupported,
+    /// A malformed value, such as `dry_run=maybe`.
+    Invalid,
+}
+
+/// The error code `handle` documents for `problem` with an argument of
+/// `verb`, so that the refusals resh makes before the handle runs (the
+/// `dry_run` guard and bare words) carry the same code as the handle's own
+/// refusal of the same argument. `verb_known` is false for a verb the handle
+/// does not have; then the generic `<handle>.invalid_argument` is used.
+pub fn argument_error_code(
+    handle: &str,
+    verb: &str,
+    verb_known: bool,
+    problem: ArgProblem,
+) -> String {
+    let h = error_prefix(handle);
+    match (h, verb_known, problem) {
+        // Per-verb codes.
+        ("archive" | "cron", true, _) => format!("{h}.{verb}_invalid_argument"),
+        ("git", true, _) if verb == "sync" => "git.sync_invalid_config".to_string(),
+        ("git", true, _) => format!("git.invalid_{verb}_config"),
+        // Handles with their own spelling of the code.
+        ("file", _, _) => "file.invalid_arg".to_string(),
+        ("dns" | "http", _, ArgProblem::Unsupported) => format!("{h}.unknown_argument"),
+        _ => format!("{h}.invalid_argument"),
+    }
+}
+
 /// True if `code` has the required form: `<handle>.<name>`, both parts
 /// lowercase ASCII letters, digits and underscores, starting with a letter.
 pub fn is_valid_error_code(code: &str) -> bool {
@@ -112,6 +156,13 @@ mod error_format_tests {
             error_json("file.not_found", "x"),
             serde_json::json!({"code": "file.not_found", "message": "x"})
         );
+    }
+
+    #[test]
+    fn https_stages_use_the_http_codes() {
+        assert_eq!(error_prefix("https"), "http");
+        assert_eq!(error_prefix("http"), "http");
+        assert_eq!(error_prefix("file"), "file");
     }
 
     #[test]

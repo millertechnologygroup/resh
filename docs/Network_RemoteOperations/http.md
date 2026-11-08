@@ -96,9 +96,10 @@ Default `Content-Type` (when neither `content_type` nor a `Content-Type` in
 the body is not empty; `json` sends `application/json` when `body` is not
 empty; `post` and `patch` send none.
 
-Any other argument, including `dry_run`, is refused with exit 2 and a
-"did you mean" hint for a likely typo, before anything is sent. No verb has a
-dry-run mode.
+Any other argument, including `dry_run`, is refused with exit 2 and
+`http.unknown_argument` (a malformed `dry_run` value: `http.invalid_argument`),
+with a "did you mean" hint for a likely typo, before anything is sent. No
+verb has a dry-run mode.
 
 ### Proxies
 

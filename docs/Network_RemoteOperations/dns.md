@@ -358,6 +358,7 @@ Codes for any verb:
 
 | Code | Meaning |
 | ---- | ------- |
+| `dns.unknown_verb` | A verb the handle does not have (exit 2). |
 | `dns.unknown_argument` | An argument the verb does not take (exit 2). |
 | `dns.invalid_argument` | A bad boolean, `format`, `max_cname_depth` or `serial` value, `validate_reverse` without `mode=reverse`, or `serial` with AXFR (exit 2). |
 

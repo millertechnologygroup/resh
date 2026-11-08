@@ -273,6 +273,7 @@ Errors are printed to standard error as `Error: [pkg.<code>] <message>`. Exit st
 
 | Code | Exit | Meaning |
 | ---- | ---- | ------- |
+| `pkg.unknown_verb` | 2 | A verb the handle does not have. |
 | `pkg.invalid_argument` | 2 | Missing or malformed `input`, an argument other than `input`, an unknown key, a value of the wrong type or outside its set, an invalid package name, version, arch, query, pattern or `env`, `timeout_ms` of 0, contradictory options (such as `only_if_missing` with `reinstall`), a package `source` |
 | `pkg.unsupported_option` | 2 | An option the manager cannot honor (see "Options by manager"), `security_only` where it is not supported, a restore `mode: exact` that needs a version pacman or brew cannot install |
 | `pkg.invalid_lockfile` | 2 | A restore lockfile that cannot be read, has an unsupported `lockfile_version`, an invalid package entry or an unknown manager |
