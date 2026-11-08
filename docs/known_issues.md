@@ -14,7 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (pkg, cert, backup, plugin) still print their own formats until they are.
+  `<handle>.invalid_argument`. Handles not yet aligned (pkg, backup, plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
 - Stage output is streamed as it is written (`--json-pretty` still buffers).
@@ -366,6 +366,26 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   `max_process_classes` work; `env.list include_raw` is masked; no
   subprocesses are run (`kernel.machine` is the hardware name); `disk` lists
   `overlay`, decodes mount escapes and no longer panics on non-ASCII names.
+
+### cert
+
+- Every verb refuses unknown arguments, invalid values and options of another
+  mode (exit 2, `cert.invalid_argument`); exit codes are 0/1/2/124 with
+  `[cert.<code>]` errors (verify failures exit 1, not 7). `timeout_ms` is
+  enforced on generate, csr.create, sign and renew (default 300 s; at the
+  deadline nothing is written) and refused elsewhere.
+- Encrypted private keys work: PKCS#8 `ENCRYPTED PRIVATE KEY` (PBES2 with
+  PBKDF2 and AES-CBC) is read and written. `key_kdf=argon2id` is refused.
+  Legacy `Proc-Type: 4,ENCRYPTED` keys are refused with a conversion hint.
+- `verify` validates the chain with rustls-webpki and accepts `ca_file=`;
+  `chain.info` builds every path and reports `trusted` only when webpki
+  validates it.
+- `csr.create` writes key usage and extended key usage into the CSR and
+  writes PKCS#1/SEC1 keys correctly (SEC1 with the named curve).
+- `info` fingerprints are now digests of the whole certificate (they were
+  wrong before); an unrecognised DER file is an error.
+- No cert output is written through a symlink; certificates, CSRs and
+  signatures are 0644, keys 0600.
 
 ### http and https
 
@@ -810,12 +830,8 @@ These were found during the fixes, or are Medium items that were not fixed:
   `timeout_ms` is enforced the same way. (Git rejected `timeout_ms` at that
   stage; it is now enforced, see Unreleased: a stalled SSH server or a long
   local libgit2 call is reported as outcome unknown, exit 124.)
-- **cert:**
-  - `chain.info` is simplified.
-  - Encrypted private keys are not supported. CMS signatures (`sign
-    signature_format=cms_detached|cms_attached`) were added after
-    v1.0.6-beta.
-  - `csr.create` cannot put key usage into a CSR (an rcgen limitation).
+- **cert:** revocation (CRL/OCSP) is not checked; webpki does not accept a
+  CA certificate as the end-entity of `verify`.
 - **backup `schedule`:** installs nothing.
 - **Pre-existing test failures (15):** all fixed. `archiveh::test_path_sanitization`
   in Stage 1; the 11 `userh` and 3 `gith` tests in Stage 3 (details in
@@ -878,6 +894,8 @@ These were found during the fixes, or are Medium items that were not fixed:
 - **Fix:** fail with "not implemented" until SFTP transfer exists.
 
 ### C5. `cert verify` reports success for checks it does not perform
+
+**Status: fixed (Unreleased).**
 
 - **Where:** `src/handles/security/certh.rs`.
   - The chain check (`:4147`) passes any certificate that is not
@@ -1026,6 +1044,8 @@ typed structs:
 
 ### H9. `cert renew` and `cert csr.sign` produce invalid certificates
 
+**Status: fixed (Unreleased).**
+
 - **renew** (`certh.rs:7350-7394`):
   - The `signer` parameter is never read; renew always self-signs with a
     fresh key.
@@ -1114,15 +1134,8 @@ typed structs:
 
 - **event.** Hook log files and mq queues filled by the hooks are never
   trimmed (by design; read or delete them).
-- **cert.**
-  - `info` always reports a public key algorithm of "Unknown", empty
-    extensions, and `is_ca: false`.
-  - `info` rejects CSRs and parses only the first certificate in a bundle.
-  - `sha512` fingerprints are advertised but rejected (`certh.rs:2559, 3944`).
-  - `generate mode=leaf_cert` is not implemented (`:3487`).
-  - P-521 and secp256k1 keys are accepted but fail to generate (`:2966`).
-  - `mode=csr` writes the CSR only if `output` contains `"write_csr":true`.
-  - `DEBUG` `eprintln!` lines are left in key generation (`:3150`).
+- **cert.** All items below were fixed after v1.0.6-beta (P-521 and secp256k1
+  are refused up front, exit 2).
 - **git.**
   - `known_hosts_path` enforces strict SSH host-key checking on the URL
     libgit2 really connects to (after insteadOf/pushInsteadOf), steering the
@@ -1175,7 +1188,8 @@ constants, or generating them from the new metadata.
 - **cert:** the 9 `create_csr` tests in `certh.rs` all write a shared
   `test.csr` in the crate root and never clean it up (`:9757, 6494`). Once
   the file exists, later tests fail with "already exists". It was deleted
-  manually on 2026-10-16, but the next test run recreates it.
+  manually on 2026-10-16, but the next test run recreates it. Fixed: those
+  tests were replaced by tests in temporary directories.
 - **db:** the sqlite tests share the global `CONNECTION_REGISTRY` and
   `TRANSACTION_REGISTRY` and clear them (`dbh.rs:7320` and others), so they
   race under the parallel test runner.
