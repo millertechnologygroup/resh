@@ -185,8 +185,9 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   instead of a silent per-process in-memory bus.
 - Hooks are real and off by default: `log` appends each event as a JSON line
   to `<state>/resh/events/hooks/log/<topic>.log`, `fs` keeps the topic's
-  latest event in `hooks/fs/<topic>.json`, and `mq` puts the event data on
-  the mq queue named after the topic. A hook failure is a warning in the
+  latest event in `hooks/fs/<topic>.json`, and `mq` puts the whole stored
+  event (the same JSON line the log hook writes) on the mq queue named after
+  the topic. A hook failure is a warning in the
   emit result (`hooks: [{name, ok, warning}]`), never a failed emit. The
   `proc` hook was removed; old `_hooks.json` files migrate silently.
 
