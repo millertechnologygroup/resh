@@ -1,0 +1,24 @@
+Handle: svc
+Verb: wait
+Definition: Waits for a service to become active or inactive, with a timeout.
+
+Usage:
+  resh svc://<service-name>.wait
+    [state=active|inactive|running|stopped] [timeout_ms=<ms>]
+    [timeout=<ms>]
+
+Example:
+  resh svc://nginx.wait state=active timeout_ms=30000
+
+Example Output:
+  {
+    "active_state": "active",
+    "backend": "systemd",
+    "name": "nginx",
+    "reached": true,
+    "state": "active",
+    "timeout_ms": 30000
+  }
+
+  Shown with --json-pretty. timeout_ms defaults to 10000 (timeout is an
+  older name for it); running means active and stopped means inactive.

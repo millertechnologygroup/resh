@@ -1,0 +1,21 @@
+Handle: svc
+Verb: logs
+Definition: Displays recent log entries for a service.
+
+Usage:
+  resh svc://<service-name>.logs [lines=<n>] [since=<time>]
+    [until=<time>] [level=<priority>] [reverse=true|false]
+    [follow=true|false] [timeout_ms=<ms>]
+
+Example:
+  resh svc://nginx.logs lines=2 level=err
+
+Example Output:
+  2026-10-16T09:12:44+00:00 web01 nginx[1234]: open() failed (2: No such file)
+  2026-10-16T09:14:02+00:00 web01 nginx[1234]: upstream timed out (110)
+
+  Shown for a systemd host, where output comes from journalctl
+  --output=short-iso and lines defaults to 200. OpenRC hosts print the last
+  lines of /var/log/<service>.log or a similar file; since, until, and
+  level apply only to systemd. With follow=true, timeout_ms is how long to
+  follow (exit 0 when it ends).

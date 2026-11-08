@@ -1,0 +1,9 @@
+Handle: svc
+Verb: disable
+Definition: Prevents a service from starting automatically at boot.
+
+Usage:
+  resh svc://<service-name>.disable [timeout_ms=<ms>]
+
+Example:
+  resh svc://nginx.disable

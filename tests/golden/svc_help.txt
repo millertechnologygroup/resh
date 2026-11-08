@@ -10,9 +10,9 @@ Available Verbs:
   status       Reports the current state of a service, such as whether it is
                running and its main process ID, as a JSON object.
   is-enabled   Reports whether a service is configured to start at boot.
-  start        Starts a service.
-  stop         Stops a service, optionally waiting for it to become inactive.
-  restart      Stops and then starts a service.
+  start        Starts a service and waits for the start job to finish.
+  stop         Stops a service and waits for it to become inactive.
+  restart      Stops and then starts a service, waiting for the job to finish.
   reload       Reloads a service's configuration without stopping it.
   enable       Configures a service to start automatically at boot.
   disable      Prevents a service from starting automatically at boot.

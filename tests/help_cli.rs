@@ -281,8 +281,11 @@ fn unknown_handle_and_verb_errors() {
     );
 
     let (code, _, err) = run(&["svc://resh-help-test.invalidverb"]);
-    assert_eq!(code, 1);
-    assert!(err.contains("unknown verb for svc://: invalidverb"));
+    assert_eq!(code, 2);
+    assert!(
+        err.starts_with("Error: [svc.unknown_verb] unknown verb for svc: invalidverb"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -294,7 +297,7 @@ fn normal_status_execution_unchanged() {
     let (code, out, err) = run(&["svc://resh-help-test-nonexistent.status"]);
     assert_eq!(code, 1);
     assert!(
-        err.starts_with("Error: svc status resh-help-test-nonexistent"),
+        err.starts_with("Error: [svc.not_found] unit resh-help-test-nonexistent.service"),
         "{err}"
     );
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();

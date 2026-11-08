@@ -1,0 +1,9 @@
+Handle: svc
+Verb: unmask
+Definition: Removes a mask so a service can be started again (systemd only).
+
+Usage:
+  resh svc://<service-name>.unmask [timeout_ms=<ms>]
+
+Example:
+  resh svc://nginx.unmask

@@ -1,0 +1,27 @@
+Handle: svc
+Verb: stop
+Definition: Stops a service and waits for it to become inactive.
+
+Usage:
+  resh svc://<service-name>.stop [timeout_ms=<ms>] [timeout=<ms>]
+    [force=true|false]
+
+Example:
+  resh svc://nginx.stop timeout_ms=5000
+
+Example Output:
+  {
+    "action": "stop",
+    "backend": "systemd",
+    "final_state": "inactive",
+    "job_result": "done",
+    "name": "nginx.service",
+    "note": "stopped via StopUnit",
+    "previous_state": "active",
+    "reached_inactive": true,
+    "requested": true,
+    "timeout_ms": 5000
+  }
+
+  Shown for a systemd host with --json-pretty. timeout is an older name
+  for timeout_ms (default 120000).

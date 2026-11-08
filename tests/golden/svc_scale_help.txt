@@ -1,0 +1,23 @@
+Handle: svc
+Verb: scale
+Definition: Sets the number of running instances of a service.
+
+Usage:
+  resh svc://<service-name>.scale count=<n> [timeout_ms=<ms>]
+
+Example:
+  resh svc://nginx.scale count=1
+
+Example Output:
+  {
+    "backend": "systemd",
+    "desired_count": 1,
+    "effective_count": 1,
+    "name": "nginx.service",
+    "note": "non-template service scaled to 1",
+    "template": false
+  }
+
+  Shown for a non-template systemd unit with --json-pretty, where any
+  count of 1 or more means running. Template units such as worker@.service
+  start or stop numbered instances; OpenRC supports only 0 or 1.

@@ -1,0 +1,9 @@
+Handle: svc
+Verb: reload
+Definition: Reloads a service's configuration without stopping it.
+
+Usage:
+  resh svc://<service-name>.reload [timeout_ms=<ms>]
+
+Example:
+  resh svc://nginx.reload

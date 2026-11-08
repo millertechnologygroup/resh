@@ -1,0 +1,23 @@
+Handle: svc
+Verb: restart
+Definition: Stops and then starts a service, waiting for the job to finish.
+
+Usage:
+  resh svc://<service-name>.restart [timeout_ms=<ms>]
+
+Example:
+  resh svc://nginx.restart
+
+Example Output:
+  {
+    "action": "restart",
+    "active_state": "active",
+    "backend": "systemd",
+    "job_result": "done",
+    "name": "nginx.service",
+    "result": "success",
+    "sub_state": "running"
+  }
+
+  Shown for a systemd host with --json-pretty. OpenRC hosts report the
+  service name without the .service suffix.

@@ -61,19 +61,19 @@ resh svc://nginx.restart
 
 * `cron` `add`, `rm`, `enable` and `disable` support `dry_run` (true/false/1/0/yes/no/on/off, or a bare `dry_run` word; any other value is an error).
 * `svc` and the `proc` signal and nice verbs have **no dry run**; they act immediately. `proc` `limits.set` has `dry_run`.
-* Input checks done before any action: `proc` PIDs must be 1 to 2147483647 (or `self`), and every `proc` verb refuses unknown arguments and invalid values (exit 2, `proc.invalid_argument`); `svc` service names are rejected if they start with `-`, contain `.`/`..` path segments, whitespace, control characters or `:` (exit 2).
+* Input checks done before any action: `proc` PIDs must be 1 to 2147483647 (or `self`), and every `proc` verb refuses unknown arguments and invalid values (exit 2, `proc.invalid_argument`); `svc` service names are rejected if they are empty or longer than 256 bytes, start with `-` or `.`, or contain anything but letters, digits, `_`, `.`, `@`, `-` and `\` (exit 2, `svc.invalid_target`). `svc` also refuses unknown arguments and invalid values (exit 2, `svc.invalid_argument`).
 * `cron` does not reject newlines in job fields; see the limitations in [cron.md](cron.md).
 
 ### Timeouts
 
-* Only `svc` `stop` and `wait` have a timeout, given as `timeout=<milliseconds>`. A timeout that expires exits with code 124.
-* `cron` and `svc` do not read `timeout_ms` (it is ignored). Every `proc` verb returns at once and refuses `timeout_ms` (exit 2).
+* Every `svc` verb takes `timeout_ms=<milliseconds>` (per-verb defaults in [svc.md](svc.md)); a deadline that passes exits with code 124. `stop` and `wait` also accept the older name `timeout`.
+* Every `proc` verb returns at once and refuses `timeout_ms` (exit 2). `cron` does not read `timeout_ms` yet.
 
 ### Exit status
 
 * 0 on success; non-zero on failure, with `Error: <reason>` on stderr if the handle did not already write to stderr.
 * `cron`: every failure exits 1, and the JSON `ok` field always agrees with the exit status.
-* `proc` follows the project-wide codes: 0, 1 failed, 2 invalid usage, with `Error: [proc.<code>] ...` on stderr and an `error` object in the JSON (for example `proc.not_found` when the process is gone). `svc` uses a few specific codes (for example exit 124 for a timeout). See each handle's document for the verified list.
+* `proc` and `svc` follow the project-wide codes: 0, 1 failed, 2 invalid usage (nothing done), and for `svc` 124 (timeout or outcome unknown), with `Error: [<handle>.<code>] ...` on stderr and an `error` object in the JSON (for example `proc.not_found` when the process is gone). See each handle's document for the verified list.
 
 ### Limited verbs
 

@@ -1,17 +1,35 @@
-use anyhow::{Context, bail};
-use percent_encoding;
-use serde_json::{self, json};
-use std::io::{BufRead, BufReader};
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::{thread, time::Duration};
+//! `svc://<service>.<verb>`: system services through systemd (D-Bus, with
+//! `systemctl` when the bus cannot be reached) or OpenRC.
+//!
+//! Every verb checks its arguments and the service name before anything
+//! runs (exit 2), works under a deadline (`timeout_ms`), and reports failures
+//! as `Error: [svc.<code>] <message>` with exit 1, 2 or 124. Lifecycle verbs
+//! on systemd wait for the job they queue and report its real result.
+
+mod bus;
+mod logs;
+mod openrc;
+mod systemd;
+#[cfg(test)]
+mod tests;
+
+use anyhow::Context;
+use serde_json::{Value, json};
+use std::ffi::OsString;
+use std::io;
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{Duration, Instant};
 use url::Url;
 
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
+    lenient, process,
     registry::{Args, Handle, IoStreams},
-    status::Status,
+    status::{Status, error_json, error_line, exit},
 };
+use bus::{Bus, BusErrKind, FileOp, SystemctlBus, ZbusBus};
+use logs::LogOpts;
 
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("svc", |u| Ok(Box::new(SvcHandle::from_url(u)?)));
@@ -30,7 +48,7 @@ static SVC_HELP: HandleHelp = HandleHelp {
             definition: "Reports the current state of a service, such as whether it is running \
                 and its main process ID, as a JSON object.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.status",
+                usage: "resh svc://<service-name>.status [timeout_ms=<ms>]",
                 example: "resh svc://nginx.status",
                 example_output: Some(
                     r#"{
@@ -49,7 +67,8 @@ static SVC_HELP: HandleHelp = HandleHelp {
 }
 
 Shown for a systemd host with --json-pretty. OpenRC hosts report the
-fields name, backend, state, pid, exit_status, raw, and timestamps."#,
+fields name, backend, state, pid, exit_status, raw, and timestamps.
+timeout_ms defaults to 30000."#,
                 ),
             }),
         },
@@ -57,50 +76,56 @@ fields name, backend, state, pid, exit_status, raw, and timestamps."#,
             name: "is-enabled",
             definition: "Reports whether a service is configured to start at boot.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.is-enabled",
+                usage: "resh svc://<service-name>.is-enabled [timeout_ms=<ms>]",
                 example: "resh svc://nginx.is-enabled",
                 example_output: Some(
                     r#"{
   "backend": "systemd",
   "enabled": true,
-  "name": "nginx"
+  "name": "nginx",
+  "unit_file_state": "enabled"
 }
 
 Shown with --json-pretty. On OpenRC, enabled means the service is in the
-default runlevel."#,
+default runlevel. A service that does not exist is an error (exit 1)."#,
                 ),
             }),
         },
         VerbHelp {
             name: "start",
-            definition: "Starts a service.",
+            definition: "Starts a service and waits for the start job to finish.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.start",
+                usage: "resh svc://<service-name>.start [timeout_ms=<ms>]",
                 example: "resh svc://nginx.start",
                 example_output: Some(
                     r#"{
   "action": "start",
+  "active_state": "active",
   "backend": "systemd",
+  "job_result": "done",
   "name": "nginx.service",
-  "result": "success"
+  "result": "success",
+  "sub_state": "running"
 }
 
-Shown for a systemd host with --json-pretty. OpenRC hosts report the
-service name without the .service suffix."#,
+Shown for a systemd host with --json-pretty. A job that fails exits 1;
+at timeout_ms (default 120000) the job is cancelled and resh exits 124."#,
                 ),
             }),
         },
         VerbHelp {
             name: "stop",
-            definition: "Stops a service, optionally waiting for it to become inactive.",
+            definition: "Stops a service and waits for it to become inactive.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.stop [timeout=<ms>] [force=true|false]",
-                example: "resh svc://nginx.stop timeout=5000",
+                usage: "resh svc://<service-name>.stop [timeout_ms=<ms>] [timeout=<ms>]\n  \
+                    [force=true|false]",
+                example: "resh svc://nginx.stop timeout_ms=5000",
                 example_output: Some(
                     r#"{
   "action": "stop",
   "backend": "systemd",
   "final_state": "inactive",
+  "job_result": "done",
   "name": "nginx.service",
   "note": "stopped via StopUnit",
   "previous_state": "active",
@@ -109,23 +134,26 @@ service name without the .service suffix."#,
   "timeout_ms": 5000
 }
 
-Shown for a systemd host with --json-pretty. The timeout is in
-milliseconds; without it, timeout_ms and reached_inactive are omitted."#,
+Shown for a systemd host with --json-pretty. timeout is an older name
+for timeout_ms (default 120000)."#,
                 ),
             }),
         },
         VerbHelp {
             name: "restart",
-            definition: "Stops and then starts a service.",
+            definition: "Stops and then starts a service, waiting for the job to finish.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.restart",
+                usage: "resh svc://<service-name>.restart [timeout_ms=<ms>]",
                 example: "resh svc://nginx.restart",
                 example_output: Some(
                     r#"{
   "action": "restart",
+  "active_state": "active",
   "backend": "systemd",
+  "job_result": "done",
   "name": "nginx.service",
-  "result": "success"
+  "result": "success",
+  "sub_state": "running"
 }
 
 Shown for a systemd host with --json-pretty. OpenRC hosts report the
@@ -137,7 +165,7 @@ service name without the .service suffix."#,
             name: "reload",
             definition: "Reloads a service's configuration without stopping it.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.reload",
+                usage: "resh svc://<service-name>.reload [timeout_ms=<ms>]",
                 example: "resh svc://nginx.reload",
                 example_output: None,
             }),
@@ -146,7 +174,7 @@ service name without the .service suffix."#,
             name: "enable",
             definition: "Configures a service to start automatically at boot.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.enable",
+                usage: "resh svc://<service-name>.enable [timeout_ms=<ms>]",
                 example: "resh svc://nginx.enable",
                 example_output: None,
             }),
@@ -155,7 +183,7 @@ service name without the .service suffix."#,
             name: "disable",
             definition: "Prevents a service from starting automatically at boot.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.disable",
+                usage: "resh svc://<service-name>.disable [timeout_ms=<ms>]",
                 example: "resh svc://nginx.disable",
                 example_output: None,
             }),
@@ -164,7 +192,7 @@ service name without the .service suffix."#,
             name: "mask",
             definition: "Blocks a service from being started at all (systemd only).",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.mask",
+                usage: "resh svc://<service-name>.mask [timeout_ms=<ms>]",
                 example: "resh svc://nginx.mask",
                 example_output: None,
             }),
@@ -173,7 +201,7 @@ service name without the .service suffix."#,
             name: "unmask",
             definition: "Removes a mask so a service can be started again (systemd only).",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.unmask",
+                usage: "resh svc://<service-name>.unmask [timeout_ms=<ms>]",
                 example: "resh svc://nginx.unmask",
                 example_output: None,
             }),
@@ -182,10 +210,13 @@ service name without the .service suffix."#,
             name: "wait",
             definition: "Waits for a service to become active or inactive, with a timeout.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.wait [state=active|inactive] [timeout=<ms>]",
-                example: "resh svc://nginx.wait state=active timeout=30000",
+                usage: "resh svc://<service-name>.wait\n  \
+                    [state=active|inactive|running|stopped] [timeout_ms=<ms>]\n  \
+                    [timeout=<ms>]",
+                example: "resh svc://nginx.wait state=active timeout_ms=30000",
                 example_output: Some(
                     r#"{
+  "active_state": "active",
   "backend": "systemd",
   "name": "nginx",
   "reached": true,
@@ -193,8 +224,8 @@ service name without the .service suffix."#,
   "timeout_ms": 30000
 }
 
-Shown with --json-pretty. The timeout is in milliseconds and defaults to
-10000; state also accepts running and stopped."#,
+Shown with --json-pretty. timeout_ms defaults to 10000 (timeout is an
+older name for it); running means active and stopped means inactive."#,
                 ),
             }),
         },
@@ -204,7 +235,7 @@ Shown with --json-pretty. The timeout is in milliseconds and defaults to
             detail: Some(VerbDetail {
                 usage: "resh svc://<service-name>.logs [lines=<n>] [since=<time>]\n  \
                     [until=<time>] [level=<priority>] [reverse=true|false]\n  \
-                    [follow=true|false]",
+                    [follow=true|false] [timeout_ms=<ms>]",
                 example: "resh svc://nginx.logs lines=2 level=err",
                 example_output: Some(
                     r#"2026-10-16T09:12:44+00:00 web01 nginx[1234]: open() failed (2: No such file)
@@ -213,7 +244,8 @@ Shown with --json-pretty. The timeout is in milliseconds and defaults to
 Shown for a systemd host, where output comes from journalctl
 --output=short-iso and lines defaults to 200. OpenRC hosts print the last
 lines of /var/log/<service>.log or a similar file; since, until, and
-level apply only to systemd."#,
+level apply only to systemd. With follow=true, timeout_ms is how long to
+follow (exit 0 when it ends)."#,
                 ),
             }),
         },
@@ -221,7 +253,7 @@ level apply only to systemd."#,
             name: "scale",
             definition: "Sets the number of running instances of a service.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.scale count=<n>",
+                usage: "resh svc://<service-name>.scale count=<n> [timeout_ms=<ms>]",
                 example: "resh svc://nginx.scale count=1",
                 example_output: Some(
                     r#"{
@@ -242,11 +274,264 @@ start or stop numbered instances; OpenRC supports only 0 or 1."#,
     ],
 };
 
+/// The operation verbs, in help order.
+const VERBS: &[&str] = &[
+    "status",
+    "is-enabled",
+    "start",
+    "stop",
+    "restart",
+    "reload",
+    "enable",
+    "disable",
+    "mask",
+    "unmask",
+    "wait",
+    "logs",
+    "scale",
+];
+
+/// The arguments each verb accepts (`dry_run=false` is also accepted;
+/// `dry_run=true` is refused: svc has no dry-run mode).
+pub(crate) fn verb_args(verb: &str) -> &'static [&'static str] {
+    match verb {
+        "stop" => &["timeout_ms", "timeout", "force"],
+        "wait" => &["state", "timeout_ms", "timeout"],
+        "logs" => &[
+            "lines",
+            "since",
+            "until",
+            "level",
+            "reverse",
+            "follow",
+            "timeout_ms",
+        ],
+        "scale" => &["count", "timeout_ms"],
+        _ => &["timeout_ms"],
+    }
+}
+
+/// Every error code svc reports, as documented in
+/// docs/Process_ServiceManagement/svc.md. `svc.invalid_target` and
+/// `svc.failed` can also come from the dispatcher.
+#[cfg(test)]
+pub(crate) const ERROR_CODES: &[&str] = &[
+    "svc.invalid_argument",
+    "svc.invalid_target",
+    "svc.unknown_verb",
+    "svc.unsupported",
+    "svc.not_found",
+    "svc.permission_denied",
+    "svc.masked",
+    "svc.job_failed",
+    "svc.partial_failure",
+    "svc.no_backend",
+    "svc.backend_unavailable",
+    "svc.tool_not_found",
+    "svc.no_logs",
+    "svc.logs_failed",
+    "svc.failed",
+    "svc.timeout",
+];
+
+/// Default `timeout_ms` per verb (`logs follow=true` has none: it follows
+/// until interrupted).
+pub(crate) fn default_timeout_ms(verb: &str) -> u64 {
+    match verb {
+        "start" | "stop" | "restart" | "reload" | "scale" => 120_000,
+        "wait" => 10_000,
+        "logs" => 600_000,
+        _ => 30_000,
+    }
+}
+const MAX_TIMEOUT_MS: u64 = 7 * 24 * 3600 * 1000;
+const DEFAULT_LINES: u64 = 200;
+const MAX_LINES: u64 = 1_000_000;
+const MAX_COUNT: u64 = 1000;
+const MAX_NAME_BYTES: usize = 256;
+
+/// A failure with its exit status and error code.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Fail {
+    pub exit: i32,
+    pub code: &'static str,
+    pub msg: String,
+}
+
+impl Fail {
+    pub fn new(exit: i32, code: &'static str, msg: impl Into<String>) -> Self {
+        #[cfg(test)]
+        assert!(ERROR_CODES.contains(&code), "undocumented code {code}");
+        Fail {
+            exit,
+            code,
+            msg: msg.into(),
+        }
+    }
+    pub fn invalid(msg: impl Into<String>) -> Self {
+        Self::new(exit::USAGE, "svc.invalid_argument", msg)
+    }
+}
+
+/// What a verb produced: its JSON result (if it prints one) and its
+/// failure (if any). A failing JSON result carries the error object.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Reply {
+    pub json: Option<Value>,
+    pub fail: Option<Fail>,
+}
+
+impl Reply {
+    pub fn ok(v: Value) -> Self {
+        Reply {
+            json: Some(v),
+            fail: None,
+        }
+    }
+    pub fn ok_empty() -> Self {
+        Reply {
+            json: None,
+            fail: None,
+        }
+    }
+    pub fn failed(json: Option<Value>, f: Fail) -> Self {
+        Reply {
+            json,
+            fail: Some(f),
+        }
+    }
+}
+
+/// The service a verb acts on, and its deadline.
 #[derive(Debug, Clone)]
+pub(crate) struct Ctx {
+    /// The name as given (`nginx`).
+    pub name: String,
+    /// The systemd unit (`nginx.service`).
+    pub unit: String,
+    pub timeout_ms: u64,
+    pub deadline: Instant,
+}
+
+/// The external tools svc runs. Debug builds read them from the directory
+/// in `RESH_TEST_SVC_TOOLS` when it is set (tests), never from PATH then.
+#[derive(Debug, Clone)]
+pub(crate) struct Tools {
+    pub systemctl: OsString,
+    pub journalctl: OsString,
+    pub rc_service: OsString,
+    pub rc_update: OsString,
+    pub tail: OsString,
+    /// Root under which OpenRC log files are looked up (tests); `/` when
+    /// unset.
+    pub log_root: Option<PathBuf>,
+}
+
+impl Tools {
+    fn from_env() -> Self {
+        let mut t = Tools {
+            systemctl: "systemctl".into(),
+            journalctl: "journalctl".into(),
+            rc_service: "rc-service".into(),
+            rc_update: "rc-update".into(),
+            tail: "tail".into(),
+            log_root: None,
+        };
+        #[cfg(debug_assertions)]
+        if let Some(dir) = std::env::var_os("RESH_TEST_SVC_TOOLS") {
+            let dir = PathBuf::from(dir);
+            t.systemctl = dir.join("systemctl").into();
+            t.journalctl = dir.join("journalctl").into();
+            t.rc_service = dir.join("rc-service").into();
+            t.rc_update = dir.join("rc-update").into();
+            t.tail = dir.join("tail").into();
+            t.log_root = Some(dir.join("root"));
+        }
+        t
+    }
+}
+
+/// Runs `tool args` under `deadline`: tool missing is `svc.tool_not_found`;
+/// a tool still running at the deadline is stopped and the outcome is
+/// unknown (`svc.timeout`, exit 124).
+pub(crate) fn run_tool(
+    tool: &OsString,
+    args: &[&str],
+    deadline: Instant,
+) -> Result<std::process::Output, Fail> {
+    let mut cmd = Command::new(tool);
+    cmd.args(args).env("LC_ALL", "C");
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let name = tool.to_string_lossy();
+    match process::run(&mut cmd, Some(remaining)) {
+        Ok(o) => Ok(o),
+        Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+            let lost = process::take_lost();
+            let what = match lost.map(|l| l.stopped) {
+                Some(process::Stopped::NotStarted) => "was not started; nothing was done",
+                Some(process::Stopped::StillRunning) => {
+                    "could not be stopped and may still be running; the outcome is unknown"
+                }
+                _ => "was stopped; what it already did stays done, so check before retrying",
+            };
+            Err(Fail::new(
+                exit::TIMEOUT,
+                "svc.timeout",
+                format!("{name} {} {what}", args.join(" ")),
+            ))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(Fail::new(
+            exit::FAILED,
+            "svc.tool_not_found",
+            format!("{name} was not found"),
+        )),
+        Err(e) => Err(Fail::new(
+            exit::FAILED,
+            "svc.failed",
+            format!("cannot run {name}: {e}"),
+        )),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Systemd,
     OpenRc,
     Unknown,
+}
+
+impl Backend {
+    fn label(self) -> &'static str {
+        match self {
+            Backend::Systemd => "systemd",
+            Backend::OpenRc => "openrc",
+            Backend::Unknown => "unknown",
+        }
+    }
+}
+
+/// How systemd is reached (debug builds can force one, for tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// D-Bus, with systemctl when the bus cannot be reached.
+    Auto,
+    /// systemctl only.
+    Systemctl,
+}
+
+/// The verb and its checked options.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Op {
+    Status,
+    IsEnabled,
+    Start,
+    Stop { force: bool },
+    Restart,
+    Reload,
+    Files(FileOp),
+    Wait { active: bool, state: String },
+    Logs(LogOpts),
+    Scale { count: u32 },
 }
 
 pub struct SvcHandle {
@@ -254,9 +539,240 @@ pub struct SvcHandle {
     original_url: Url,
 }
 
+fn suggest(bad: &str, allowed: &[&'static str]) -> Option<&'static str> {
+    fn distance(a: &str, b: &str) -> usize {
+        let b: Vec<char> = b.chars().collect();
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut cur = vec![i + 1; b.len() + 1];
+            for (j, cb) in b.iter().enumerate() {
+                let cost = usize::from(ca != *cb);
+                cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+    let norm = bad.to_ascii_lowercase().replace('-', "_");
+    allowed
+        .iter()
+        .map(|a| {
+            let d = if a.starts_with(norm.as_str()) || norm.starts_with(a) {
+                1
+            } else {
+                distance(&norm, a)
+            };
+            (d, *a)
+        })
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, a)| a)
+}
+
+fn u64_arg(args: &Args, key: &str, min: u64, max: u64) -> Result<Option<u64>, Fail> {
+    let Some(raw) = args.get(key) else {
+        return Ok(None);
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(v) if (min..=max).contains(&v) => Ok(Some(v)),
+        _ => Err(Fail::invalid(format!(
+            "invalid value for {key}: {raw:?} (expected an integer from {min} to {max})"
+        ))),
+    }
+}
+
+fn bool_arg(args: &Args, key: &str) -> Result<bool, Fail> {
+    lenient::bool_arg(args, key)
+        .map(|b| b.unwrap_or(false))
+        .map_err(|e| Fail::invalid(e.to_string()))
+}
+
+/// A `since`/`until` value: passed to journalctl as `--since=<value>`.
+fn time_arg(args: &Args, key: &str) -> Result<Option<String>, Fail> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(v) if v.trim().is_empty() || v.chars().any(char::is_control) => {
+            Err(Fail::invalid(format!(
+                "invalid value for {key}: {v:?} (expected a journalctl time such as \
+                 \"2026-10-16 09:00\", \"-1h\" or \"yesterday\")"
+            )))
+        }
+        Some(v) => Ok(Some(v.clone())),
+    }
+}
+
+/// Checks every argument of `verb` and returns the operation and its
+/// timeout (ms; `None` only for `logs follow=true` without timeout_ms).
+pub(crate) fn parse_args(verb: &str, args: &Args) -> Result<(Op, Option<u64>), Fail> {
+    let allowed = verb_args(verb);
+    let mut keys: Vec<&String> = args.keys().collect();
+    keys.sort();
+    for k in keys {
+        if allowed.contains(&k.as_str()) {
+            continue;
+        }
+        if k == "dry_run" {
+            match lenient::dry_run(args) {
+                Ok(false) => continue,
+                Ok(true) => {
+                    return Err(Fail::invalid(format!(
+                        "svc {verb} has no dry-run mode; nothing was done"
+                    )));
+                }
+                Err(e) => return Err(Fail::invalid(e.to_string())),
+            }
+        }
+        return Err(Fail::invalid(format!(
+            "unknown argument for {verb}: {k}{}",
+            suggest(k, allowed)
+                .map(|s| format!(" (did you mean `{s}`?)"))
+                .unwrap_or_default()
+        )));
+    }
+    let mut timeout = u64_arg(args, "timeout_ms", 1, MAX_TIMEOUT_MS)?;
+    if allowed.contains(&"timeout") {
+        let old = u64_arg(args, "timeout", 1, MAX_TIMEOUT_MS)?;
+        if old.is_some() && timeout.is_some() {
+            return Err(Fail::invalid(
+                "give timeout_ms or its older name timeout, not both",
+            ));
+        }
+        timeout = timeout.or(old);
+    }
+    let op = match verb {
+        "status" => Op::Status,
+        "is-enabled" => Op::IsEnabled,
+        "start" => Op::Start,
+        "restart" => Op::Restart,
+        "reload" => Op::Reload,
+        "enable" => Op::Files(FileOp::Enable),
+        "disable" => Op::Files(FileOp::Disable),
+        "mask" => Op::Files(FileOp::Mask),
+        "unmask" => Op::Files(FileOp::Unmask),
+        "stop" => Op::Stop {
+            force: bool_arg(args, "force")?,
+        },
+        "wait" => {
+            let state = args.get("state").map_or("active", String::as_str);
+            let active = match state {
+                "active" | "running" => true,
+                "inactive" | "stopped" => false,
+                other => {
+                    return Err(Fail::invalid(format!(
+                        "invalid value for state: {other:?} (expected active, inactive, \
+                         running or stopped)"
+                    )));
+                }
+            };
+            Op::Wait {
+                active,
+                state: state.to_string(),
+            }
+        }
+        "logs" => {
+            let level = match args.get("level").map(String::as_str) {
+                None => None,
+                Some("debug") => Some("debug"),
+                Some("info") => Some("info"),
+                Some("warning") => Some("warning"),
+                Some("err" | "error") => Some("err"),
+                Some("crit" | "critical") => Some("crit"),
+                Some(other) => {
+                    return Err(Fail::invalid(format!(
+                        "invalid value for level: {other:?} (expected debug, info, warning, \
+                         err, error, crit or critical)"
+                    )));
+                }
+            };
+            let follow = bool_arg(args, "follow")?;
+            let reverse = bool_arg(args, "reverse")?;
+            if follow && reverse {
+                return Err(Fail::invalid(
+                    "reverse=true cannot be combined with follow=true",
+                ));
+            }
+            let o = LogOpts {
+                lines: u64_arg(args, "lines", 1, MAX_LINES)?.unwrap_or(DEFAULT_LINES),
+                since: time_arg(args, "since")?,
+                until: time_arg(args, "until")?,
+                level,
+                reverse,
+                follow,
+                follow_for: if follow {
+                    timeout.map(Duration::from_millis)
+                } else {
+                    None
+                },
+            };
+            if follow {
+                return Ok((Op::Logs(o), timeout));
+            }
+            Op::Logs(o)
+        }
+        "scale" => {
+            if !args.contains_key("count") {
+                return Err(Fail::invalid("scale needs count=<n>"));
+            }
+            Op::Scale {
+                count: u64_arg(args, "count", 0, MAX_COUNT)?.unwrap_or(0) as u32,
+            }
+        }
+        other => return Err(unknown_verb(other)),
+    };
+    Ok((
+        op,
+        Some(timeout.unwrap_or_else(|| default_timeout_ms(verb))),
+    ))
+}
+
+fn unknown_verb(verb: &str) -> Fail {
+    Fail::new(
+        exit::USAGE,
+        "svc.unknown_verb",
+        format!(
+            "unknown verb for svc: {verb}{}; verbs: {}",
+            suggest(verb, VERBS)
+                .map(|s| format!(" (did you mean `{s}`?)"))
+                .unwrap_or_default(),
+            VERBS.join(", ")
+        ),
+    )
+}
+
+/// Rejects service names that are empty, too long, could be read as a
+/// command-line option, or contain characters a unit or OpenRC service name
+/// cannot have. Instance names such as `getty@tty1` are valid.
+pub(crate) fn validate_service_name(name: &str) -> Result<(), String> {
+    let bad = if name.is_empty() {
+        Some("is empty".to_string())
+    } else if name.len() > MAX_NAME_BYTES {
+        Some(format!("is longer than {MAX_NAME_BYTES} bytes"))
+    } else if name.starts_with('-') {
+        Some("starts with '-'".to_string())
+    } else if name.starts_with('.') {
+        Some("starts with '.'".to_string())
+    } else if name.contains(':') {
+        Some("contains ':'".to_string())
+    } else if name.contains('/') {
+        Some("contains '/'".to_string())
+    } else if name.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        Some("contains whitespace or control characters".to_string())
+    } else {
+        name.chars()
+            .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '@' | '-' | '\\')))
+            .map(|c| format!("contains {c:?}"))
+    };
+    match bad {
+        Some(why) => Err(format!(
+            "invalid service name {name:?}: {why} (letters, digits, '_', '.', '@', '-' and \
+             '\\' are allowed)"
+        )),
+        None => Ok(()),
+    }
+}
+
 impl SvcHandle {
     pub fn from_url(u: &Url) -> anyhow::Result<Self> {
-        // Accept host + path, strip leading slashes, join with '/'
         let mut name = String::new();
         // Instance units such as `getty@tty1` parse as URL userinfo
         // (`getty`) plus host (`tty1`); keep the whole name.
@@ -270,7 +786,7 @@ impl SvcHandle {
             name.push('@');
         }
         if let Some(h) = u.host_str() {
-            name.push_str(h);
+            name.push_str(&percent_encoding::percent_decode_str(h).decode_utf8_lossy());
         }
         if !u.path().is_empty() {
             if !name.is_empty() {
@@ -284,17 +800,6 @@ impl SvcHandle {
         })
     }
 
-    fn detect_backend() -> Backend {
-        if std::path::Path::new("/run/systemd/system").exists() || which::which("systemctl").is_ok()
-        {
-            return Backend::Systemd;
-        }
-        if which::which("rc-status").is_ok() || which::which("rc-service").is_ok() {
-            return Backend::OpenRc;
-        }
-        Backend::Unknown
-    }
-
     fn unit_name(&self) -> String {
         if self.name.ends_with(".service") {
             self.name.clone()
@@ -303,1023 +808,26 @@ impl SvcHandle {
         }
     }
 
-    fn fmt_ts_us(us: u64) -> String {
-        use chrono::{TimeZone, Utc};
-        if us == 0 {
-            return String::new();
+    /// The backend and, for systemd, the route. Debug builds honor
+    /// `RESH_TEST_SVC_BACKEND` (`systemd`, `systemctl`, `openrc`, `none`).
+    fn detect_backend() -> (Backend, Route) {
+        #[cfg(debug_assertions)]
+        if let Ok(forced) = std::env::var("RESH_TEST_SVC_BACKEND") {
+            return match forced.as_str() {
+                "systemd" => (Backend::Systemd, Route::Auto),
+                "systemctl" => (Backend::Systemd, Route::Systemctl),
+                "openrc" => (Backend::OpenRc, Route::Auto),
+                _ => (Backend::Unknown, Route::Auto),
+            };
         }
-        let secs = (us / 1_000_000) as i64;
-        let nsec = ((us % 1_000_000) * 1000) as u32;
-        Utc.timestamp_opt(secs, nsec)
-            .single()
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_default()
-    }
-
-    fn status_systemd(&self) -> anyhow::Result<serde_json::Value> {
-        // Try D-Bus first
-        let dbus_result = self.status_systemd_dbus();
-        if dbus_result.is_ok() {
-            return dbus_result;
+        if std::path::Path::new("/run/systemd/system").exists() || which::which("systemctl").is_ok()
+        {
+            return (Backend::Systemd, Route::Auto);
         }
-
-        // Fallback to systemctl command
-        self.status_systemd_fallback()
-    }
-
-    fn status_systemd_dbus(&self) -> anyhow::Result<serde_json::Value> {
-        use zbus::blocking::Connection;
-        let conn = Connection::system().context("Failed to connect to D-Bus")?;
-        let manager = zbus::blocking::Proxy::new(
-            &conn,
-            "org.freedesktop.systemd1",
-            "/org/freedesktop/systemd1",
-            "org.freedesktop.systemd1.Manager",
-        )
-        .context("Failed to create Manager proxy")?;
-
-        let unit = self.unit_name();
-        let unit_path: zvariant::OwnedObjectPath = manager
-            .call("GetUnit", &(unit.clone(),))
-            .context("Failed to get unit path")?;
-
-        let unit_proxy = zbus::blocking::Proxy::new(
-            &conn,
-            "org.freedesktop.systemd1",
-            unit_path.as_str(),
-            "org.freedesktop.systemd1.Unit",
-        )
-        .context("Failed to create Unit proxy")?;
-
-        let active_state: String = unit_proxy
-            .get_property("ActiveState")
-            .context("Failed to get ActiveState")?;
-        let sub_state: String = unit_proxy
-            .get_property("SubState")
-            .context("Failed to get SubState")?;
-        let description: String = unit_proxy
-            .get_property("Description")
-            .context("Failed to get Description")?;
-
-        // Timestamps (usec)
-        let active_enter_us: u64 = unit_proxy.get_property("ActiveEnterTimestamp").unwrap_or(0);
-        let active_exit_us: u64 = unit_proxy.get_property("ActiveExitTimestamp").unwrap_or(0);
-        let inactive_enter_us: u64 = unit_proxy
-            .get_property("InactiveEnterTimestamp")
-            .unwrap_or(0);
-
-        // ExecMainPID and ExecMainStatus (Service interface)
-        let svc_proxy = zbus::blocking::Proxy::new(
-            &conn,
-            "org.freedesktop.systemd1",
-            unit_path.as_str(),
-            "org.freedesktop.systemd1.Service",
-        );
-        let (pid, exit_status) = if let Ok(p) = &svc_proxy {
-            let pid: u32 = p.get_property("ExecMainPID").unwrap_or(0);
-            let st: i32 = p.get_property("ExecMainStatus").unwrap_or(0);
-            (pid, st)
-        } else {
-            (0u32, 0i32)
-        };
-
-        let ts_active_enter = Self::fmt_ts_us(active_enter_us);
-        let ts_active_exit = Self::fmt_ts_us(active_exit_us);
-        let ts_inactive_enter = Self::fmt_ts_us(inactive_enter_us);
-
-        Ok(json!({
-            "name": unit,
-            "backend": "systemd",
-            "active_state": active_state,
-            "sub_state": sub_state,
-            "description": description,
-            "pid": pid,
-            "exit_status": exit_status,
-            "timestamps": {
-                "active_enter": ts_active_enter,
-                "active_exit": ts_active_exit,
-                "inactive_enter": ts_inactive_enter
-            }
-        }))
-    }
-
-    fn status_systemd_fallback(&self) -> anyhow::Result<serde_json::Value> {
-        let unit = self.unit_name();
-        let output = std::process::Command::new("systemctl")
-            .args(["show", &unit])
-            .output()
-            .context("Failed to execute systemctl show")?;
-
-        if !output.status.success() {
-            anyhow::bail!("systemctl show failed with status: {}", output.status);
+        if which::which("rc-status").is_ok() || which::which("rc-service").is_ok() {
+            return (Backend::OpenRc, Route::Auto);
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let (active_state, sub_state, description) = parse_systemctl_show(&unit, &stdout)?;
-
-        Ok(json!({
-            "name": unit,
-            "backend": "systemd",
-            "active_state": active_state,
-            "sub_state": sub_state,
-            "description": description,
-            "pid": 0,
-            "exit_status": 0,
-            "timestamps": {
-                "active_enter": "",
-                "active_exit": "",
-                "inactive_enter": ""
-            }
-        }))
-    }
-
-    fn status_openrc(&self) -> anyhow::Result<serde_json::Value> {
-        let svc = self.name.clone();
-
-        // Try rc-service first
-        let out = std::process::Command::new("rc-service")
-            .arg(&svc)
-            .arg("status")
-            .output();
-
-        let (state, pid, raw) = match out {
-            Ok(o) => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                let combined = format!("{}{}", stdout, stderr);
-                if openrc_service_missing(&combined) {
-                    anyhow::bail!("service '{}' does not exist", svc);
-                }
-
-                let state = if combined.contains("started") || combined.contains("running") {
-                    "running"
-                } else {
-                    "stopped_or_unknown"
-                };
-
-                let pid = Self::parse_pid_from_output(&combined);
-                (state.to_string(), pid, combined)
-            }
-            Err(_) => {
-                // Fallback to rc-status
-                let o2 = std::process::Command::new("rc-status")
-                    .arg("-s")
-                    .output()
-                    .context("rc-status not available")?;
-                let s2 = String::from_utf8_lossy(&o2.stdout);
-                let found = s2.lines().find(|l| l.contains(&svc)).unwrap_or("");
-
-                let state = if found.contains("started") || found.contains("running") {
-                    "running"
-                } else {
-                    "stopped_or_unknown"
-                };
-
-                let pid = Self::parse_pid_from_output(found);
-                (state.to_string(), pid, found.to_string())
-            }
-        };
-
-        Ok(json!({
-            "name": svc,
-            "backend": "openrc",
-            "state": state,
-            "pid": pid,
-            "exit_status": null,
-            "timestamps": null,
-            "raw": raw
-        }))
-    }
-
-    fn parse_pid_from_output(text: &str) -> Option<u32> {
-        use regex::Regex;
-        // Look for patterns like "pid 123", "pid: 123", "(pid: 123)"
-        let re = Regex::new(r"\bpid:?\s*(\d+)").unwrap();
-        if let Some(caps) = re.captures(text) {
-            caps.get(1)?.as_str().parse().ok()
-        } else {
-            None
-        }
-    }
-
-    fn systemd_is_enabled(&self) -> anyhow::Result<bool> {
-        use zbus::blocking::Connection;
-        let conn = Connection::system()?;
-        let manager = zbus::blocking::Proxy::new(
-            &conn,
-            "org.freedesktop.systemd1",
-            "/org/freedesktop/systemd1",
-            "org.freedesktop.systemd1.Manager",
-        )?;
-        let unit = self.unit_name();
-        // Try GetUnitFileState; fallback to systemctl is-enabled
-        let state: Result<String, _> = manager.call("GetUnitFileState", &(unit.clone(),));
-        if let Ok(s) = state {
-            return Ok(s == "enabled" || s == "static" || s == "indirect");
-        }
-        let out = std::process::Command::new("systemctl")
-            .arg("is-enabled")
-            .arg(&unit)
-            .output();
-        match out {
-            Ok(o) => Ok(String::from_utf8_lossy(&o.stdout).trim() == "enabled"),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn systemd_start(&self) -> anyhow::Result<()> {
-        use zbus::blocking::Connection;
-
-        // Try D-Bus first
-        let dbus_result = (|| -> anyhow::Result<()> {
-            let conn = Connection::system()?;
-            let manager = zbus::blocking::Proxy::new(
-                &conn,
-                "org.freedesktop.systemd1",
-                "/org/freedesktop/systemd1",
-                "org.freedesktop.systemd1.Manager",
-            )?;
-            let unit = self.unit_name();
-            let _: zvariant::OwnedObjectPath = manager.call("StartUnit", &(unit, "replace"))?;
-            Ok(())
-        })();
-
-        // If D-Bus fails, fallback to systemctl command
-        if dbus_result.is_err() {
-            let unit = self.unit_name();
-            let status = std::process::Command::new("systemctl")
-                .arg("start")
-                .arg(&unit)
-                .status();
-            match status {
-                Ok(s) if s.success() => Ok(()),
-                Ok(s) => bail!("systemctl start {} failed: {}", unit, s),
-                Err(e) => bail!("systemctl not available: {}", e),
-            }
-        } else {
-            dbus_result
-        }
-    }
-
-    fn systemd_force_stop(&self) -> anyhow::Result<()> {
-        use zbus::blocking::Connection;
-
-        // Try aggressive stop with "replace-irreversibly" mode first
-        let dbus_result = (|| -> anyhow::Result<()> {
-            let conn = Connection::system()?;
-            let manager = zbus::blocking::Proxy::new(
-                &conn,
-                "org.freedesktop.systemd1",
-                "/org/freedesktop/systemd1",
-                "org.freedesktop.systemd1.Manager",
-            )?;
-            let unit = self.unit_name();
-            let _: zvariant::OwnedObjectPath =
-                manager.call("StopUnit", &(unit, "replace-irreversibly"))?;
-            Ok(())
-        })();
-
-        // If D-Bus fails, fallback to systemctl kill + stop
-        if dbus_result.is_err() {
-            let unit = self.unit_name();
-
-            // First try systemctl kill
-            let _ = std::process::Command::new("systemctl")
-                .args(["kill", "--signal=SIGTERM", &unit])
-                .status();
-
-            // Give it a moment, then try regular stop
-            thread::sleep(Duration::from_millis(500));
-
-            let status = std::process::Command::new("systemctl")
-                .arg("stop")
-                .arg(&unit)
-                .status();
-            match status {
-                Ok(s) if s.success() => Ok(()),
-                Ok(s) => bail!("systemctl stop {} failed: {}", unit, s),
-                Err(e) => bail!("systemctl not available: {}", e),
-            }
-        } else {
-            dbus_result
-        }
-    }
-
-    fn systemd_restart(&self) -> anyhow::Result<()> {
-        use zbus::blocking::Connection;
-
-        // Try D-Bus first
-        let dbus_result = (|| -> anyhow::Result<()> {
-            let conn = Connection::system()?;
-            let manager = zbus::blocking::Proxy::new(
-                &conn,
-                "org.freedesktop.systemd1",
-                "/org/freedesktop/systemd1",
-                "org.freedesktop.systemd1.Manager",
-            )?;
-            let unit = self.unit_name();
-            let _: zvariant::OwnedObjectPath = manager.call("RestartUnit", &(unit, "replace"))?;
-            Ok(())
-        })();
-
-        // If D-Bus fails, fallback to systemctl command
-        if dbus_result.is_err() {
-            let unit = self.unit_name();
-            let status = std::process::Command::new("systemctl")
-                .arg("restart")
-                .arg(&unit)
-                .status();
-            match status {
-                Ok(s) if s.success() => Ok(()),
-                Ok(s) => bail!("systemctl restart {} failed: {}", unit, s),
-                Err(e) => bail!("systemctl not available: {}", e),
-            }
-        } else {
-            dbus_result
-        }
-    }
-
-    fn systemd_control(&self, action: &str) -> anyhow::Result<()> {
-        use zbus::blocking::Connection;
-        let conn = Connection::system()?;
-        let manager = zbus::blocking::Proxy::new(
-            &conn,
-            "org.freedesktop.systemd1",
-            "/org/freedesktop/systemd1",
-            "org.freedesktop.systemd1.Manager",
-        )?;
-        let unit = self.unit_name();
-        match action {
-            "start" => {
-                let _: zvariant::OwnedObjectPath = manager.call("StartUnit", &(unit, "replace"))?;
-            }
-            "stop" => {
-                let _: zvariant::OwnedObjectPath = manager.call("StopUnit", &(unit, "replace"))?;
-            }
-            "restart" => {
-                let _: zvariant::OwnedObjectPath =
-                    manager.call("RestartUnit", &(unit, "replace"))?;
-            }
-            "reload" => {
-                let _: zvariant::OwnedObjectPath =
-                    manager.call("ReloadUnit", &(unit, "replace"))?;
-            }
-            "enable" => {
-                // EnableUnitFiles(files, runtime, force)
-                let files: Vec<&str> = vec![&unit];
-                let (_changes, _carr): (Vec<zvariant::OwnedValue>, bool) =
-                    manager.call("EnableUnitFiles", &(files, false, true))?;
-            }
-            "disable" => {
-                // DisableUnitFiles(files, runtime)
-                let files: Vec<&str> = vec![&unit];
-                let _changes: Vec<zvariant::OwnedValue> =
-                    manager.call("DisableUnitFiles", &(files, false))?;
-            }
-            "mask" => {
-                let files: Vec<&str> = vec![&unit];
-                let (_changes, _carr): (Vec<zvariant::OwnedValue>, bool) =
-                    manager.call("MaskUnitFiles", &(files, false, true))?;
-            }
-            "unmask" => {
-                let files: Vec<&str> = vec![&unit];
-                let _changes: Vec<zvariant::OwnedValue> =
-                    manager.call("UnmaskUnitFiles", &(files, false))?;
-            }
-            _ => bail!("unsupported action"),
-        }
-        Ok(())
-    }
-
-    fn openrc_is_enabled(&self) -> anyhow::Result<bool> {
-        // Check if service is in default runlevel
-        let svc = self.name.clone();
-        let out = std::process::Command::new("rc-update")
-            .args(["show", "default"])
-            .output();
-        match out {
-            Ok(o) => {
-                let s = String::from_utf8_lossy(&o.stdout);
-                Ok(s.lines()
-                    .any(|l| l.split_whitespace().next() == Some(svc.as_str())))
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn openrc_start(&self) -> anyhow::Result<()> {
-        let svc = self.name.clone();
-        let status = std::process::Command::new("rc-service")
-            .arg(&svc)
-            .arg("start")
-            .status();
-        match status {
-            Ok(s) if s.success() => Ok(()),
-            Ok(s) => bail!("rc-service {} start failed: {}", svc, s),
-            Err(e) => bail!("rc-service not available: {}", e),
-        }
-    }
-
-    fn openrc_restart(&self) -> anyhow::Result<()> {
-        let svc = self.name.clone();
-        let status = std::process::Command::new("rc-service")
-            .arg(&svc)
-            .arg("restart")
-            .status();
-        match status {
-            Ok(s) if s.success() => Ok(()),
-            Ok(s) => bail!("rc-service {} restart failed: {}", svc, s),
-            Err(e) => bail!("rc-service not available: {}", e),
-        }
-    }
-
-    fn openrc_control(&self, action: &str) -> anyhow::Result<()> {
-        let svc = self.name.clone();
-        match action {
-            "enable" => {
-                // add to default runlevel
-                let st = std::process::Command::new("rc-update")
-                    .args(["add", &svc, "default"])
-                    .status();
-                match st {
-                    Ok(s) if s.success() => (),
-                    Ok(s) => bail!("rc-update add failed: {}", s),
-                    Err(e) => bail!("rc-update missing: {}", e),
-                }
-            }
-            "disable" => {
-                let st = std::process::Command::new("rc-update")
-                    .args(["del", &svc, "default"])
-                    .status();
-                match st {
-                    Ok(s) if s.success() => (),
-                    Ok(s) => bail!("rc-update del failed: {}", s),
-                    Err(e) => bail!("rc-update missing: {}", e),
-                }
-            }
-            "mask" | "unmask" => {
-                bail!("mask/unmask unsupported on OpenRC");
-            }
-            action => {
-                let status = std::process::Command::new("rc-service")
-                    .arg(&svc)
-                    .arg(action)
-                    .status();
-                match status {
-                    Ok(s) if s.success() => (),
-                    Ok(s) => bail!("rc-service {} {} failed: {}", svc, action, s),
-                    Err(e) => bail!("rc-service not available: {}", e),
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn wait_until(&self, want_active: bool, timeout_ms: u64) -> anyhow::Result<bool> {
-        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-        loop {
-            match Self::detect_backend() {
-                Backend::Systemd => {
-                    let st = self.status_systemd()?;
-                    let active = st
-                        .get("active_state")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        == "active";
-                    if active == want_active {
-                        return Ok(true);
-                    }
-                }
-                Backend::OpenRc => {
-                    let st = self.status_openrc()?;
-                    let running =
-                        st.get("state").and_then(|v| v.as_str()).unwrap_or("") == "running";
-                    if running == want_active {
-                        return Ok(true);
-                    }
-                }
-                Backend::Unknown => return Ok(false),
-            }
-            if std::time::Instant::now() >= deadline {
-                return Ok(false);
-            }
-            thread::sleep(Duration::from_millis(200));
-        }
-    }
-
-    // Helper functions for logs functionality
-    fn parse_lines_arg(args: &Args) -> usize {
-        args.get("lines")
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(200)
-    }
-
-    fn parse_bool_arg(args: &Args, key: &str) -> bool {
-        args.get(key).map(|s| s == "true").unwrap_or(false)
-    }
-
-    fn map_log_level(level: &str) -> Option<&str> {
-        match level {
-            "debug" => Some("debug"),
-            "info" => Some("info"),
-            "warning" => Some("warning"),
-            "err" | "error" => Some("err"),
-            "crit" | "critical" => Some("crit"),
-            _ => None,
-        }
-    }
-
-    fn logs_systemd(&self, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        let mut cmd = Command::new("journalctl");
-        cmd.arg("-u").arg(self.unit_name());
-        cmd.arg("--no-pager");
-        cmd.arg("--output=short-iso");
-
-        let lines = Self::parse_lines_arg(args);
-        cmd.arg("-n").arg(lines.to_string());
-
-        if let Some(since) = args.get("since") {
-            cmd.arg("--since").arg(since);
-        }
-
-        if let Some(until) = args.get("until") {
-            cmd.arg("--until").arg(until);
-        }
-
-        if let Some(level) = args.get("level") {
-            if let Some(priority) = Self::map_log_level(level) {
-                cmd.arg("-p").arg(priority);
-            }
-        }
-
-        if Self::parse_bool_arg(args, "reverse") {
-            cmd.arg("-r");
-        }
-
-        if Self::parse_bool_arg(args, "follow") {
-            cmd.arg("-f");
-        }
-
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        let mut child = cmd.spawn().context("Failed to spawn journalctl")?;
-
-        // Stream stdout to io.stdout
-        if let Some(stdout) = child.stdout.take() {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) => {
-                        writeln!(io.stdout, "{}", line)?;
-                        io.stdout.flush()?;
-                    }
-                    Err(e) => {
-                        writeln!(io.stderr, "Error reading journalctl output: {}", e)?;
-                        break;
-                    }
-                }
-            }
-        }
-
-        let exit_status = child.wait().context("Failed to wait for journalctl")?;
-
-        if exit_status.success() {
-            Ok(Status::ok())
-        } else {
-            let code = exit_status.code().unwrap_or(1);
-            Ok(Status::err(
-                code,
-                format!("journalctl failed with exit code {}", code),
-            ))
-        }
-    }
-
-    fn logs_openrc(&self, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        let possible_paths = [
-            format!("/var/log/{}.log", self.name),
-            format!("/var/log/{}/{}.log", self.name, self.name),
-            format!("/var/log/{}/current", self.name),
-        ];
-
-        let mut log_path = None;
-        for path in &possible_paths {
-            if Path::new(path).is_file() {
-                log_path = Some(path);
-                break;
-            }
-        }
-
-        let log_file = match log_path {
-            Some(path) => path,
-            None => {
-                writeln!(io.stderr, "No logs found for service '{}'", self.name)?;
-                writeln!(io.stderr, "Checked paths: {}", possible_paths.join(", "))?;
-                return Ok(Status::err(2, "no logs found for service"));
-            }
-        };
-
-        let lines = Self::parse_lines_arg(args);
-        let reverse = Self::parse_bool_arg(args, "reverse");
-
-        // Use tail command to get the last N lines
-        let mut cmd = Command::new("tail");
-        cmd.arg("-n").arg(lines.to_string());
-        cmd.arg(log_file);
-
-        if Self::parse_bool_arg(args, "follow") {
-            cmd.arg("-f");
-        }
-
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        let mut child = cmd.spawn().context("Failed to spawn tail command")?;
-
-        // Collect lines if we need to reverse them, otherwise stream directly
-        if reverse && !Self::parse_bool_arg(args, "follow") {
-            let output = child
-                .wait_with_output()
-                .context("Failed to read tail output")?;
-
-            if output.status.success() {
-                let lines: Vec<&str> = std::str::from_utf8(&output.stdout)
-                    .context("Invalid UTF-8 in log file")?
-                    .lines()
-                    .rev() // Reverse the order
-                    .collect();
-
-                for line in lines {
-                    writeln!(io.stdout, "{}", line)?;
-                }
-                Ok(Status::ok())
-            } else {
-                let stderr = std::str::from_utf8(&output.stderr).unwrap_or("unknown error");
-                writeln!(io.stderr, "tail failed: {}", stderr)?;
-                Ok(Status::err(
-                    output.status.code().unwrap_or(1),
-                    "tail command failed",
-                ))
-            }
-        } else {
-            // Stream output directly
-            if let Some(stdout) = child.stdout.take() {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines() {
-                    match line {
-                        Ok(line) => {
-                            writeln!(io.stdout, "{}", line)?;
-                            io.stdout.flush()?;
-                        }
-                        Err(e) => {
-                            writeln!(io.stderr, "Error reading log file: {}", e)?;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            let exit_status = child.wait().context("Failed to wait for tail command")?;
-
-            if exit_status.success() {
-                Ok(Status::ok())
-            } else {
-                let code = exit_status.code().unwrap_or(1);
-                Ok(Status::err(
-                    code,
-                    format!("tail failed with exit code {}", code),
-                ))
-            }
-        }
-    }
-
-    fn scale_systemd(&self, count: u32, io: &mut IoStreams) -> anyhow::Result<Status> {
-        // URL-decode the name first in case it contains encoded characters like %40 for @
-        let decoded_name = percent_encoding::percent_decode(self.name.as_bytes())
-            .decode_utf8()
-            .unwrap_or(std::borrow::Cow::Borrowed(&self.name));
-
-        // Determine if this is a template unit
-        let is_template = decoded_name.ends_with("@.") || decoded_name.ends_with("@.service");
-
-        if is_template {
-            self.scale_systemd_template(count, io)
-        } else {
-            self.scale_systemd_non_template(count, io)
-        }
-    }
-
-    fn scale_systemd_template(&self, count: u32, io: &mut IoStreams) -> anyhow::Result<Status> {
-        use zbus::blocking::Connection;
-
-        // URL-decode the name first in case it contains encoded characters like %40 for @
-        let decoded_name = percent_encoding::percent_decode(self.name.as_bytes())
-            .decode_utf8()
-            .unwrap_or(std::borrow::Cow::Borrowed(&self.name));
-
-        // Normalize service name to end with .service using the decoded name
-        let base_unit = if decoded_name.ends_with("@.service") {
-            decoded_name.to_string()
-        } else if decoded_name.ends_with("@.") {
-            format!("{}.service", decoded_name)
-        } else {
-            // Not a template, this shouldn't happen
-            return self.scale_systemd_non_template(count, io);
-        };
-
-        let conn = Connection::system().context("Failed to connect to D-Bus")?;
-        let manager = zbus::blocking::Proxy::new(
-            &conn,
-            "org.freedesktop.systemd1",
-            "/org/freedesktop/systemd1",
-            "org.freedesktop.systemd1.Manager",
-        )
-        .context("Failed to create Manager proxy")?;
-
-        // List all loaded units to find existing instances
-        let units: Vec<(
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            zvariant::OwnedObjectPath,
-            u32,
-            String,
-            zvariant::OwnedObjectPath,
-        )> = manager
-            .call("ListUnits", &())
-            .context("Failed to list units")?;
-
-        // Extract the base name without @.service suffix to create pattern
-        let base_name = if let Some(stripped) = base_unit.strip_suffix("@.service") {
-            stripped
-        } else if let Some(stripped) = base_unit.strip_suffix("@.") {
-            stripped
-        } else {
-            // If not a template unit, this shouldn't happen
-            return self.scale_systemd_non_template(count, io);
-        };
-
-        // Find instances that match our template pattern
-        let mut existing_instances = Vec::new();
-        for (unit_name, _, _, active_state, _, _, _, _, _, _) in &units {
-            if let Some(suffix) = unit_name.strip_prefix(&format!("{}@", base_name)) {
-                if let Some(instance_part) = suffix.strip_suffix(".service") {
-                    if let Ok(instance_num) = instance_part.parse::<u32>() {
-                        existing_instances.push((
-                            instance_num,
-                            unit_name.clone(),
-                            active_state == "active",
-                        ));
-                    }
-                }
-            }
-        }
-
-        let mut instances_started = Vec::new();
-        let mut instances_stopped = Vec::new();
-        let mut errors = Vec::new();
-
-        // Start instances 1 through count if they're not active
-        for i in 1..=count {
-            let instance_name = format!("{}@{}.service", base_name, i);
-            let is_currently_active = existing_instances
-                .iter()
-                .find(|(num, _, _)| *num == i)
-                .map(|(_, _, active)| *active)
-                .unwrap_or(false);
-
-            if !is_currently_active {
-                let call_result: Result<zvariant::OwnedObjectPath, _> =
-                    manager.call("StartUnit", &(instance_name.clone(), "replace"));
-                match call_result {
-                    Ok(_) => instances_started.push(instance_name),
-                    Err(e) => errors.push(format!("Failed to start {}: {}", instance_name, e)),
-                }
-            }
-        }
-
-        // Stop instances with numbers > count that are currently active
-        for (instance_num, instance_name, is_active) in &existing_instances {
-            if *instance_num > count && *is_active {
-                let call_result: Result<zvariant::OwnedObjectPath, _> =
-                    manager.call("StopUnit", &(instance_name.clone(), "replace"));
-                match call_result {
-                    Ok(_) => instances_stopped.push(instance_name.clone()),
-                    Err(e) => errors.push(format!("Failed to stop {}: {}", instance_name, e)),
-                }
-            }
-        }
-
-        // Count the final number of active instances
-        let final_units: Vec<(
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            zvariant::OwnedObjectPath,
-            u32,
-            String,
-            zvariant::OwnedObjectPath,
-        )> = manager.call("ListUnits", &()).unwrap_or_default();
-
-        let effective_count = final_units
-            .iter()
-            .filter(|(unit_name, _, _, active_state, _, _, _, _, _, _)| {
-                if let Some(suffix) = unit_name.strip_prefix(&format!("{}@", base_name)) {
-                    if let Some(instance_part) = suffix.strip_suffix(".service") {
-                        if instance_part.parse::<u32>().is_ok() {
-                            return active_state == "active";
-                        }
-                    }
-                }
-                false
-            })
-            .count() as u32;
-
-        let mut result = json!({
-            "name": base_unit,
-            "backend": "systemd",
-            "desired_count": count,
-            "template": true,
-            "instances_started": instances_started,
-            "instances_stopped": instances_stopped,
-            "effective_count": effective_count,
-            "note": "scaled systemd template unit"
-        });
-
-        if !errors.is_empty() {
-            result["errors"] = json!(errors);
-        }
-
-        write!(io.stdout, "{}", serde_json::to_string(&result)?)?;
-
-        if errors.is_empty() {
-            Ok(Status::ok())
-        } else {
-            Ok(Status {
-                ok: false,
-                code: Some(1),
-                reason: Some(format!("scaling completed with {} errors", errors.len())),
-            })
-        }
-    }
-
-    fn scale_systemd_non_template(&self, count: u32, io: &mut IoStreams) -> anyhow::Result<Status> {
-        use zbus::blocking::Connection;
-
-        let unit = self.unit_name();
-        let conn = Connection::system().context("Failed to connect to D-Bus")?;
-        let manager = zbus::blocking::Proxy::new(
-            &conn,
-            "org.freedesktop.systemd1",
-            "/org/freedesktop/systemd1",
-            "org.freedesktop.systemd1.Manager",
-        )
-        .context("Failed to create Manager proxy")?;
-
-        // Get current state
-        let current_status = self
-            .status_systemd()
-            .unwrap_or_else(|_| json!({"active_state": "unknown"}));
-        let current_active = current_status
-            .get("active_state")
-            .and_then(|v| v.as_str())
-            .map(|s| s == "active")
-            .unwrap_or(false);
-
-        let mut error_msg = None;
-
-        if count == 0 {
-            // Stop the service if it's running
-            if current_active {
-                let call_result: Result<zvariant::OwnedObjectPath, _> =
-                    manager.call("StopUnit", &(unit.clone(), "replace"));
-                if let Err(e) = call_result {
-                    error_msg = Some(format!("Failed to stop {}: {}", unit, e));
-                }
-            }
-        } else {
-            // count >= 1: ensure service is started
-            if !current_active {
-                let call_result: Result<zvariant::OwnedObjectPath, _> =
-                    manager.call("StartUnit", &(unit.clone(), "replace"));
-                if let Err(e) = call_result {
-                    error_msg = Some(format!("Failed to start {}: {}", unit, e));
-                }
-            }
-        }
-
-        // Get final state
-        let final_status = self
-            .status_systemd()
-            .unwrap_or_else(|_| json!({"active_state": "unknown"}));
-        let final_active = final_status
-            .get("active_state")
-            .and_then(|v| v.as_str())
-            .map(|s| s == "active")
-            .unwrap_or(false);
-
-        let effective_count = if final_active { 1 } else { 0 };
-
-        let mut result = json!({
-            "name": unit,
-            "backend": "systemd",
-            "desired_count": count,
-            "template": false,
-            "effective_count": effective_count,
-            "note": format!("non-template service scaled to {}", if count == 0 { "0" } else { "1" })
-        });
-
-        let has_error = error_msg.is_some();
-        if let Some(error) = error_msg {
-            result["error"] = json!(error);
-        }
-
-        write!(io.stdout, "{}", serde_json::to_string(&result)?)?;
-
-        if has_error {
-            Ok(Status {
-                ok: false,
-                code: Some(1),
-                reason: Some("scaling failed".to_string()),
-            })
-        } else {
-            Ok(Status::ok())
-        }
-    }
-
-    fn scale_openrc(&self, count: u32, io: &mut IoStreams) -> anyhow::Result<Status> {
-        let svc = self.name.clone();
-
-        // Get current state
-        let current_status = self
-            .status_openrc()
-            .unwrap_or_else(|_| json!({"state": "unknown"}));
-        let current_running = current_status
-            .get("state")
-            .and_then(|v| v.as_str())
-            .map(|s| s == "running")
-            .unwrap_or(false);
-
-        let mut error_msg = None;
-
-        if count == 0 {
-            // Stop the service if it's running
-            if current_running {
-                if let Err(e) = self.openrc_control("stop") {
-                    error_msg = Some(format!("Failed to stop {}: {}", svc, e));
-                }
-            }
-        } else {
-            // count >= 1: ensure service is started
-            if !current_running {
-                if let Err(e) = self.openrc_start() {
-                    error_msg = Some(format!("Failed to start {}: {}", svc, e));
-                }
-            }
-        }
-
-        // Get final state
-        let final_status = self
-            .status_openrc()
-            .unwrap_or_else(|_| json!({"state": "unknown"}));
-        let final_running = final_status
-            .get("state")
-            .and_then(|v| v.as_str())
-            .map(|s| s == "running")
-            .unwrap_or(false);
-
-        let effective_count = if final_running { 1 } else { 0 };
-
-        let mut result = json!({
-            "name": svc,
-            "backend": "openrc",
-            "desired_count": count,
-            "effective_count": effective_count,
-            "note": "openrc scaling is min/max 1 only"
-        });
-
-        let has_error = error_msg.is_some();
-        if let Some(error) = error_msg {
-            result["error"] = json!(error);
-        }
-
-        write!(io.stdout, "{}", serde_json::to_string(&result)?)?;
-
-        if has_error {
-            Ok(Status {
-                ok: false,
-                code: Some(1),
-                reason: Some("scaling failed".to_string()),
-            })
-        } else {
-            Ok(Status::ok())
-        }
+        (Backend::Unknown, Route::Auto)
     }
 
     /// Check if the URL indicates a help request. Matches whole tokens
@@ -1328,21 +836,217 @@ impl SvcHandle {
         if url.host_str().is_some_and(crate::core::help::is_help_flag) {
             return true;
         }
-
         let path = url.path();
         if !path.is_empty() && path != "/" && crate::core::help::is_help_flag(path) {
             return true;
         }
-
         url.query_pairs()
             .any(|(key, _)| key == "help" || key == "h")
     }
 
-    /// Display the approved svc help (same text as `resh svc [<verb>] --help`).
+    /// Writes the approved help for the help verbs and in-URL help forms.
     fn display_help(&self, verb: Option<&str>, io: &mut IoStreams) -> anyhow::Result<Status> {
+        if let Some(v) = verb
+            && !VERBS.contains(&v)
+        {
+            return report(io, None, unknown_verb(v));
+        }
         let text = crate::core::help::render_legacy("svc", &SVC_HELP, self.verbs(), verb);
         write!(io.stdout, "{}", text).with_context(|| "Failed to write help text to stdout")?;
         Ok(Status::ok())
+    }
+
+    /// Runs `op` on systemd through `bus`.
+    fn on_systemd(bus: &dyn Bus, c: &Ctx, op: &Op, warn: &mut Vec<String>) -> Reply {
+        match op {
+            Op::Status => systemd::status(bus, c),
+            Op::IsEnabled => systemd::is_enabled(bus, c),
+            Op::Start => systemd::start(bus, c, "start"),
+            Op::Restart => systemd::start(bus, c, "restart"),
+            Op::Stop { force } => systemd::stop(bus, c, *force),
+            Op::Reload => systemd::reload(bus, c),
+            Op::Files(f) => systemd::unit_files(bus, c, *f, warn),
+            Op::Wait { active, state } => systemd::wait(bus, c, *active, state),
+            Op::Scale { count } => systemd::scale(bus, c, *count),
+            Op::Logs(_) => Reply::ok_empty(),
+        }
+    }
+
+    fn on_openrc(t: &Tools, c: &Ctx, op: &Op) -> Reply {
+        let unsupported = |what: &str| {
+            Reply::failed(
+                None,
+                Fail::new(
+                    exit::USAGE,
+                    "svc.unsupported",
+                    format!("{what} is not supported on OpenRC; nothing was done"),
+                ),
+            )
+        };
+        match op {
+            Op::Status => openrc::status(t, c),
+            Op::IsEnabled => openrc::is_enabled(t, c),
+            Op::Start => openrc::start(t, c, "start"),
+            Op::Restart => openrc::start(t, c, "restart"),
+            Op::Stop { force: true } => unsupported("stop force=true"),
+            Op::Stop { force: false } => openrc::stop(t, c),
+            Op::Reload => openrc::reload(t, c),
+            Op::Files(FileOp::Enable) => openrc::enable(t, c, true),
+            Op::Files(FileOp::Disable) => openrc::enable(t, c, false),
+            Op::Files(f) => unsupported(f.verb()),
+            Op::Wait { active, state } => openrc::wait(t, c, *active, state),
+            Op::Scale { .. } if systemd::template_base(&c.unit).is_some() => {
+                unsupported("scaling a template unit")
+            }
+            Op::Scale { count } => openrc::scale(t, c, *count),
+            Op::Logs(_) => Reply::ok_empty(),
+        }
+    }
+
+    /// The systemd bus for this call: D-Bus, or systemctl when the bus
+    /// cannot be reached (or the route forces it).
+    fn systemd_bus(route: Route, t: &Tools, deadline: Instant) -> Result<Box<dyn Bus>, Fail> {
+        if route == Route::Auto {
+            match ZbusBus::connect(deadline) {
+                Ok(b) => return Ok(Box::new(b)),
+                Err(e) if e.kind == BusErrKind::Unavailable => {}
+                Err(e) => return Err(systemd::bus_fail(e, "the service manager")),
+            }
+        }
+        Ok(Box::new(SystemctlBus::new(t.systemctl.clone(), deadline)))
+    }
+
+    fn run(&self, verb: &str, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
+        if !VERBS.contains(&verb) {
+            return report(io, None, unknown_verb(verb));
+        }
+        if let Err(reason) = validate_service_name(&self.name) {
+            return report(
+                io,
+                None,
+                Fail::new(exit::USAGE, "svc.invalid_target", reason),
+            );
+        }
+        let (op, timeout_ms) = match parse_args(verb, args) {
+            Ok(v) => v,
+            Err(f) => return report(io, None, f),
+        };
+        let (backend, route) = Self::detect_backend();
+        let tools = Tools::from_env();
+        self.execute(backend, route, &tools, op, timeout_ms, io)
+    }
+
+    fn execute(
+        &self,
+        backend: Backend,
+        route: Route,
+        tools: &Tools,
+        op: Op,
+        timeout_ms: Option<u64>,
+        io: &mut IoStreams,
+    ) -> anyhow::Result<Status> {
+        let ms = timeout_ms.unwrap_or(0);
+        let c = Ctx {
+            name: self.name.clone(),
+            unit: self.unit_name(),
+            timeout_ms: ms,
+            deadline: Instant::now() + Duration::from_millis(ms),
+        };
+        if let Op::Logs(o) = &op {
+            if backend == Backend::OpenRc
+                && let Some(k) = [
+                    ("since", o.since.is_some()),
+                    ("until", o.until.is_some()),
+                    ("level", o.level.is_some()),
+                ]
+                .iter()
+                .find(|(_, set)| *set)
+            {
+                let f = Fail::new(
+                    exit::USAGE,
+                    "svc.unsupported",
+                    format!("{} is supported only on systemd; nothing was read", k.0),
+                );
+                return report(io, None, f);
+            }
+            let r = match backend {
+                Backend::Systemd => logs::journal(tools, &c, o, io)?,
+                Backend::OpenRc => logs::openrc(tools, &c, o, io)?,
+                Backend::Unknown => Some(no_backend()),
+            };
+            return match r {
+                None => Ok(Status::ok()),
+                Some(f) => report(io, None, f),
+            };
+        }
+        let mut warn = Vec::new();
+        let reply = match backend {
+            Backend::Systemd => match Self::systemd_bus(route, tools, c.deadline) {
+                Ok(bus) => Self::on_systemd(bus.as_ref(), &c, &op, &mut warn),
+                Err(f) => Reply::failed(Some(self.base_json(backend, &c, &op)), f),
+            },
+            Backend::OpenRc => Self::on_openrc(tools, &c, &op),
+            Backend::Unknown => Reply::failed(Some(self.base_json(backend, &c, &op)), no_backend()),
+        };
+        for w in warn {
+            writeln!(io.stderr, "warning: {w}")?;
+        }
+        emit(io, reply)
+    }
+
+    /// The identifying fields of a verb's JSON result, for failures that
+    /// happen before the backend answered.
+    fn base_json(&self, backend: Backend, c: &Ctx, op: &Op) -> Value {
+        let name = match (backend, op) {
+            (Backend::Systemd, Op::IsEnabled | Op::Wait { .. }) => c.name.clone(),
+            (Backend::Systemd, _) => c.unit.clone(),
+            _ => c.name.clone(),
+        };
+        let mut v = json!({"name": name, "backend": backend.label()});
+        match op {
+            Op::Start => v["action"] = json!("start"),
+            Op::Restart => v["action"] = json!("restart"),
+            Op::Stop { .. } => v["action"] = json!("stop"),
+            Op::Scale { count } => v["desired_count"] = json!(count),
+            _ => {}
+        }
+        match op {
+            Op::Files(_) | Op::Reload | Op::Logs(_) => Value::Null,
+            _ => v,
+        }
+    }
+}
+
+fn no_backend() -> Fail {
+    Fail::new(
+        exit::FAILED,
+        "svc.no_backend",
+        "no supported service manager found (neither systemd nor OpenRC)",
+    )
+}
+
+/// Writes the stderr error line (and, when the verb prints JSON, the result
+/// with its error object) and returns the status.
+fn report(io: &mut IoStreams, json: Option<Value>, f: Fail) -> anyhow::Result<Status> {
+    if let Some(mut v) = json.filter(|v| !v.is_null()) {
+        v["error"] = error_json(f.code, &f.msg);
+        writeln!(io.stdout, "{v}")?;
+        io.stdout.flush()?;
+    }
+    writeln!(io.stderr, "{}", error_line(f.code, &f.msg))?;
+    Ok(Status::coded(f.exit, f.code, f.msg))
+}
+
+fn emit(io: &mut IoStreams, reply: Reply) -> anyhow::Result<Status> {
+    match reply.fail {
+        Some(f) => report(io, reply.json, f),
+        None => {
+            if let Some(v) = reply.json {
+                writeln!(io.stdout, "{v}")?;
+                io.stdout.flush()?;
+            }
+            Ok(Status::ok())
+        }
     }
 }
 
@@ -1350,15 +1054,15 @@ impl Handle for SvcHandle {
     fn verbs(&self) -> &'static [&'static str] {
         &[
             "status",
-            "restart",
+            "is-enabled",
             "start",
             "stop",
+            "restart",
             "reload",
             "enable",
             "disable",
             "mask",
             "unmask",
-            "is-enabled",
             "wait",
             "logs",
             "scale",
@@ -1373,731 +1077,15 @@ impl Handle for SvcHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        // Check if this is a help request first
-        if crate::core::help::HELP_ALIASES.contains(&verb)
-            || Self::should_show_help(&self.original_url)
-        {
+        if crate::core::help::HELP_ALIASES.contains(&verb) {
             return self.display_help(args.get("verb").map(String::as_str), io);
         }
-
-        // Every verb acts on the named service; never run a backend
-        // command with a name it could misread.
-        if let Err(reason) = validate_service_name(&self.name) {
-            writeln!(io.stderr, "Error: {}", reason)?;
-            return Ok(Status::err(2, reason));
+        if let Some(v) = verb.strip_prefix("--help=") {
+            return self.display_help(Some(v), io);
         }
-
-        match verb {
-            "status" => {
-                let backend = Self::detect_backend();
-                let obj = match backend {
-                    Backend::Systemd => match self.status_systemd() {
-                        Ok(v) => v,
-                        Err(e) => json!({
-                            "name": self.unit_name(),
-                            "backend": "systemd",
-                            "error": e.to_string()
-                        }),
-                    },
-                    Backend::OpenRc => match self.status_openrc() {
-                        Ok(v) => v,
-                        Err(e) => json!({
-                            "name": self.name,
-                            "backend": "openrc",
-                            "error": e.to_string()
-                        }),
-                    },
-                    Backend::Unknown => json!({
-                        "name": self.name,
-                        "backend": "unknown",
-                        "error": "could not detect systemd or openrc"
-                    }),
-                };
-                write!(io.stdout, "{}", serde_json::to_string(&obj)?)?;
-                Ok(status_outcome(&obj))
-            }
-            "start" => {
-                let backend = Self::detect_backend();
-                match backend {
-                    Backend::Systemd => match self.systemd_start() {
-                        Ok(()) => {
-                            let result = json!({
-                                "backend": "systemd",
-                                "name": self.unit_name(),
-                                "action": "start",
-                                "result": "success"
-                            });
-                            writeln!(io.stdout, "{}", result)?;
-                            Ok(Status::ok())
-                        }
-                        Err(e) => {
-                            let error = json!({
-                                "backend": "systemd",
-                                "name": self.unit_name(),
-                                "action": "start",
-                                "error": e.to_string()
-                            });
-                            writeln!(io.stderr, "{}", error)?;
-                            Ok(Status {
-                                ok: false,
-                                code: Some(1),
-                                reason: Some(format!("start failed: {}", e)),
-                            })
-                        }
-                    },
-                    Backend::OpenRc => match self.openrc_start() {
-                        Ok(()) => {
-                            let result = json!({
-                                "backend": "openrc",
-                                "name": &self.name,
-                                "action": "start",
-                                "result": "success"
-                            });
-                            writeln!(io.stdout, "{}", result)?;
-                            Ok(Status::ok())
-                        }
-                        Err(e) => {
-                            let error = json!({
-                                "backend": "openrc",
-                                "name": &self.name,
-                                "action": "start",
-                                "error": e.to_string()
-                            });
-                            writeln!(io.stderr, "{}", error)?;
-                            Ok(Status {
-                                ok: false,
-                                code: Some(1),
-                                reason: Some(format!("start failed: {}", e)),
-                            })
-                        }
-                    },
-                    Backend::Unknown => {
-                        let error = json!({
-                            "backend": "unknown",
-                            "name": &self.name,
-                            "action": "start",
-                            "error": "no supported init system found"
-                        });
-                        writeln!(io.stderr, "{}", error)?;
-                        Ok(Status {
-                            ok: false,
-                            code: Some(1),
-                            reason: Some("no supported init system found".to_string()),
-                        })
-                    }
-                }
-            }
-            "stop" => {
-                let backend = Self::detect_backend();
-
-                // Parse arguments
-                let timeout_ms = args
-                    .get("timeout")
-                    .map(|s| {
-                        s.parse::<u64>()
-                            .context("timeout must be a positive integer")
-                    })
-                    .transpose()?;
-
-                let force = args
-                    .get("force")
-                    .map(|s| match s.as_str() {
-                        "true" => Ok(true),
-                        "false" => Ok(false),
-                        _ => bail!("force must be 'true' or 'false'"),
-                    })
-                    .transpose()?
-                    .unwrap_or(false);
-
-                match backend {
-                    Backend::Systemd => {
-                        // Get initial state before stopping
-                        let previous_state = self
-                            .status_systemd()
-                            .ok()
-                            .and_then(|v| v.get("active_state")?.as_str().map(|s| s.to_string()))
-                            .unwrap_or("unknown".to_string());
-
-                        let stop_result = if force {
-                            self.systemd_force_stop()
-                        } else {
-                            self.systemd_control("stop")
-                        };
-
-                        match stop_result {
-                            Ok(()) => {
-                                let mut result = json!({
-                                    "name": self.unit_name(),
-                                    "backend": "systemd",
-                                    "action": "stop",
-                                    "requested": true,
-                                    "previous_state": previous_state,
-                                    "note": if force { "stopped via force" } else { "stopped via StopUnit" }
-                                });
-
-                                if let Some(timeout) = timeout_ms {
-                                    result["timeout_ms"] = timeout.into();
-                                    // Wait for service to reach inactive state
-                                    let reached_inactive = self.wait_until(false, timeout)?;
-                                    result["reached_inactive"] = reached_inactive.into();
-
-                                    // Get final state
-                                    let final_state = self
-                                        .status_systemd()
-                                        .ok()
-                                        .and_then(|v| {
-                                            v.get("active_state")?.as_str().map(|s| s.to_string())
-                                        })
-                                        .unwrap_or("unknown".to_string());
-                                    result["final_state"] = final_state.into();
-
-                                    if !reached_inactive {
-                                        result["error"] =
-                                            "timeout waiting for service to stop".into();
-                                        writeln!(io.stdout, "{}", result)?;
-                                        return Ok(Status {
-                                            ok: false,
-                                            code: Some(124),
-                                            reason: Some(
-                                                "timeout waiting for service to stop".to_string(),
-                                            ),
-                                        });
-                                    }
-                                } else {
-                                    // Get final state without waiting
-                                    let final_state = self
-                                        .status_systemd()
-                                        .ok()
-                                        .and_then(|v| {
-                                            v.get("active_state")?.as_str().map(|s| s.to_string())
-                                        })
-                                        .unwrap_or("unknown".to_string());
-                                    result["final_state"] = final_state.into();
-                                }
-
-                                writeln!(io.stdout, "{}", result)?;
-                                Ok(Status::ok())
-                            }
-                            Err(e) => {
-                                let error = json!({
-                                    "name": self.unit_name(),
-                                    "backend": "systemd",
-                                    "action": "stop",
-                                    "requested": false,
-                                    "error": e.to_string()
-                                });
-                                writeln!(io.stdout, "{}", error)?;
-                                Ok(Status {
-                                    ok: false,
-                                    code: Some(1),
-                                    reason: Some(format!("stop failed: {}", e)),
-                                })
-                            }
-                        }
-                    }
-                    Backend::OpenRc => {
-                        // Get initial state before stopping
-                        let previous_state = self
-                            .status_openrc()
-                            .ok()
-                            .and_then(|v| v.get("state")?.as_str().map(|s| s.to_string()))
-                            .unwrap_or("unknown".to_string());
-
-                        match self.openrc_control("stop") {
-                            Ok(()) => {
-                                let mut result = json!({
-                                    "name": &self.name,
-                                    "backend": "openrc",
-                                    "action": "stop",
-                                    "requested": true,
-                                    "previous_state": previous_state
-                                });
-
-                                if let Some(timeout) = timeout_ms {
-                                    result["timeout_ms"] = timeout.into();
-                                    // Wait for service to reach inactive state
-                                    let reached_inactive = self.wait_until(false, timeout)?;
-                                    result["reached_inactive"] = reached_inactive.into();
-
-                                    // Get final state
-                                    let final_state = self
-                                        .status_openrc()
-                                        .ok()
-                                        .and_then(|v| {
-                                            v.get("state")?.as_str().map(|s| s.to_string())
-                                        })
-                                        .unwrap_or("stopped_or_unknown".to_string());
-                                    result["final_state"] = final_state.into();
-
-                                    if !reached_inactive {
-                                        result["error"] =
-                                            "timeout waiting for service to stop".into();
-                                        writeln!(io.stdout, "{}", result)?;
-                                        return Ok(Status {
-                                            ok: false,
-                                            code: Some(124),
-                                            reason: Some(
-                                                "timeout waiting for service to stop".to_string(),
-                                            ),
-                                        });
-                                    }
-                                } else {
-                                    // Get final state without waiting
-                                    let final_state = self
-                                        .status_openrc()
-                                        .ok()
-                                        .and_then(|v| {
-                                            v.get("state")?.as_str().map(|s| s.to_string())
-                                        })
-                                        .unwrap_or("stopped_or_unknown".to_string());
-                                    result["final_state"] = final_state.into();
-                                }
-
-                                writeln!(io.stdout, "{}", result)?;
-                                Ok(Status::ok())
-                            }
-                            Err(e) => {
-                                let error = json!({
-                                    "name": &self.name,
-                                    "backend": "openrc",
-                                    "action": "stop",
-                                    "requested": false,
-                                    "error": e.to_string()
-                                });
-                                writeln!(io.stdout, "{}", error)?;
-                                Ok(Status {
-                                    ok: false,
-                                    code: Some(1),
-                                    reason: Some(format!("stop failed: {}", e)),
-                                })
-                            }
-                        }
-                    }
-                    Backend::Unknown => {
-                        let error = json!({
-                            "name": &self.name,
-                            "backend": "unknown",
-                            "action": "stop",
-                            "requested": false,
-                            "error": "no supported init system found"
-                        });
-                        writeln!(io.stdout, "{}", error)?;
-                        Ok(Status {
-                            ok: false,
-                            code: Some(1),
-                            reason: Some("no supported init system found".to_string()),
-                        })
-                    }
-                }
-            }
-            "restart" => {
-                let backend = Self::detect_backend();
-                match backend {
-                    Backend::Systemd => match self.systemd_restart() {
-                        Ok(()) => {
-                            let result = json!({
-                                "backend": "systemd",
-                                "name": self.unit_name(),
-                                "action": "restart",
-                                "result": "success"
-                            });
-                            writeln!(io.stdout, "{}", result)?;
-                            Ok(Status::ok())
-                        }
-                        Err(e) => {
-                            let error = json!({
-                                "backend": "systemd",
-                                "name": self.unit_name(),
-                                "action": "restart",
-                                "error": e.to_string()
-                            });
-                            writeln!(io.stderr, "{}", error)?;
-                            Ok(Status {
-                                ok: false,
-                                code: Some(1),
-                                reason: Some(format!("restart failed: {}", e)),
-                            })
-                        }
-                    },
-                    Backend::OpenRc => match self.openrc_restart() {
-                        Ok(()) => {
-                            let result = json!({
-                                "backend": "openrc",
-                                "name": &self.name,
-                                "action": "restart",
-                                "result": "success"
-                            });
-                            writeln!(io.stdout, "{}", result)?;
-                            Ok(Status::ok())
-                        }
-                        Err(e) => {
-                            let error = json!({
-                                "backend": "openrc",
-                                "name": &self.name,
-                                "action": "restart",
-                                "error": e.to_string()
-                            });
-                            writeln!(io.stderr, "{}", error)?;
-                            Ok(Status {
-                                ok: false,
-                                code: Some(1),
-                                reason: Some(format!("restart failed: {}", e)),
-                            })
-                        }
-                    },
-                    Backend::Unknown => {
-                        let error = json!({
-                            "backend": "unknown",
-                            "name": &self.name,
-                            "action": "restart",
-                            "error": "no supported init system found for restart"
-                        });
-                        writeln!(io.stderr, "{}", error)?;
-                        Ok(Status {
-                            ok: false,
-                            code: Some(1),
-                            reason: Some("no supported init system found for restart".to_string()),
-                        })
-                    }
-                }
-            }
-            "reload" | "enable" | "disable" | "mask" | "unmask" => {
-                let backend = Self::detect_backend();
-                match backend {
-                    Backend::Systemd => self.systemd_control(verb)?,
-                    Backend::OpenRc => self.openrc_control(verb)?,
-                    Backend::Unknown => bail!("no supported init system found"),
-                }
-                Ok(Status::ok())
-            }
-            "is-enabled" => {
-                let backend = Self::detect_backend();
-                let enabled = match backend {
-                    Backend::Systemd => self.systemd_is_enabled().unwrap_or(false),
-                    Backend::OpenRc => self.openrc_is_enabled().unwrap_or(false),
-                    Backend::Unknown => false,
-                };
-                let out = json!({ "name": self.name, "enabled": enabled, "backend": format!("{:?}", backend).to_lowercase() });
-                write!(io.stdout, "{}", out.to_string())?;
-                return Ok(Status::ok());
-            }
-            "wait" => {
-                let state = args.get("state").map(|s| s.as_str()).unwrap_or("active");
-                let want_active = match state {
-                    "active" | "running" => true,
-                    "inactive" | "stopped" => false,
-                    _ => true,
-                };
-                let timeout = args
-                    .get("timeout")
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(10_000);
-                let ok = self.wait_until(want_active, timeout)?;
-                let out = json!({ "name": self.name, "backend": format!("{:?}", Self::detect_backend()).to_lowercase(), "reached": ok, "state": state, "timeout_ms": timeout });
-                write!(io.stdout, "{}", out.to_string())?;
-                if ok {
-                    Ok(Status::ok())
-                } else {
-                    Ok(Status {
-                        ok: false,
-                        code: Some(124),
-                        reason: Some("timeout".into()),
-                    })
-                }
-            }
-            "logs" => {
-                let backend = Self::detect_backend();
-                match backend {
-                    Backend::Systemd => self.logs_systemd(args, io),
-                    Backend::OpenRc => self.logs_openrc(args, io),
-                    Backend::Unknown => {
-                        writeln!(io.stderr, "No supported init system found for logs")?;
-                        Ok(Status::err(1, "no supported init system for logs"))
-                    }
-                }
-            }
-            "scale" => {
-                // Parse count argument
-                let count = match args.get("count") {
-                    Some(count_str) => match count_str.parse::<u32>() {
-                        Ok(c) => c,
-                        Err(_) => {
-                            let error = json!({
-                                "name": self.name,
-                                "backend": format!("{:?}", Self::detect_backend()).to_lowercase(),
-                                "desired_count": count_str,
-                                "error": "count must be a non-negative integer"
-                            });
-                            write!(io.stdout, "{}", error)?;
-                            return Ok(Status {
-                                ok: false,
-                                code: Some(1),
-                                reason: Some("invalid count parameter".to_string()),
-                            });
-                        }
-                    },
-                    None => {
-                        let error = json!({
-                            "name": self.name,
-                            "backend": format!("{:?}", Self::detect_backend()).to_lowercase(),
-                            "error": "count parameter is required"
-                        });
-                        write!(io.stdout, "{}", error)?;
-                        return Ok(Status {
-                            ok: false,
-                            code: Some(1),
-                            reason: Some("missing count parameter".to_string()),
-                        });
-                    }
-                };
-
-                let backend = Self::detect_backend();
-                match backend {
-                    Backend::Systemd => self.scale_systemd(count, io),
-                    Backend::OpenRc => self.scale_openrc(count, io),
-                    Backend::Unknown => {
-                        let error = json!({
-                            "name": self.name,
-                            "backend": "unknown",
-                            "desired_count": count,
-                            "error": "scale not supported for backend: unknown"
-                        });
-                        write!(io.stdout, "{}", error)?;
-                        Ok(Status {
-                            ok: false,
-                            code: Some(1),
-                            reason: Some("scale not supported for unknown backend".to_string()),
-                        })
-                    }
-                }
-            }
-            _ => {
-                bail!("unknown verb for svc://: {}", verb)
-            }
+        if Self::should_show_help(&self.original_url) {
+            return self.display_help(Some(verb).filter(|v| VERBS.contains(v)), io);
         }
-    }
-}
-
-/// ActiveState, SubState and Description from `systemctl show <unit>`.
-/// systemctl succeeds even for units that do not exist, reporting
-/// `LoadState=not-found`; that is an error, not a stopped service.
-fn parse_systemctl_show(unit: &str, stdout: &str) -> anyhow::Result<(String, String, String)> {
-    let mut active_state = "unknown".to_string();
-    let mut sub_state = "unknown".to_string();
-    let mut description = "No description available".to_string();
-    for line in stdout.lines() {
-        if let Some(value) = line.strip_prefix("LoadState=") {
-            if value == "not-found" {
-                anyhow::bail!("unit '{}' not found", unit);
-            }
-        } else if let Some(value) = line.strip_prefix("ActiveState=") {
-            active_state = value.to_string();
-        } else if let Some(value) = line.strip_prefix("SubState=") {
-            sub_state = value.to_string();
-        } else if let Some(value) = line.strip_prefix("Description=") {
-            description = value.to_string();
-        }
-    }
-    Ok((active_state, sub_state, description))
-}
-
-/// Rejects service names that are empty, could be read as a command-line
-/// option, or contain path traversal, whitespace, control characters or a
-/// `user:password@` form. Instance names such as `getty@tty1` are valid.
-fn validate_service_name(name: &str) -> Result<(), String> {
-    let bad = if name.is_empty() {
-        Some("is empty")
-    } else if name.starts_with('-') {
-        Some("starts with '-'")
-    } else if name.split('/').any(|seg| seg == ".." || seg == ".") {
-        Some("contains a '.' or '..' path segment")
-    } else if name.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        Some("contains whitespace or control characters")
-    } else if name.contains(':') {
-        Some("contains ':'")
-    } else {
-        None
-    };
-    match bad {
-        Some(why) => Err(format!("invalid service name {:?}: {}", name, why)),
-        None => Ok(()),
-    }
-}
-
-/// Whether `rc-service <name> status` output says the service is unknown.
-fn openrc_service_missing(output: &str) -> bool {
-    output.contains("does not exist")
-}
-
-/// The exit status for a status object: a failure when it carries an
-/// error (unknown service, no backend, query failure).
-fn status_outcome(obj: &serde_json::Value) -> Status {
-    match obj.get("error") {
-        Some(e) => Status::err(
-            1,
-            format!(
-                "svc status {}: {}",
-                obj.get("name").and_then(|n| n.as_str()).unwrap_or(""),
-                e.as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| e.to_string())
-            ),
-        ),
-        None => Status::ok(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
-    }
-
-    #[test]
-    fn help_detection_is_exact() {
-        assert!(SvcHandle::should_show_help(&url("svc://--help")));
-        assert!(SvcHandle::should_show_help(&url("svc://-h")));
-        assert!(SvcHandle::should_show_help(&url("svc://x/--help")));
-        assert!(SvcHandle::should_show_help(&url("svc://x?help")));
-        assert!(!SvcHandle::should_show_help(&url("svc://my-httpd")));
-        assert!(!SvcHandle::should_show_help(&url("svc://pre-hotfix")));
-        assert!(!SvcHandle::should_show_help(&url("svc://x/my-hosts")));
-        assert!(!SvcHandle::should_show_help(&url("svc://nginx")));
-    }
-
-    fn name_of(stage: &str) -> String {
-        let parsed = crate::core::parse::parse_stage(stage).unwrap();
-        SvcHandle::from_url(&url(&parsed.target)).unwrap().name
-    }
-
-    // FUNC-07: instance units keep their full name through the CLI parser.
-    #[test]
-    fn instance_unit_names_are_preserved() {
-        for (stage, name, unit) in [
-            ("svc://getty@tty1.stop", "getty@tty1", "getty@tty1.service"),
-            (
-                "svc://getty@tty1.status",
-                "getty@tty1",
-                "getty@tty1.service",
-            ),
-            (
-                "svc://openvpn-client@work.restart",
-                "openvpn-client@work",
-                "openvpn-client@work.service",
-            ),
-            (
-                "svc://container-getty@1.service.status",
-                "container-getty@1.service",
-                "container-getty@1.service",
-            ),
-            ("svc://nginx.status", "nginx", "nginx.service"),
-            (
-                "svc://nginx-debug.status",
-                "nginx-debug",
-                "nginx-debug.service",
-            ),
-            ("svc://user@1000.status", "user@1000", "user@1000.service"),
-        ] {
-            assert_eq!(name_of(stage), name, "{stage}");
-            let h = SvcHandle::from_url(&url(&crate::core::parse::parse_stage(stage)
-                .unwrap()
-                .target))
-            .unwrap();
-            assert_eq!(h.unit_name(), unit, "{stage}");
-            assert!(validate_service_name(&h.name).is_ok(), "{stage}");
-        }
-        // Similar names stay distinct.
-        assert_ne!(
-            name_of("svc://getty@tty1.status"),
-            name_of("svc://getty@tty11.status")
-        );
-        assert_ne!(
-            name_of("svc://getty@tty1.status"),
-            name_of("svc://tty1.status")
-        );
-    }
-
-    #[test]
-    fn invalid_service_names_are_rejected_before_any_command() {
-        for name in [
-            "",
-            "-H",
-            "--now",
-            "../x",
-            "a/../b",
-            "a b",
-            "a\tb",
-            "getty:x@tty1",
-        ] {
-            assert!(validate_service_name(name).is_err(), "{name:?}");
-        }
-        // Through call(): rejected with a reason, nothing executed.
-        let h = SvcHandle::from_url(&url("svc://a:b@tty1")).unwrap();
-        assert_eq!(h.name, "a:b@tty1");
-        let mut i: &[u8] = &[];
-        let (mut o, mut e) = (Vec::new(), Vec::new());
-        let status = {
-            let mut io = IoStreams {
-                stdin: &mut i,
-                stdout: &mut o,
-                stderr: &mut e,
-            };
-            h.call("stop", &Args::new(), &mut io).unwrap()
-        };
-        assert!(!status.ok);
-        assert_eq!(status.code, Some(2));
-        assert!(
-            String::from_utf8(e)
-                .unwrap()
-                .contains("invalid service name")
-        );
-        assert!(o.is_empty());
-    }
-
-    // FUNC-02: status of a missing service is a failure on both backends.
-    #[test]
-    fn missing_services_are_failures() {
-        let show_missing =
-            "Id=nosuch.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\n";
-        let err = parse_systemctl_show("nosuch.service", show_missing).unwrap_err();
-        assert!(err.to_string().contains("not found"));
-        let show_stopped = "Id=nginx.service\nLoadState=loaded\nActiveState=inactive\nSubState=dead\nDescription=nginx\n";
-        assert_eq!(
-            parse_systemctl_show("nginx.service", show_stopped).unwrap(),
-            ("inactive".into(), "dead".into(), "nginx".into())
-        );
-
-        assert!(openrc_service_missing(
-            " * rc-service: service `nosuch' does not exist\n"
-        ));
-        assert!(!openrc_service_missing(" * status: stopped\n"));
-
-        let st = status_outcome(
-            &json!({"name": "nosuch", "backend": "openrc", "error": "service 'nosuch' does not exist"}),
-        );
-        assert!(!st.ok);
-        assert_eq!(
-            st.reason.as_deref(),
-            Some("svc status nosuch: service 'nosuch' does not exist")
-        );
-        // A stopped service is a successful status query.
-        assert!(
-            status_outcome(
-                &json!({"name": "nginx", "backend": "openrc", "state": "stopped_or_unknown"})
-            )
-            .ok
-        );
-    }
-
-    #[test]
-    fn display_help_renders_approved_help() {
-        let h = SvcHandle::from_url(&url("svc://--help")).unwrap();
-        let all = crate::core::help::render_legacy("svc", &SVC_HELP, h.verbs(), None);
-        assert!(all.starts_with("Handle: svc"), "{all}");
-        let status = crate::core::help::render_legacy("svc", &SVC_HELP, h.verbs(), Some("status"));
-        assert_ne!(all, status);
-        assert!(status.contains("status"));
+        self.run(verb, args, io)
     }
 }

@@ -1,0 +1,9 @@
+Handle: svc
+Verb: mask
+Definition: Blocks a service from being started at all (systemd only).
+
+Usage:
+  resh svc://<service-name>.mask [timeout_ms=<ms>]
+
+Example:
+  resh svc://nginx.mask

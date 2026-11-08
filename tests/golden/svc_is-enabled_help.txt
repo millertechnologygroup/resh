@@ -1,0 +1,20 @@
+Handle: svc
+Verb: is-enabled
+Definition: Reports whether a service is configured to start at boot.
+
+Usage:
+  resh svc://<service-name>.is-enabled [timeout_ms=<ms>]
+
+Example:
+  resh svc://nginx.is-enabled
+
+Example Output:
+  {
+    "backend": "systemd",
+    "enabled": true,
+    "name": "nginx",
+    "unit_file_state": "enabled"
+  }
+
+  Shown with --json-pretty. On OpenRC, enabled means the service is in the
+  default runlevel. A service that does not exist is an error (exit 1).

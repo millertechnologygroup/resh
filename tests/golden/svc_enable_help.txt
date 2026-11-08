@@ -1,0 +1,9 @@
+Handle: svc
+Verb: enable
+Definition: Configures a service to start automatically at boot.
+
+Usage:
+  resh svc://<service-name>.enable [timeout_ms=<ms>]
+
+Example:
+  resh svc://nginx.enable

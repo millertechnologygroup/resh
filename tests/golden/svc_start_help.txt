@@ -1,0 +1,23 @@
+Handle: svc
+Verb: start
+Definition: Starts a service and waits for the start job to finish.
+
+Usage:
+  resh svc://<service-name>.start [timeout_ms=<ms>]
+
+Example:
+  resh svc://nginx.start
+
+Example Output:
+  {
+    "action": "start",
+    "active_state": "active",
+    "backend": "systemd",
+    "job_result": "done",
+    "name": "nginx.service",
+    "result": "success",
+    "sub_state": "running"
+  }
+
+  Shown for a systemd host with --json-pretty. A job that fails exits 1;
+  at timeout_ms (default 120000) the job is cancelled and resh exits 124.
