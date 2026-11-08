@@ -1949,11 +1949,8 @@ impl GitHandle {
     pub fn from_url(url: Url) -> Result<Self> {
         // For git:// URLs, the alias can be in the host or path
         let alias = if let Some(host) = url.host_str() {
-            // Check if host is a help request
-            if is_git_help_word(host) {
-                print!("{}", git_help_text(None));
-                std::process::exit(0);
-            }
+            // A help word (`help`, `-h`) is kept: call() prints the help
+            // through its output streams.
             // If we have a host, that's our alias (git://main)
             host.to_string()
         } else if url.path() == "/" || url.path().is_empty() {
@@ -1961,12 +1958,7 @@ impl GitHandle {
             "default".to_string()
         } else {
             // Path-based alias (git:///main)
-            let path_alias = url.path().trim_start_matches('/').to_string();
-            if is_git_help_word(&path_alias) {
-                print!("{}", git_help_text(None));
-                std::process::exit(0);
-            }
-            path_alias
+            url.path().trim_start_matches('/').to_string()
         };
 
         if alias.is_empty() {
@@ -4576,7 +4568,7 @@ impl GitHandle {
             // Use current time
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs() as i64;
             Time::new(now, 0)
         };
@@ -6538,10 +6530,10 @@ impl GitHandle {
         target_branch_name: &str,
     ) -> Result<Value, GitError> {
         // Get current HEAD commit
+        // HEAD may be unborn (no commit yet): an error, not a panic.
         let head_commit =
             repo.head()
-                .unwrap()
-                .peel_to_commit()
+                .and_then(|h| h.peel_to_commit())
                 .map_err(|e| GitError::MergeFailed {
                     message: format!("failed to get HEAD commit: {}", e),
                 })?;
@@ -6640,10 +6632,10 @@ impl GitHandle {
         _head_commit_oid: Oid,
         abort_on_conflict: bool,
     ) -> Result<Value, GitError> {
+        // HEAD may be unborn (no commit yet): an error, not a panic.
         let head_commit =
             repo.head()
-                .unwrap()
-                .peel_to_commit()
+                .and_then(|h| h.peel_to_commit())
                 .map_err(|e| GitError::MergeFailed {
                     message: format!("failed to get HEAD commit: {}", e),
                 })?;
@@ -8139,7 +8131,7 @@ impl Handle for GitHandle {
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // In-URL help forms: help=<verb>, --help[=<verb>], -h, or a help verb.
         let help_arg = ["help", "--help", "-h"].iter().find_map(|k| args.get(*k));
-        if help_arg.is_some() || is_git_help_word(verb) {
+        if help_arg.is_some() || is_git_help_word(verb) || is_git_help_word(&self.alias) {
             let wanted = help_arg.map(|v| v.as_str()).filter(|v| !v.is_empty());
             write!(io.stdout, "{}", git_help_text(wanted))?;
             return Ok(Status::success());

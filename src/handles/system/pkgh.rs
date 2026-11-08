@@ -2257,11 +2257,8 @@ impl PkgHandle {
     pub fn from_url(url: &Url) -> Result<Self> {
         // For pkg:// URLs, the alias can be in the host or path
         let alias = if let Some(host) = url.host_str() {
-            // Check if host is a help request
-            if is_pkg_help_word(host) {
-                print!("{}", pkg_help_text(None));
-                std::process::exit(0);
-            }
+            // A help word (`help`, `-h`) is kept: call() prints the help
+            // through its output streams.
             // If we have a host, that's our alias (pkg://system)
             host.to_string()
         } else if url.path() == "/" || url.path().is_empty() {
@@ -2269,12 +2266,7 @@ impl PkgHandle {
             "default".to_string()
         } else {
             // Path-based alias (pkg:///system)
-            let path_alias = url.path().trim_start_matches('/').to_string();
-            if is_pkg_help_word(&path_alias) {
-                print!("{}", pkg_help_text(None));
-                std::process::exit(0);
-            }
-            path_alias
+            url.path().trim_start_matches('/').to_string()
         };
 
         if alias.is_empty() {
@@ -2302,7 +2294,7 @@ impl Handle for PkgHandle {
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // In-URL help forms: help=<verb>, --help[=<verb>], -h, or a help verb.
         let help_arg = ["help", "--help", "-h"].iter().find_map(|k| args.get(*k));
-        if help_arg.is_some() || is_pkg_help_word(verb) {
+        if help_arg.is_some() || is_pkg_help_word(verb) || is_pkg_help_word(&self.alias) {
             let wanted = help_arg.map(|v| v.as_str()).filter(|v| !v.is_empty());
             write!(io.stdout, "{}", pkg_help_text(wanted))?;
             return Ok(Status::success());

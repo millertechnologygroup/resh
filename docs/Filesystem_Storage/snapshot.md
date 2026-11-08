@@ -43,8 +43,10 @@ rejected with `snapshot.invalid_argument`.
 ### Storage location
 
 Snapshots are stored under the XDG state directory:
-`$XDG_STATE_HOME/resh/snapshots` (default `~/.local/state/resh/snapshots`;
-`/tmp/resh/snapshots` if no state directory can be determined). Each
+`$XDG_STATE_HOME/resh/snapshots` (default `~/.local/state/resh/snapshots`).
+With neither `XDG_STATE_HOME` nor `HOME` set, every verb fails
+(`snapshot.write_failed` for create, `snapshot.read_failed` otherwise, exit
+1) instead of using a shared directory. Each
 target gets a group directory named after its absolute path with every
 character other than letters, digits, `.`, `-` and `_` replaced by `_`
 (for example `/srv/app` becomes `_srv_app`), truncated to 120 characters.

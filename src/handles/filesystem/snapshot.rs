@@ -467,16 +467,23 @@ impl Deadline {
 // Storage
 // ---------------------------------------------------------------------------
 
-/// Root of the snapshot store.
-fn store_base() -> PathBuf {
+/// Root of the snapshot store, under the user's state directory. Without
+/// one (neither XDG_STATE_HOME nor HOME set) the verb fails with `code`
+/// rather than keep snapshots in a shared directory such as /tmp.
+fn store_base(code: &'static str) -> VResult<PathBuf> {
     #[cfg(test)]
     if let Some(base) = test_store::get() {
-        return base;
+        return Ok(base);
     }
-    match dirs::state_dir() {
-        Some(dir) => dir.join("resh").join("snapshots"),
-        None => PathBuf::from("/tmp").join("resh").join("snapshots"),
-    }
+    dirs::state_dir()
+        .map(|dir| dir.join("resh").join("snapshots"))
+        .ok_or_else(|| {
+            Failure::new(
+                code,
+                "no state directory for the snapshot store: set XDG_STATE_HOME or HOME; \
+                 nothing was done",
+            )
+        })
 }
 
 fn sanitize_path_component(s: &str) -> String {
@@ -1342,7 +1349,7 @@ impl SnapshotHandle {
             ));
         }
 
-        let base = store_base();
+        let base = store_base("write_failed")?;
         private_dir_all(&base).map_err(|e| {
             Failure::new(
                 "write_failed",
@@ -1590,7 +1597,7 @@ impl SnapshotHandle {
             });
         }
 
-        let group = group_dir(&store_base(), target);
+        let group = group_dir(&store_base("read_failed")?, target);
         let all = snapshots_in_group(&group, Some(target), deadline, warnings)?;
         let (live, expired) = split_expired(all, now());
         let pick = |list: &[Found]| -> Option<Found> {
@@ -1776,11 +1783,12 @@ impl SnapshotHandle {
         let prefix = args.get("name_prefix");
 
         let target = self.absolute_target()?;
-        let group = group_dir(&store_base(), &target);
+        let base = store_base("read_failed")?;
+        let group = group_dir(&base, &target);
         // ttl is enforced on access: delete this target's expired
         // snapshots (best effort), and never list an expired one.
         let at = now();
-        purge_expired(&store_base(), &target, at, warnings);
+        purge_expired(&base, &target, at, warnings);
         let (mut list, _) = split_expired(
             snapshots_in_group(&group, Some(&target), deadline, warnings)?,
             at,
@@ -1857,7 +1865,7 @@ impl SnapshotHandle {
         deadline: Deadline,
         warnings: &mut Vec<String>,
     ) -> VResult<Found> {
-        let base = store_base();
+        let base = store_base("read_failed")?;
         let not_found = || {
             Failure::new("snapshot_not_found", format!("snapshot not found: {name}"))
                 .with("snapshot", name)

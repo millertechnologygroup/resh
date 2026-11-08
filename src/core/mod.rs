@@ -48,7 +48,7 @@ pub fn dispatch_stage(
         .next()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let known = reg.list_schemes().iter().any(|s| *s == scheme);
+    let known = reg.list_schemes().contains(&scheme);
     let prefix = status::error_prefix(&scheme);
 
     // Add CLI arguments to parsed arguments

@@ -2460,7 +2460,7 @@ impl DnsZoneFetchResponse {
     pub fn new(opts: &DnsZoneFetchOptions) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as i64;
 
         let query = json!({
@@ -2996,7 +2996,7 @@ impl DnsZoneUpdateResponse {
     pub fn new(opts: &DnsZoneUpdateOptions) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as i64;
 
         let zone_fqdn = normalize_zone_name(&opts.zone);

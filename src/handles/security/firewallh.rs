@@ -1020,7 +1020,7 @@ impl StatusResponse {
             ok: true,
             timestamp_unix_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_millis() as i64,
             query: options,
             backends,
@@ -1036,7 +1036,7 @@ impl StatusResponse {
             ok: false,
             timestamp_unix_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_millis() as i64,
             query: options,
             backends: Vec::new(),
