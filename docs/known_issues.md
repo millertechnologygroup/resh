@@ -14,8 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (pkg, system, cert, backup,
-  plugin) still print their own formats until they are.
+  `<handle>.invalid_argument`. Handles not yet aligned (pkg, cert, backup, plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
 - Stage output is streamed as it is written (`--json-pretty` still buffers).
@@ -353,6 +352,20 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
 - Every shadow-utils command takes its operands after `--`, runs under
   `timeout_ms` (default 60000; exit 124), and a change without root is
   refused before any tool runs.
+
+### system
+
+- Every verb refuses unknown options and bad values (exit 2,
+  `system.invalid_argument`) and reports `[system.<code>]` errors;
+  `memory` options all have defaults. `timeout_ms` is accepted by `disk`
+  and `info` (exit 124 with partial results on a hung mount).
+- cgroup figures come from the process's own v1 or v2 group with
+  hierarchical limits; CPU percentages no longer count guest time twice or
+  iowait as busy; per-CPU ids are the kernel's CPU numbers.
+- `include_swap`, `info fields`/`include_raw`/`include_paths`/
+  `max_process_classes` work; `env.list include_raw` is masked; no
+  subprocesses are run (`kernel.machine` is the hardware name); `disk` lists
+  `overlay`, decodes mount escapes and no longer panics on non-ASCII names.
 
 ### http and https
 
@@ -924,7 +937,6 @@ print help instead of running.
 | svc | `src/handles/processes/svch.rs:2181-2183` |
 | proc | `src/handles/processes/proch.rs:2297` |
 | db | `src/handles/data/dbh/mod.rs` (`DbHandle::help_topic`)` |
-| system | `src/handles/system/systemh.rs:2858` (checks `input`) |
 | plugin | `src/core/parse.rs:88`; `src/handles/automation/pluginh.rs:1224` |
 | parser | `src/core/parse.rs:272` (only a fallback when no verb is split off) |
 
@@ -1119,10 +1131,9 @@ typed structs:
   - `clone depth=<n>` works over network remotes only; libgit2's local
     transport cannot make shallow clones, so file:// URLs and local paths are
     refused (exit 2).
-- **system.** `memory` input must list every option, because
-  `SystemMemoryOptions` lacks `#[serde(default)]` (`systemh.rs:1929`).
-  Trailing arguments such as `format=text` are ignored, since only
-  `input=<json>` is read.
+- **system.** `/proc`-based figures (system memory, CPU utilization, load,
+  uptime) describe the whole host inside a container; a `statvfs` hung past
+  `timeout_ms` leaves a worker thread behind.
 - **pkg.** Every verb needs `manager` in `input`, but the `PKG_HELP_TEXT`
   examples omit it.
 
