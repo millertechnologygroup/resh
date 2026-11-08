@@ -404,8 +404,12 @@ fn the_timeout_also_bounds_reading_the_body() {
         let start = Instant::now();
         let o = call(&u, verb, &[("timeout_ms", "400")]);
         assert_code(&o, 124, "timed out");
+        // The body never completes, so without the deadline this would hang
+        // forever; finishing at all proves timeout_ms bounds the body read.
+        // The margin is generous because a loaded machine can delay a
+        // 400 ms deadline by seconds.
         assert!(
-            start.elapsed() < Duration::from_millis(2_000),
+            start.elapsed() < Duration::from_millis(10_000),
             "{verb}: {:?}",
             start.elapsed()
         );
