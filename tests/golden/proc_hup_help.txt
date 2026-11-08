@@ -4,7 +4,7 @@ Definition: Sends SIGHUP to a process, which many daemons treat as a reload
   request.
 
 Usage:
-  resh proc://<pid|self>.hup
+  resh proc://<pid>.hup
 
 Example:
   resh --json-pretty proc://1234.hup

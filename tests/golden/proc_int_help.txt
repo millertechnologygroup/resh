@@ -3,7 +3,7 @@ Verb: int
 Definition: Sends SIGINT to a process, like pressing Ctrl+C.
 
 Usage:
-  resh proc://<pid|self>.int
+  resh proc://<pid>.int
 
 Example:
   resh --json-pretty proc://1234.int

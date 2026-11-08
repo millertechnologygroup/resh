@@ -3,7 +3,7 @@ Verb: term
 Definition: Sends SIGTERM to a process to request graceful termination.
 
 Usage:
-  resh proc://<pid|self>.term
+  resh proc://<pid>.term
 
 Example:
   resh --json-pretty proc://1234.term

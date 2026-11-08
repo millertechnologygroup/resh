@@ -1,9 +1,10 @@
 Handle: proc
 Verb: nice.set
-Definition: Sets the nice value of a process to an exact value from -20 to 19.
+Definition: Sets the nice value of every thread of a process to a value from -20
+  to 19.
 
 Usage:
-  resh proc://<pid|self>.nice.set value=<-20..19>
+  resh proc://<pid>.nice.set value=<-20..19>
 
 Example:
   resh --json-pretty proc://1234.nice.set value=10
@@ -12,8 +13,18 @@ Example Output:
   {
     "changed": true,
     "nice": 10,
-    "pid": 1234
+    "pid": 1234,
+    "threads": [
+      {
+        "changed": true,
+        "nice_after": 10,
+        "nice_before": 0,
+        "status": "ok",
+        "tid": 1234
+      }
+    ]
   }
 
-  Shown with --json-pretty. changed is false when the value was already
-  set. Lowering a nice value usually requires root.
+  Shown with --json-pretty for a single-threaded process. Lowering a
+  nice value usually requires root. If some threads fail, the others
+  keep their new value and the call fails with proc.partial_failure.

@@ -31,7 +31,11 @@ lim() { grep "^$2" /proc/$1/limits | awk '{print $(NF-2), $(NF-1)}'; }
 NOBODY="setpriv --reuid=65534 --regid=65534 --clear-groups"
 sleep 60 & P=$!
 $NOBODY sleep 60 & Q=$!
-sleep 0.2
+PROC_THREAD_HELPER=3 /t/helper --exact thread_helper --nocapture --test-threads=1 \
+  >/dev/null 2>&1 & T=$!
+sleep 0.5
+tn() { for t in $(ls /proc/$1/task); do awk '{print $19}' /proc/$1/task/$t/stat; done | sort -u | tr '\n' ' '; }
+tc() { ls /proc/$1/task | wc -l; }
 "#;
 
 /// One `r` line: exit code, parsed stdout, stderr.
@@ -80,8 +84,13 @@ impl Ctr {
 fn container(caps: &[&str], script: &str) -> Ctr {
     let bin = env!("CARGO_BIN_EXE_resh");
     let mount = format!("{bin}:/usr/local/bin/resh:ro");
+    // This test binary, run as `thread_helper`, is the multi-threaded child.
+    let helper = format!(
+        "{}:/t/helper:ro",
+        std::env::current_exe().unwrap().display()
+    );
     let mut cmd = Command::new("docker");
-    cmd.args(["run", "--rm", "--network=none", "-v", &mount]);
+    cmd.args(["run", "--rm", "--network=none", "-v", &mount, "-v", &helper]);
     for c in caps {
         cmd.args(["--cap-add", c]);
     }
@@ -266,4 +275,79 @@ echo "check own $(n $Q)"
     assert_eq!(b.ok("own")["nice_after"], 2);
     b.fails("owndec", 1, "proc.permission_denied");
     assert_eq!(b.check("own"), "2");
+}
+
+/// Not a test of its own: with PROC_THREAD_HELPER=<n> it starts n sleeping
+/// threads and never returns (the multi-threaded child in the containers).
+#[test]
+fn thread_helper() {
+    let Some(n) = std::env::var("PROC_THREAD_HELPER")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    else {
+        return;
+    };
+    for _ in 0..n {
+        std::thread::spawn(|| {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        });
+    }
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+}
+
+#[test]
+fn root_renices_every_thread() {
+    let b = container(
+        &["SYS_NICE"],
+        r#"
+echo "check threads $(tc $T)"
+r set  resh proc://$T.nice.set value=-5
+echo "check after_set $(tn $T)"
+r dec  resh proc://$T.nice.dec delta=3
+echo "check after_dec $(tn $T)"
+r prio resh proc://$T.setPriority class=idle
+echo "check after_prio $(tn $T)"
+"#,
+    );
+    let n: usize = b.check("threads").parse().unwrap();
+    assert!(n >= 4, "{n}");
+    let set = b.ok("set");
+    assert_eq!(set["threads"].as_array().unwrap().len(), n);
+    assert_eq!(b.check("after_set"), "-5");
+    assert_eq!(b.ok("dec")["nice_after"], -8);
+    assert_eq!(b.check("after_dec"), "-8");
+    assert_eq!(b.ok("prio")["previous_nice"], -8);
+    assert_eq!(b.check("after_prio"), "19");
+}
+
+#[test]
+fn root_without_cap_sys_nice_gets_a_partial_failure() {
+    let b = container(
+        &[],
+        r#"
+r set10 resh proc://$T.nice.set value=10
+O=$(ls /proc/$T/task | grep -v "^$T$" | head -1)
+renice -n 16 -p $O >/dev/null
+r part  resh proc://$T.nice.set value=13
+echo "check other $O"
+echo "check after $(tn $T)"
+r all   resh proc://$T.nice.set value=5
+r self  resh proc://self.nice.set value=19
+r selfnum sh -c 'exec resh proc://$$.term'
+"#,
+    );
+    b.ok("set10");
+    b.fails("part", 1, "proc.partial_failure");
+    let threads = b.get("part").json["threads"].as_array().unwrap().clone();
+    let bad: Vec<_> = threads.iter().filter(|t| t["status"] == "error").collect();
+    assert_eq!(bad.len(), 1);
+    assert_eq!(bad[0]["tid"].to_string(), b.check("other"));
+    assert_eq!(b.check("after"), "13 16");
+    b.fails("all", 1, "proc.permission_denied");
+    b.fails("self", 2, "proc.invalid_target");
+    b.fails("selfnum", 2, "proc.invalid_target");
 }

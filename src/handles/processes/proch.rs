@@ -1,16 +1,14 @@
-//! `proc://<pid|self>`: signals, nice values, resource limits and captured
-//! output logs of one process.
+//! `proc://<pid|self>`: signals, nice values and resource limits of one
+//! process. Verbs that change something refuse the resh process itself.
 //!
 //! Every verb checks its arguments (one accepted-options list per verb,
 //! [`verb_args`]) and the target PID before it makes a system call, so an
 //! invalid call changes nothing (exit 2). Failures are reported as
 //! `proc.<code>` (see [`ERROR_CODES`]) on stderr and in the JSON written to
-//! stdout. Every verb is a few system calls on one process or a bounded read
-//! of one local file, so none takes `timeout_ms`.
+//! stdout. Every verb is a few system calls on one process (and its
+//! threads), so none takes `timeout_ms`.
 
 use serde_json::{Map, Value, json};
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
 use url::Url;
 
 use crate::core::{
@@ -27,10 +25,10 @@ pub fn register(reg: &mut crate::core::Registry) {
 /// Metadata for `resh proc --help` and `resh proc <verb> --help`.
 static PROC_HELP: HandleHelp = HandleHelp {
     description: "The proc handle sends signals to a running process, reads and changes \
-        its nice value through getpriority and setpriority, sets its resource limits \
-        through prlimit, and reads output logs kept for it in the resh state directory. \
-        The target is a numeric process ID or self (the resh process itself), such as \
-        proc://1234.",
+        the nice value of every thread of it through getpriority and setpriority, and \
+        sets its resource limits through prlimit. The target is a numeric process ID, \
+        such as proc://1234, or self (the resh process itself), which only nice.get \
+        accepts.",
     usage: "resh proc://<pid|self>.<verb>[(key=value,...)]",
     verbs: &[
         VerbHelp {
@@ -50,39 +48,10 @@ Shown with --json-pretty."#,
             }),
         },
         VerbHelp {
-            name: "io.peek",
-            definition: "Reads the tail of a process's stdout or stderr log from \
-                resh/proc/<pid>/ in the state directory ($XDG_STATE_HOME or \
-                ~/.local/state), which nothing in resh writes.",
-            detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.io.peek [stream=stdout|stderr|both]\n  \
-                    [max_bytes=<1..16777216>] [tail=<1..16777216>]\n  \
-                    [encoding=auto|utf8|base64] [json=true|false]",
-                example: "resh --json-pretty proc://1234.io.peek stream=stdout max_bytes=1024",
-                example_output: Some(
-                    r#"{
-  "auto_fallback": false,
-  "bytes_read": 26,
-  "data": "worker started\nprocessing\n",
-  "encoding": "utf8",
-  "pid": 1234,
-  "stream": "stdout",
-  "truncated": false
-}
-
-Shown with --json-pretty. Defaults: stream=stdout, max_bytes=4096,
-tail=max_bytes, encoding=auto. The last min(tail, max_bytes) bytes are
-returned; truncated is true when the file holds more. With stream=both
-the fields are under streams.stdout and streams.stderr. json=false
-prints only the data (stream=stdout only)."#,
-                ),
-            }),
-        },
-        VerbHelp {
             name: "signal",
             definition: "Sends a signal, given by name or number, to a process.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.signal sig=<name|number>",
+                usage: "resh proc://<pid>.signal sig=<name|number>",
                 example: "resh --json-pretty proc://1234.signal sig=TERM",
                 example_output: Some(
                     r#"{
@@ -104,7 +73,7 @@ nothing) to the highest real-time signal (64 on Linux)."#,
             name: "term",
             definition: "Sends SIGTERM to a process to request graceful termination.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.term",
+                usage: "resh proc://<pid>.term",
                 example: "resh --json-pretty proc://1234.term",
                 example_output: Some(
                     r#"{
@@ -123,7 +92,7 @@ Shown with --json-pretty."#,
             name: "int",
             definition: "Sends SIGINT to a process, like pressing Ctrl+C.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.int",
+                usage: "resh proc://<pid>.int",
                 example: "resh --json-pretty proc://1234.int",
                 example_output: Some(
                     r#"{
@@ -142,7 +111,7 @@ Shown with --json-pretty."#,
             name: "hup",
             definition: "Sends SIGHUP to a process, which many daemons treat as a reload request.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.hup",
+                usage: "resh proc://<pid>.hup",
                 example: "resh --json-pretty proc://1234.hup",
                 example_output: Some(
                     r#"{
@@ -161,7 +130,7 @@ Shown with --json-pretty."#,
             name: "kill",
             definition: "Sends SIGKILL to a process to terminate it immediately.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.kill",
+                usage: "resh proc://<pid>.kill",
                 example: "resh --json-pretty proc://1234.kill",
                 example_output: Some(
                     r#"{
@@ -180,7 +149,7 @@ Shown with --json-pretty."#,
             name: "stop",
             definition: "Sends SIGSTOP to a process to pause it.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.stop",
+                usage: "resh proc://<pid>.stop",
                 example: "resh --json-pretty proc://1234.stop",
                 example_output: Some(
                     r#"{
@@ -199,7 +168,7 @@ Shown for Linux with --json-pretty."#,
             name: "cont",
             definition: "Sends SIGCONT to a process to resume it after a stop.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.cont",
+                usage: "resh proc://<pid>.cont",
                 example: "resh --json-pretty proc://1234.cont",
                 example_output: Some(
                     r#"{
@@ -218,7 +187,7 @@ Shown for Linux with --json-pretty."#,
             name: "usr1",
             definition: "Sends SIGUSR1 to a process.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.usr1",
+                usage: "resh proc://<pid>.usr1",
                 example: "resh --json-pretty proc://1234.usr1",
                 example_output: Some(
                     r#"{
@@ -237,7 +206,7 @@ Shown for Linux with --json-pretty."#,
             name: "usr2",
             definition: "Sends SIGUSR2 to a process.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.usr2",
+                usage: "resh proc://<pid>.usr2",
                 example: "resh --json-pretty proc://1234.usr2",
                 example_output: Some(
                     r#"{
@@ -254,27 +223,39 @@ Shown for Linux with --json-pretty."#,
         },
         VerbHelp {
             name: "nice.set",
-            definition: "Sets the nice value of a process to an exact value from -20 to 19.",
+            definition: "Sets the nice value of every thread of a process to a value from \
+                -20 to 19.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.nice.set value=<-20..19>",
+                usage: "resh proc://<pid>.nice.set value=<-20..19>",
                 example: "resh --json-pretty proc://1234.nice.set value=10",
                 example_output: Some(
                     r#"{
   "changed": true,
   "nice": 10,
-  "pid": 1234
+  "pid": 1234,
+  "threads": [
+    {
+      "changed": true,
+      "nice_after": 10,
+      "nice_before": 0,
+      "status": "ok",
+      "tid": 1234
+    }
+  ]
 }
 
-Shown with --json-pretty. changed is false when the value was already
-set. Lowering a nice value usually requires root."#,
+Shown with --json-pretty for a single-threaded process. Lowering a
+nice value usually requires root. If some threads fail, the others
+keep their new value and the call fails with proc.partial_failure."#,
                 ),
             }),
         },
         VerbHelp {
             name: "nice.inc",
-            definition: "Raises the nice value of a process by a delta, lowering its priority.",
+            definition: "Raises the nice value of every thread of a process by a delta, \
+                lowering its priority.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.nice.inc delta=<0..39>",
+                usage: "resh proc://<pid>.nice.inc delta=<0..39>",
                 example: "resh --json-pretty proc://1234.nice.inc delta=5",
                 example_output: Some(
                     r#"{
@@ -282,19 +263,29 @@ set. Lowering a nice value usually requires root."#,
   "delta": 5,
   "nice_after": 5,
   "nice_before": 0,
-  "pid": 1234
+  "pid": 1234,
+  "threads": [
+    {
+      "changed": true,
+      "nice_after": 5,
+      "nice_before": 0,
+      "status": "ok",
+      "tid": 1234
+    }
+  ]
 }
 
-Shown with --json-pretty. A result outside -20..19 is refused and
-nothing is changed."#,
+Shown with --json-pretty. Each thread moves from its own value; if any
+would leave -20..19, the call is refused and nothing is changed."#,
                 ),
             }),
         },
         VerbHelp {
             name: "nice.dec",
-            definition: "Lowers the nice value of a process by a delta, raising its priority.",
+            definition: "Lowers the nice value of every thread of a process by a delta, \
+                raising its priority.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.nice.dec delta=<0..39>",
+                usage: "resh proc://<pid>.nice.dec delta=<0..39>",
                 example: "resh --json-pretty proc://1234.nice.dec delta=5",
                 example_output: Some(
                     r#"{
@@ -302,20 +293,29 @@ nothing is changed."#,
   "delta": 5,
   "nice_after": 5,
   "nice_before": 10,
-  "pid": 1234
+  "pid": 1234,
+  "threads": [
+    {
+      "changed": true,
+      "nice_after": 5,
+      "nice_before": 10,
+      "status": "ok",
+      "tid": 1234
+    }
+  ]
 }
 
 Shown with --json-pretty. Lowering a nice value usually requires root.
-A result outside -20..19 is refused and nothing is changed."#,
+If any thread would leave -20..19, nothing is changed."#,
                 ),
             }),
         },
         VerbHelp {
             name: "setPriority",
-            definition: "Sets the nice value of a process from a named priority class or an \
-                explicit nice value.",
+            definition: "Sets the nice value of every thread of a process from a named \
+                priority class or an explicit nice value.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.setPriority\n  \
+                usage: "resh proc://<pid>.setPriority\n  \
                     [class=idle|background|normal|high|realtime] [nice=<-20..19>]",
                 example: "resh --json-pretty proc://1234.setPriority class=background",
                 example_output: Some(
@@ -324,7 +324,16 @@ A result outside -20..19 is refused and nothing is changed."#,
   "class": "background",
   "nice": 10,
   "pid": 1234,
-  "previous_nice": 0
+  "previous_nice": 0,
+  "threads": [
+    {
+      "changed": true,
+      "nice_after": 10,
+      "nice_before": 0,
+      "status": "ok",
+      "tid": 1234
+    }
+  ]
 }
 
 Shown with --json-pretty. Classes map to nice values idle=19,
@@ -341,12 +350,12 @@ nice overrides class. No real-time scheduling policy is set."#,
                 usage: "resh proc://<pid|self>.limits.set <resource>=<soft>[:<hard>] ...\n  \
                     [pid=<n>] [dry_run=true|false]\n  \
                     resources: cpu as data stack core nofile fsize memlock nproc",
-                example: "resh --json-pretty proc://self.limits.set nofile=1024 dry_run=true",
+                example: "resh --json-pretty proc://1234.limits.set nofile=1024 dry_run=true",
                 example_output: Some(
                     r#"{
   "backend": "prlimit",
   "dry_run": true,
-  "pid": 41872,
+  "pid": 1234,
   "results": {
     "nofile": {
       "after": {
@@ -366,8 +375,8 @@ nice overrides class. No real-time scheduling policy is set."#,
 
 Shown with --json-pretty. A value is a number, unlimited, a number with
 an s suffix (cpu only, seconds), or with K, M, or G (powers of 1000);
-an empty side keeps the current value. pid=<n> targets that process
-instead of self. self is the short-lived resh process."#,
+an empty side keeps the current value. pid=<n> names the target when
+the URL is self; the resh process itself is refused."#,
                 ),
             }),
         },
@@ -380,13 +389,15 @@ instead of self. self is the short-lived resh process."#,
 
 /// Every error code `proc` reports (without the `proc.` prefix). The
 /// dispatcher also reports `proc.invalid_target` for a target that is not
-/// `self` or a valid PID, before the handle is built.
+/// `self` or a valid PID, before the handle is built; the handle reports it
+/// for a changing verb aimed at the resh process itself.
 pub(crate) const ERROR_CODES: &[&str] = &[
     "invalid_argument",
     "invalid_target",
     "not_found",
     "permission_denied",
-    "log_not_found",
+    "partial_failure",
+    "unknown_verb",
     "failed",
     "unsupported_platform",
 ];
@@ -401,7 +412,6 @@ const NO_ARGS: &[&str] = &[];
 const NICE_SET_ARGS: &[&str] = &["value"];
 const NICE_DELTA_ARGS: &[&str] = &["delta"];
 const SET_PRIORITY_ARGS: &[&str] = &["class", "nice"];
-const IO_PEEK_ARGS: &[&str] = &["stream", "max_bytes", "tail", "encoding", "json"];
 const LIMITS_SET_ARGS: &[&str] = &[
     "pid", "dry_run", "cpu", "as", "data", "stack", "core", "nofile", "fsize", "memlock", "nproc",
 ];
@@ -414,14 +424,10 @@ fn verb_args(verb: &str) -> Option<&'static [&'static str]> {
         "nice.set" => NICE_SET_ARGS,
         "nice.inc" | "nice.dec" => NICE_DELTA_ARGS,
         "setPriority" => SET_PRIORITY_ARGS,
-        "io.peek" => IO_PEEK_ARGS,
         "limits.set" => LIMITS_SET_ARGS,
         _ => return None,
     })
 }
-
-/// The largest `max_bytes` and `tail` of `io.peek` (16 MiB).
-const PEEK_LIMIT: u64 = 16 * 1024 * 1024;
 
 /// A failure: exit code, error code (without `proc.`) and message.
 #[derive(Debug)]
@@ -877,8 +883,6 @@ impl ProcHandle {
 /// What a verb prints on success.
 enum Output {
     Json(Value),
-    /// `io.peek json=false`: the data alone.
-    Raw(String),
 }
 
 /// A failed verb: the error, plus fields printed with it (for example the
@@ -916,7 +920,6 @@ impl Handle for ProcHandle {
             "nice.inc",
             "nice.dec",
             "setPriority",
-            "io.peek",
             "limits.set",
         ]
     }
@@ -941,10 +944,6 @@ impl Handle for ProcHandle {
                 writeln!(io.stdout, "{v}")?;
                 Ok(Status::ok())
             }
-            Ok(Output::Raw(data)) => {
-                write!(io.stdout, "{data}")?;
-                Ok(Status::ok())
-            }
             Err(Failure { fail, extra }) => {
                 let mut obj = Map::new();
                 obj.insert("pid".into(), json!(pid));
@@ -963,17 +962,30 @@ impl ProcHandle {
     /// Checks the verb, its arguments and the target, then runs the verb.
     fn run(&self, verb: &str, args: &Args) -> VerbResult {
         let Some(allowed) = verb_args(verb) else {
-            return Err(Fail::invalid(format!(
-                "unknown verb: {verb}{} (verbs: {})",
-                hint(verb, self.verbs()),
-                self.verbs().join(", ")
-            ))
+            let why = if verb == "io.peek" {
+                " (io.peek was removed: it read log files that nothing writes)".to_string()
+            } else {
+                hint(verb, self.verbs())
+            };
+            return Err(Fail::new(
+                exit::USAGE,
+                "unknown_verb",
+                format!(
+                    "unknown verb: {verb}{why} (verbs: {})",
+                    self.verbs().join(", ")
+                ),
+            )
             .into());
         };
         check_args(verb, allowed, args)?;
         let pid = self
             .resolve_pid()
             .map_err(|e| Fail::new(exit::USAGE, "invalid_target", e.to_string()))?;
+        // Only reading is allowed on resh itself; limits.set checks its
+        // effective target (the URL or pid=) itself.
+        if verb != "nice.get" && verb != "limits.set" {
+            refuse_self(verb, pid)?;
+        }
         match verb {
             "signal" | "kill" | "term" | "int" | "hup" | "stop" | "cont" | "usr1" | "usr2" => {
                 verb_signal(pid, verb, args)
@@ -986,7 +998,6 @@ impl ProcHandle {
             "nice.inc" => verb_nice_delta(pid, args, 1),
             "nice.dec" => verb_nice_delta(pid, args, -1),
             "setPriority" => verb_set_priority(pid, args),
-            "io.peek" => verb_io_peek(pid, args, state_dir()),
             "limits.set" => verb_limits_set(pid, self.name == "self", args),
             _ => unreachable!("verb_args lists every verb"),
         }
@@ -1026,41 +1037,180 @@ fn verb_signal(pid: libc::pid_t, verb: &str, args: &Args) -> VerbResult {
     })))
 }
 
+/// Refuses `verb` when `pid` is the resh process itself: a change to it
+/// ends with resh a moment later, and a signal could stop or kill resh.
+fn refuse_self(verb: &str, pid: libc::pid_t) -> Result<(), Fail> {
+    if u32::try_from(pid).ok() == Some(std::process::id()) {
+        return Err(Fail::new(
+            exit::USAGE,
+            "invalid_target",
+            format!(
+                "{verb} does not act on the resh process itself (pid {pid}); \
+                 name another process; nothing was done"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The thread IDs of `pid` (from /proc/<pid>/task), the main thread first.
+/// Without /proc, the main thread alone.
+fn thread_ids(pid: libc::pid_t) -> Result<Vec<libc::pid_t>, Fail> {
+    let dir = format!("/proc/{pid}/task");
+    match std::fs::read_dir(&dir) {
+        Ok(entries) => {
+            let mut tids: Vec<libc::pid_t> = entries
+                .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+                .filter(|t| *t != pid)
+                .collect();
+            tids.sort_unstable();
+            tids.insert(0, pid);
+            Ok(tids)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // No such process, or no /proc: getpriority tells which.
+            sys::get_nice(pid)?;
+            Ok(vec![pid])
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(Fail::failed(
+            "permission_denied",
+            format!("cannot list the threads of pid {pid} ({dir}): {e}"),
+        )),
+        Err(e) => Err(Fail::failed(
+            "failed",
+            format!("cannot list the threads of pid {pid} ({dir}): {e}"),
+        )),
+    }
+}
+
+/// The result of changing the nice value of every thread.
+struct Renice {
+    main_before: i32,
+    main_after: i32,
+    changed: bool,
+    threads: Vec<Value>,
+}
+
+/// Sets each thread of `pid` to `target(its current value)`. Every target is
+/// worked out (and may be refused) before any thread is changed. A thread
+/// that ends meanwhile is reported as `gone`. If some threads fail, the
+/// others keep their new value and the call fails with `partial_failure`;
+/// if every change failed, with the first thread's error.
+fn renice_threads(
+    pid: libc::pid_t,
+    target: impl Fn(i32) -> Result<i32, Fail>,
+) -> Result<Renice, Failure> {
+    let tids = thread_ids(pid)?;
+    // Read every thread, then check every target: still no change.
+    let mut plan = Vec::new();
+    for tid in tids {
+        match sys::get_nice(tid) {
+            Ok(before) => plan.push((tid, before, target(before)?)),
+            // The main thread decides whether the process exists.
+            Err(f) if tid == pid => return Err(f.into()),
+            Err(f) if f.code == "not_found" => {} // the thread ended
+            Err(f) => return Err(f.into()),
+        }
+    }
+    let (main_before, main_after) = (plan[0].1, plan[0].2);
+    let mut threads = Vec::new();
+    let mut changed = 0usize;
+    let mut failures: Vec<Fail> = Vec::new();
+    for (tid, before, after) in plan {
+        let mut entry = json!({
+            "tid": tid,
+            "nice_before": before,
+            "nice_after": after,
+            "changed": before != after,
+            "status": "ok"
+        });
+        if before != after {
+            match sys::set_nice(tid, after) {
+                Ok(()) => changed += 1,
+                Err(f) => {
+                    entry["nice_after"] = json!(before);
+                    entry["changed"] = json!(false);
+                    if f.code == "not_found" && tid != pid {
+                        entry["status"] = json!("gone");
+                    } else {
+                        entry["status"] = json!("error");
+                        entry["error"] = f.error_obj();
+                        failures.push(f);
+                    }
+                }
+            }
+        }
+        threads.push(entry);
+    }
+    if failures.is_empty() {
+        return Ok(Renice {
+            main_before,
+            main_after,
+            changed: changed > 0,
+            threads,
+        });
+    }
+    let n = failures.len();
+    let total = threads.len();
+    let first = failures.swap_remove(0);
+    let fail = if changed == 0 {
+        Fail {
+            detail: if n > 1 {
+                format!("{} (and {} more threads)", first.detail, n - 1)
+            } else {
+                first.detail
+            },
+            ..first
+        }
+    } else {
+        Fail::failed(
+            "partial_failure",
+            format!(
+                "{n} of {total} threads were not changed (first: {}); the other \
+                 changed threads keep their new value",
+                first.detail
+            ),
+        )
+    };
+    let mut extra = Map::new();
+    extra.insert("threads".into(), Value::Array(threads));
+    Err(Failure { fail, extra })
+}
+
 fn verb_nice_set(pid: libc::pid_t, args: &Args) -> VerbResult {
     let value = required_int(args, "value", -20, 19)? as i32;
-    let before = sys::get_nice(pid)?;
-    if before != value {
-        sys::set_nice(pid, value)?;
-    }
+    let r = renice_threads(pid, |_| Ok(value))?;
     Ok(Output::Json(json!({
         "pid": pid,
         "nice": value,
-        "changed": before != value
+        "changed": r.changed,
+        "threads": r.threads
     })))
 }
 
-/// `nice.inc` (`sign` 1) and `nice.dec` (`sign` -1).
+/// `nice.inc` (`sign` 1) and `nice.dec` (`sign` -1): each thread moves by
+/// `delta` from its own value.
 fn verb_nice_delta(pid: libc::pid_t, args: &Args, sign: i32) -> VerbResult {
     let delta = required_int(args, "delta", 0, 39)? as i32;
-    let before = sys::get_nice(pid)?;
-    let after = before + sign * delta;
-    if !(-20..=19).contains(&after) {
-        return Err(Fail::invalid(format!(
-            "the nice value would be {after} ({before} {} {delta}), outside -20..19; \
-             nothing was done",
-            if sign > 0 { "+" } else { "-" }
-        ))
-        .into());
-    }
-    if after != before {
-        sys::set_nice(pid, after)?;
-    }
+    let r = renice_threads(pid, |before| {
+        let after = before + sign * delta;
+        if (-20..=19).contains(&after) {
+            Ok(after)
+        } else {
+            Err(Fail::invalid(format!(
+                "a nice value would be {after} ({before} {} {delta}), outside -20..19; \
+                 nothing was done",
+                if sign > 0 { "+" } else { "-" }
+            )))
+        }
+    })?;
     Ok(Output::Json(json!({
         "pid": pid,
-        "nice_before": before,
-        "nice_after": after,
+        "nice_before": r.main_before,
+        "nice_after": r.main_after,
         "delta": delta,
-        "changed": after != before
+        "changed": r.changed,
+        "threads": r.threads
     })))
 }
 
@@ -1086,181 +1236,15 @@ fn verb_set_priority(pid: libc::pid_t, args: &Args) -> VerbResult {
         }
         None => (CLASSES.iter().find(|(c, _)| *c == class).unwrap().1, class),
     };
-    let previous = sys::get_nice(pid)?;
-    if previous != nice {
-        sys::set_nice(pid, nice)?;
-    }
+    let r = renice_threads(pid, |_| Ok(nice))?;
     Ok(Output::Json(json!({
         "pid": pid,
         "class": class,
         "nice": nice,
-        "previous_nice": previous,
-        "backend": "linux-setpriority"
+        "previous_nice": r.main_before,
+        "backend": "linux-setpriority",
+        "threads": r.threads
     })))
-}
-
-// ---------------------------------------------------------------------------
-// io.peek
-// ---------------------------------------------------------------------------
-
-/// The base of the per-process log directories: `$XDG_STATE_HOME` or
-/// `~/.local/state`. Never a shared directory such as /tmp.
-fn state_dir() -> Option<PathBuf> {
-    dirs::state_dir()
-}
-
-/// One stream read by `io.peek`.
-struct StreamData {
-    encoding: &'static str,
-    auto_fallback: bool,
-    bytes_read: usize,
-    truncated: bool,
-    data: String,
-}
-
-impl StreamData {
-    fn json(&self) -> Map<String, Value> {
-        let mut m = Map::new();
-        m.insert("encoding".into(), json!(self.encoding));
-        m.insert("auto_fallback".into(), json!(self.auto_fallback));
-        m.insert("bytes_read".into(), json!(self.bytes_read));
-        m.insert("truncated".into(), json!(self.truncated));
-        m.insert("data".into(), json!(self.data));
-        m
-    }
-}
-
-fn verb_io_peek(pid: libc::pid_t, args: &Args, base: Option<PathBuf>) -> VerbResult {
-    let stream = choice_arg(args, "stream", &["stdout", "stderr", "both"], "stdout")?;
-    let max_bytes = int_arg(args, "max_bytes", 1, PEEK_LIMIT as i64)?.unwrap_or(4096) as u64;
-    let tail = int_arg(args, "tail", 1, PEEK_LIMIT as i64)?.map_or(max_bytes, |t| t as u64);
-    let encoding = choice_arg(args, "encoding", &["auto", "utf8", "base64"], "auto")?;
-    let json_mode = crate::core::lenient::bool_arg(args, "json")
-        .map_err(|e| Fail::invalid(format!("{e}; nothing was done")))?
-        .unwrap_or(true);
-    if !json_mode && stream != "stdout" {
-        return Err(Fail::invalid(
-            "json=false is allowed only with stream=stdout; nothing was done",
-        )
-        .into());
-    }
-    let base = base.ok_or_else(|| {
-        Fail::failed(
-            "failed",
-            "cannot determine the state directory (set XDG_STATE_HOME or HOME)",
-        )
-    })?;
-    let dir = base.join("resh").join("proc").join(pid.to_string());
-    let read =
-        |name: &str| read_log_file(&dir.join(format!("{name}.log")), max_bytes, tail, encoding);
-
-    if stream == "both" {
-        let mut streams = Map::new();
-        let mut first_fail = None;
-        for name in ["stdout", "stderr"] {
-            match read(name) {
-                Ok(d) => {
-                    streams.insert(name.into(), Value::Object(d.json()));
-                }
-                Err(f) => {
-                    streams.insert(name.into(), json!({"error": f.error_obj()}));
-                    first_fail.get_or_insert(f);
-                }
-            }
-        }
-        if let Some(fail) = first_fail {
-            let mut extra = Map::new();
-            extra.insert("streams".into(), Value::Object(streams));
-            return Err(Failure { fail, extra });
-        }
-        return Ok(Output::Json(json!({"pid": pid, "streams": streams})));
-    }
-
-    let d = read(stream)?;
-    if !json_mode {
-        return Ok(Output::Raw(d.data));
-    }
-    let mut obj = d.json();
-    obj.insert("pid".into(), json!(pid));
-    obj.insert("stream".into(), json!(stream));
-    Ok(Output::Json(Value::Object(obj)))
-}
-
-/// Reads the last `min(tail, max_bytes)` bytes of the regular file `path`.
-/// A FIFO or device is refused without blocking on it.
-fn read_log_file(
-    path: &Path,
-    max_bytes: u64,
-    tail: u64,
-    encoding: &str,
-) -> Result<StreamData, Fail> {
-    use base64::Engine as _;
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(path);
-    let mut file = match file {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(Fail::failed(
-                "log_not_found",
-                format!("log file not found: {}", path.display()),
-            ));
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            return Err(Fail::failed(
-                "permission_denied",
-                format!("cannot read {}: {e}", path.display()),
-            ));
-        }
-        Err(e) => {
-            return Err(Fail::failed(
-                "failed",
-                format!("cannot open {}: {e}", path.display()),
-            ));
-        }
-    };
-    let io_fail =
-        |e: std::io::Error| Fail::failed("failed", format!("cannot read {}: {e}", path.display()));
-    let meta = file.metadata().map_err(io_fail)?;
-    if !meta.is_file() {
-        return Err(Fail::failed(
-            "failed",
-            format!("{} is not a regular file", path.display()),
-        ));
-    }
-    let len = meta.len();
-    let want = len.min(tail).min(max_bytes);
-    file.seek(SeekFrom::Start(len - want)).map_err(io_fail)?;
-    let mut buf = Vec::with_capacity(want as usize);
-    file.take(want).read_to_end(&mut buf).map_err(io_fail)?;
-    let truncated = (buf.len() as u64) < len;
-
-    let (encoding, auto_fallback, data) = match encoding {
-        "utf8" => ("utf8", false, String::from_utf8_lossy(&buf).into_owned()),
-        "base64" => (
-            "base64",
-            false,
-            base64::engine::general_purpose::STANDARD.encode(&buf),
-        ),
-        _ => match String::from_utf8(buf.clone()) {
-            Ok(s) => ("utf8", false, s),
-            Err(_) => (
-                "base64",
-                true,
-                base64::engine::general_purpose::STANDARD.encode(&buf),
-            ),
-        },
-    };
-    Ok(StreamData {
-        encoding,
-        auto_fallback,
-        bytes_read: buf.len(),
-        truncated,
-        data,
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,6 +1328,7 @@ fn verb_limits_set(url_pid: libc::pid_t, url_is_self: bool, args: &Args) -> Verb
             p
         }
     };
+    refuse_self("limits.set", pid)?;
     limits_set_for(pid, args).map_err(|mut f| {
         f.extra.entry("pid").or_insert(json!(pid));
         f

@@ -4,7 +4,6 @@
 //! pid_max limit) stands in for a vanished process.
 
 use super::*;
-use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -18,8 +17,42 @@ struct Kid(Child);
 impl Kid {
     fn spawn() -> Self {
         let mut cmd = Command::new("sleep");
-        cmd.arg("60")
-            .stdin(Stdio::null())
+        cmd.arg("60");
+        Self::start(cmd)
+    }
+
+    /// This test binary running `thread_helper` with `n` extra threads;
+    /// returns once they all exist.
+    fn threaded(n: usize) -> Self {
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "handles::processes::proch::tests::thread_helper",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("PROC_THREAD_HELPER", n.to_string());
+        let kid = Self::start(cmd);
+        let count = || {
+            std::fs::read_dir(format!("/proc/{}/task", kid.pid()))
+                .map(|d| d.count())
+                .unwrap_or(0)
+        };
+        let end = Instant::now() + Duration::from_secs(10);
+        let mut last = 0;
+        loop {
+            let c = count();
+            if c > n && c == last {
+                return kid;
+            }
+            last = c;
+            assert!(Instant::now() < end, "helper has {c} threads");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn start(mut cmd: Command) -> Self {
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         // Default dispositions and no blocked signals, whatever the test
@@ -45,7 +78,7 @@ impl Kid {
                 Ok(())
             });
         }
-        Kid(cmd.spawn().expect("spawn sleep"))
+        Kid(cmd.spawn().expect("spawn child"))
     }
     fn pid(&self) -> libc::pid_t {
         self.0.id() as libc::pid_t
@@ -252,8 +285,6 @@ fn unknown_arguments_are_refused_before_anything_happens() {
         "{}",
         o.message()
     );
-    let o = on(&kid, "io.peek", &[("max_byte", "10")]);
-    assert!(o.message().contains("did you mean `max_bytes`"));
     assert!(kid.alive());
     assert_eq!(kid.limit("Max open files").0, {
         let (s, _) = sys::get_limit(std::process::id() as i32, libc::RLIMIT_NOFILE as i32).unwrap();
@@ -264,12 +295,61 @@ fn unknown_arguments_are_refused_before_anything_happens() {
 #[test]
 fn unknown_verb_is_a_usage_error() {
     let o = call("self", "nice.gett", &[]);
-    o.fails(2, "invalid_argument");
+    o.fails(2, "unknown_verb");
     assert!(
         o.message().contains("did you mean `nice.get`"),
         "{}",
         o.message()
     );
+    // io.peek was removed.
+    let o = call("self", "io.peek", &[]);
+    o.fails(2, "unknown_verb");
+    assert!(
+        o.message().contains("io.peek was removed"),
+        "{}",
+        o.message()
+    );
+    assert!(verb_args("io.peek").is_none());
+}
+
+/// Every changing verb refuses resh itself, by `self` or by number;
+/// nice.get is allowed. (In these tests "resh" is the test process.)
+#[test]
+fn changing_verbs_refuse_the_resh_process_itself() {
+    let own = std::process::id().to_string();
+    let before = sys::get_nice(std::process::id() as i32).unwrap();
+    for target in ["self", own.as_str()] {
+        for (verb, args) in [
+            ("signal", vec![("sig", "0")]),
+            ("kill", vec![]),
+            ("term", vec![]),
+            ("stop", vec![]),
+            ("usr1", vec![]),
+            ("nice.set", vec![("value", "19")]),
+            ("nice.inc", vec![("delta", "1")]),
+            ("nice.dec", vec![("delta", "0")]),
+            ("setPriority", vec![("class", "idle")]),
+            ("limits.set", vec![("nofile", "64")]),
+            ("limits.set", vec![("nofile", "64"), ("dry_run", "true")]),
+        ] {
+            let o = call(target, verb, &args);
+            o.fails(2, "invalid_target");
+            assert!(
+                o.message().contains("resh process itself"),
+                "{}",
+                o.message()
+            );
+        }
+        let o = call(target, "nice.get", &[]);
+        assert_eq!(o.code(), 0);
+        assert_eq!(o.json()["nice"], before);
+    }
+    // limits.set through pid=, from self or from the same number.
+    let o = call("self", "limits.set", &[("pid", &own), ("nofile", "64")]);
+    o.fails(2, "invalid_target");
+    let o = call(&own, "limits.set", &[("pid", &own), ("nofile", "64")]);
+    o.fails(2, "invalid_target");
+    assert_eq!(sys::get_nice(std::process::id() as i32).unwrap(), before);
 }
 
 #[test]
@@ -553,9 +633,15 @@ fn nice_set_changes_and_reports_changed() {
     let kid = Kid::spawn();
     let o = on(&kid, "nice.set", &[("value", "15")]);
     assert_eq!(o.code(), 0, "{}", o.stdout);
+    let j = o.json();
     assert_eq!(
-        o.json(),
-        json!({"pid": kid.pid(), "nice": 15, "changed": true})
+        (&j["pid"], &j["nice"], &j["changed"]),
+        (&json!(kid.pid()), &json!(15), &json!(true))
+    );
+    assert_eq!(
+        j["threads"],
+        json!([{"tid": kid.pid(), "nice_before": j["threads"][0]["nice_before"],
+                "nice_after": 15, "changed": true, "status": "ok"}])
     );
     assert_eq!(sys::get_nice(kid.pid()).unwrap(), 15);
     let o = on(&kid, "nice.set", &[("value", "15")]);
@@ -595,8 +681,11 @@ fn nice_inc_and_dec() {
     let base = sys::get_nice(kid.pid()).unwrap();
     let o = on(&kid, "nice.inc", &[("delta", "2")]);
     assert_eq!(o.code(), 0, "{}", o.stdout);
+    let mut j = o.json();
+    assert_eq!(j["threads"][0]["nice_after"], base + 2);
+    j.as_object_mut().unwrap().remove("threads");
     assert_eq!(
-        o.json(),
+        j,
         json!({"pid": kid.pid(), "nice_before": base, "nice_after": base + 2,
                "delta": 2, "changed": true})
     );
@@ -637,8 +726,11 @@ fn set_priority_classes_and_nice() {
     let o = on(&kid, "setPriority", &[("class", "background")]);
     if may_lower_nice_to(10) || base <= 10 {
         assert_eq!(o.code(), 0, "{}", o.stdout);
+        let mut j = o.json();
+        assert_eq!(j["threads"][0]["tid"], kid.pid());
+        j.as_object_mut().unwrap().remove("threads");
         assert_eq!(
-            o.json(),
+            j,
             json!({"pid": kid.pid(), "class": "background", "nice": 10,
                    "previous_nice": base, "backend": "linux-setpriority"})
         );
@@ -689,196 +781,108 @@ fn set_priority_argument_errors_change_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// io.peek (the base directory is a temporary one)
+// Threads: the nice verbs change every thread
 // ---------------------------------------------------------------------------
 
-fn peek(base: Option<&Path>, pid: libc::pid_t, args: &[(&str, &str)]) -> Out {
-    let args: Args = args
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-    let mut o = Vec::new();
-    let status = match check_args("io.peek", IO_PEEK_ARGS, &args)
-        .map_err(Failure::from)
-        .and_then(|_| verb_io_peek(pid, &args, base.map(Path::to_path_buf)))
-    {
-        Ok(Output::Json(v)) => {
-            writeln!(o, "{v}").unwrap();
-            Status::ok()
-        }
-        Ok(Output::Raw(s)) => {
-            o.extend_from_slice(s.as_bytes());
-            Status::ok()
-        }
-        Err(Failure { fail, extra }) => {
-            let mut obj = extra;
-            obj.insert("ok".into(), json!(false));
-            obj.insert("error".into(), fail.error_obj());
-            writeln!(o, "{}", Value::Object(obj)).unwrap();
-            fail.status("io.peek")
+/// Not a test of its own: with PROC_THREAD_HELPER=<n> it starts n sleeping
+/// threads and never returns. `Kid::threaded` runs this test binary that way
+/// to get a multi-threaded child.
+#[test]
+fn thread_helper() {
+    let Some(n) = std::env::var("PROC_THREAD_HELPER")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    else {
+        return;
+    };
+    for _ in 0..n {
+        std::thread::spawn(|| {
+            loop {
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        });
+    }
+    loop {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}
+
+fn tids_of(pid: libc::pid_t) -> Vec<libc::pid_t> {
+    thread_ids(pid).unwrap()
+}
+
+#[test]
+fn nice_verbs_change_every_thread() {
+    let kid = Kid::threaded(3);
+    let tids = tids_of(kid.pid());
+    assert!(tids.len() >= 4, "{tids:?}");
+    assert_eq!(tids[0], kid.pid());
+    let all = |want: i32| {
+        for t in &tids {
+            assert_eq!(sys::get_nice(*t).unwrap(), want, "tid {t}");
         }
     };
-    Out {
-        status,
-        stdout: String::from_utf8(o).unwrap(),
-        stderr: String::new(),
-    }
-}
-
-fn logs(stdout: Option<&[u8]>, stderr: Option<&[u8]>) -> tempfile::TempDir {
-    let t = tempfile::tempdir().unwrap();
-    let dir = t.path().join("resh/proc/4242");
-    std::fs::create_dir_all(&dir).unwrap();
-    if let Some(b) = stdout {
-        std::fs::write(dir.join("stdout.log"), b).unwrap();
-    }
-    if let Some(b) = stderr {
-        std::fs::write(dir.join("stderr.log"), b).unwrap();
-    }
-    t
-}
-
-#[test]
-fn io_peek_reads_the_tail_of_each_stream() {
-    let t = logs(Some(b"worker started\nprocessing\n"), Some(b"warn\n"));
-    let o = peek(Some(t.path()), 4242, &[]);
+    let o = on(&kid, "nice.set", &[("value", "7")]);
     assert_eq!(o.code(), 0, "{}", o.stdout);
-    assert_eq!(
-        o.json(),
-        json!({"pid": 4242, "stream": "stdout", "encoding": "utf8",
-               "auto_fallback": false, "bytes_read": 26, "truncated": false,
-               "data": "worker started\nprocessing\n"})
-    );
-    let o = peek(Some(t.path()), 4242, &[("stream", "stderr")]);
-    assert_eq!(o.json()["data"], "warn\n");
-    assert_eq!(o.json()["stream"], "stderr");
-    let o = peek(Some(t.path()), 4242, &[("stream", "both")]);
-    assert_eq!(o.code(), 0);
-    assert_eq!(o.json()["streams"]["stdout"]["bytes_read"], 26);
-    assert_eq!(o.json()["streams"]["stderr"]["data"], "warn\n");
-    // max_bytes and tail: the last min(tail, max_bytes) bytes.
-    let o = peek(Some(t.path()), 4242, &[("max_bytes", "11")]);
-    assert_eq!(o.json()["data"], "processing\n");
-    assert_eq!(o.json()["truncated"], true);
-    let o = peek(Some(t.path()), 4242, &[("tail", "4"), ("max_bytes", "100")]);
-    assert_eq!(o.json()["data"], "ing\n");
-    let o = peek(Some(t.path()), 4242, &[("tail", "100"), ("max_bytes", "4")]);
-    assert_eq!(o.json()["data"], "ing\n");
-    // Raw mode prints the data alone.
-    let o = peek(Some(t.path()), 4242, &[("json", "false")]);
-    assert_eq!(o.stdout, "worker started\nprocessing\n");
-    let o = peek(Some(t.path()), 4242, &[("json", "no"), ("max_bytes", "5")]);
-    assert_eq!(o.stdout, "sing\n");
+    let threads = o.json()["threads"].as_array().unwrap().clone();
+    assert_eq!(threads.len(), tids.len());
+    for (t, tid) in threads.iter().zip(&tids) {
+        assert_eq!(t["tid"], *tid);
+        assert_eq!(t["nice_after"], 7);
+        assert_eq!(t["status"], "ok");
+    }
+    all(7);
+    assert_eq!(on(&kid, "nice.inc", &[("delta", "2")]).code(), 0);
+    all(9);
+    // Each thread moves from its own value.
+    let other = tids[1];
+    sys::set_nice(other, 15).unwrap();
+    let o = on(&kid, "nice.inc", &[("delta", "3")]);
+    assert_eq!(o.code(), 0, "{}", o.stdout);
+    assert_eq!(o.json()["nice_before"], 9);
+    assert_eq!(o.json()["nice_after"], 12);
+    assert_eq!(sys::get_nice(kid.pid()).unwrap(), 12);
+    assert_eq!(sys::get_nice(other).unwrap(), 18);
+    // One thread would pass 19: nothing changes anywhere.
+    let o = on(&kid, "nice.inc", &[("delta", "5")]);
+    o.fails(2, "invalid_argument");
+    assert_eq!(sys::get_nice(kid.pid()).unwrap(), 12);
+    assert_eq!(sys::get_nice(other).unwrap(), 18);
+    let o = on(&kid, "setPriority", &[("class", "idle")]);
+    assert_eq!(o.code(), 0, "{}", o.stdout);
+    assert_eq!(o.json()["previous_nice"], 12);
+    all(19);
 }
 
 #[test]
-fn io_peek_encodings() {
-    let t = logs(Some(b"ab\xffcd"), Some(b""));
-    let o = peek(Some(t.path()), 4242, &[]);
-    assert_eq!(o.json()["encoding"], "base64");
-    assert_eq!(o.json()["auto_fallback"], true);
-    assert_eq!(o.json()["data"], "YWL/Y2Q=");
-    let o = peek(Some(t.path()), 4242, &[("encoding", "utf8")]);
-    assert_eq!(o.json()["data"], "ab\u{fffd}cd");
-    assert_eq!(o.json()["auto_fallback"], false);
-    let o = peek(Some(t.path()), 4242, &[("encoding", "base64")]);
-    assert_eq!(o.json()["data"], "YWL/Y2Q=");
-    assert_eq!(o.json()["auto_fallback"], false);
-    // An empty file keeps the requested encoding.
-    let o = peek(
-        Some(t.path()),
-        4242,
-        &[("stream", "stderr"), ("encoding", "base64")],
-    );
-    assert_eq!(o.json()["encoding"], "base64");
-    assert_eq!(o.json()["bytes_read"], 0);
-    assert_eq!(o.json()["data"], "");
-}
-
-#[test]
-fn io_peek_missing_logs() {
-    let t = logs(Some(b"out\n"), None);
-    let o = peek(Some(t.path()), 4242, &[("stream", "stderr")]);
-    o.fails(1, "log_not_found");
-    peek(Some(t.path()), 7, &[]).fails(1, "log_not_found");
-    // both: what could be read is printed; the call fails.
-    let o = peek(Some(t.path()), 4242, &[("stream", "both")]);
-    o.fails(1, "log_not_found");
-    assert_eq!(o.json()["streams"]["stdout"]["data"], "out\n");
-    assert_eq!(
-        o.json()["streams"]["stderr"]["error"]["code"],
-        "proc.log_not_found"
-    );
-    // No state directory: never fall back to a shared one.
-    let o = peek(None, 4242, &[]);
-    o.fails(1, "failed");
-    assert!(o.message().contains("state directory"));
-}
-
-#[test]
-fn io_peek_refuses_fifos_and_directories_without_blocking() {
-    let t = logs(None, None);
-    let dir = t.path().join("resh/proc/4242");
-    let fifo = dir.join("stdout.log");
-    let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
-    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
-    std::fs::create_dir(dir.join("stderr.log")).unwrap();
-    let o = peek(Some(t.path()), 4242, &[]);
-    o.fails(1, "failed");
-    assert!(
-        o.message().contains("not a regular file"),
-        "{}",
-        o.message()
-    );
-    peek(Some(t.path()), 4242, &[("stream", "stderr")]).fails(1, "failed");
-}
-
-#[test]
-fn io_peek_unreadable_log_is_permission_denied() {
+fn some_threads_failing_is_a_partial_failure() {
     if is_root() {
-        return;
+        return; // root may lower nice values; see tests/proc_e2e_docker.rs
     }
-    use std::os::unix::fs::PermissionsExt;
-    let t = logs(Some(b"secret"), None);
-    let f = t.path().join("resh/proc/4242/stdout.log");
-    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
-    peek(Some(t.path()), 4242, &[]).fails(1, "permission_denied");
-}
-
-#[test]
-fn io_peek_argument_errors() {
-    let t = logs(Some(b"x"), Some(b"y"));
-    for args in [
-        vec![("stream", "all")],
-        vec![("encoding", "hex")],
-        vec![("max_bytes", "0")],
-        vec![("max_bytes", "-1")],
-        vec![("max_bytes", "x")],
-        vec![("max_bytes", "16777217")],
-        vec![("tail", "0")],
-        vec![("tail", "abc")],
-        vec![("json", "maybe")],
-        vec![("json", "false"), ("stream", "stderr")],
-        vec![("json", "false"), ("stream", "both")],
-    ] {
-        peek(Some(t.path()), 4242, &args).fails(2, "invalid_argument");
-    }
-    let o = peek(Some(t.path()), 4242, &[("stream", "stdot")]);
-    assert!(o.message().contains("did you mean `stdout`"));
-    let o = peek(Some(t.path()), 4242, &[("max_bytes", "16777216")]);
-    assert_eq!(o.code(), 0);
-}
-
-#[test]
-fn io_peek_through_the_handle_uses_the_state_directory() {
-    // A pid whose log directory does not exist anywhere.
-    let o = call(&GONE.to_string(), "io.peek", &[]);
-    assert_eq!(o.code(), 1, "{}", o.stdout);
-    let code = o.json()["error"]["code"].as_str().unwrap().to_string();
-    assert!(
-        code == "proc.log_not_found" || code == "proc.failed",
-        "{code}"
-    );
+    let kid = Kid::threaded(2);
+    let tids = tids_of(kid.pid());
+    let other = tids[1];
+    assert_eq!(on(&kid, "nice.set", &[("value", "10")]).code(), 0);
+    sys::set_nice(other, 16).unwrap();
+    // Raising the others works; lowering `other` is refused.
+    let o = on(&kid, "nice.set", &[("value", "13")]);
+    o.fails(1, "partial_failure");
+    assert!(o.message().contains("1 of"), "{}", o.message());
+    let threads = o.json()["threads"].as_array().unwrap().clone();
+    let bad: Vec<&Value> = threads.iter().filter(|t| t["status"] == "error").collect();
+    assert_eq!(bad.len(), 1);
+    assert_eq!(bad[0]["tid"], other);
+    assert_eq!(bad[0]["error"]["code"], "proc.permission_denied");
+    assert_eq!(bad[0]["nice_after"], 16);
+    assert_eq!(sys::get_nice(kid.pid()).unwrap(), 13);
+    assert_eq!(sys::get_nice(other).unwrap(), 16);
+    // When no thread could be changed it is that error, not partial.
+    let o = on(&kid, "nice.set", &[("value", "5")]);
+    o.fails(1, "permission_denied");
+    assert_eq!(o.json()["threads"].as_array().unwrap().len(), tids.len());
+    assert_eq!(sys::get_nice(kid.pid()).unwrap(), 13);
+    let o = on(&kid, "setPriority", &[("class", "normal")]);
+    o.fails(1, "permission_denied");
 }
 
 // ---------------------------------------------------------------------------

@@ -1,9 +1,10 @@
 Handle: proc
 Verb: nice.dec
-Definition: Lowers the nice value of a process by a delta, raising its priority.
+Definition: Lowers the nice value of every thread of a process by a delta,
+  raising its priority.
 
 Usage:
-  resh proc://<pid|self>.nice.dec delta=<0..39>
+  resh proc://<pid>.nice.dec delta=<0..39>
 
 Example:
   resh --json-pretty proc://1234.nice.dec delta=5
@@ -14,8 +15,17 @@ Example Output:
     "delta": 5,
     "nice_after": 5,
     "nice_before": 10,
-    "pid": 1234
+    "pid": 1234,
+    "threads": [
+      {
+        "changed": true,
+        "nice_after": 5,
+        "nice_before": 10,
+        "status": "ok",
+        "tid": 1234
+      }
+    ]
   }
 
   Shown with --json-pretty. Lowering a nice value usually requires root.
-  A result outside -20..19 is refused and nothing is changed.
+  If any thread would leave -20..19, nothing is changed.

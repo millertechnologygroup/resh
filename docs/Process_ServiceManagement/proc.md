@@ -4,7 +4,7 @@
 
 ### Definition
 
-Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using URI-based commands. The `proc://` handle sends signals to a running process, reads or changes its nice value, and sets its resource limits, using the kernel's `kill`, `getpriority`, `setpriority` and `prlimit` calls. It can also read output log files kept for a process in the resh state directory (`io.peek`; nothing in resh writes them, see 3.3).
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using URI-based commands. The `proc://` handle sends signals to a running process, reads or changes the nice value of its threads, and sets its resource limits, using the kernel's `kill`, `getpriority`, `setpriority` and `prlimit` calls.
 
 ### Purpose
 
@@ -13,9 +13,8 @@ The `proc` handle lets you:
 * Send signals to a process, by name or number
 * Read and change a process's nice value, directly or through a named priority class
 * Set a process's soft and hard resource limits (`limits.set`, through `prlimit`)
-* Read log files from the resh state directory (`io.peek`; nothing in resh writes these files)
 
-Every verb prints a single JSON object (`io.peek json=false` prints the data alone).
+Every verb prints a single JSON object.
 
 ### Architectural Problem Addressed
 
@@ -28,7 +27,7 @@ proc://<pid|self>.<verb> [key=value ...]
 ```
 
 * **handle**: `proc://`
-* **target**: a numeric process ID, or `self` (the resh process itself)
+* **target**: a numeric process ID, or `self` (the resh process itself; only `nice.get` accepts it, see "The resh process itself" below)
 * **verb**: the operation; dotted verbs such as `nice.get` and `limits.set` are recognized as a whole
 * **options**: `key=value` words after the stage
 
@@ -53,13 +52,20 @@ Sixteen verbs:
 | Signals | `signal`, `term`, `int`, `hup`, `kill`, `stop`, `cont`, `usr1`, `usr2` |
 | Priority | `nice.get`, `nice.set`, `nice.inc`, `nice.dec`, `setPriority` |
 | Limits | `limits.set` |
-| Logs | `io.peek` |
 
 Help: `resh proc --help` and `resh proc <verb> --help`.
 
 ### PID validation
 
 The target must be `self` or a decimal PID from 1 to 2147483647. Zero, negative numbers, values above 2147483647, hex and anything non-numeric are rejected before any system call with `proc.invalid_target` and exit code 2. This means a PID can never address a process group or every process (`kill(-1, ...)`). `limits.set pid=` is checked the same way (`proc.invalid_argument`).
+
+### The resh process itself
+
+Every verb except `nice.get` refuses to act on the resh process itself, whether it is named `self` or by its PID (and, for `limits.set`, through `pid=`): exit 2, `proc.invalid_target`, nothing is sent or changed. A signal could stop or kill resh, and a nice or limit change would vanish when resh exits a moment later. `proc://self.nice.get` still works. **Breaking change:** earlier releases accepted `self` for every verb.
+
+### Removed verb: io.peek
+
+`io.peek` was removed. It read `<state_dir>/resh/proc/<pid>/stdout.log` and `stderr.log`, files that nothing in resh writes, so it could not show a process's output. `proc://<pid>.io.peek` is now an unknown verb (exit 2, `proc.unknown_verb`, with a note that it was removed).
 
 ### Strict arguments
 
@@ -73,7 +79,7 @@ Every verb accepts only the options in its usage (see each verb's `--help`). An 
 
 ### Timeouts
 
-No `proc` verb waits: signal, nice and limit verbs make a few system calls and return, and `io.peek` reads at most 16 MiB of one regular file (a FIFO or device is refused without blocking). So no verb takes `timeout_ms`; passing it is refused (exit 2, `proc.invalid_argument`).
+No `proc` verb waits: signal, nice and limit verbs make a few system calls (one per thread for the nice verbs) and return. So no verb takes `timeout_ms`; passing it is refused (exit 2, `proc.invalid_argument`).
 
 ---
 
@@ -140,10 +146,12 @@ resh proc://1234.setPriority nice=7
 ```
 
 * `nice.get` → `{"nice": 0, "pid": 1234}`
-* `nice.set value=<-20..19>` → `{"changed": true, "nice": 10, "pid": 1234}`. `changed` is false when the process already had that value (nothing is set then). A value outside -20..19 is refused (exit 2).
-* `nice.inc delta=<0..39>` raises the nice value (lower priority); `nice.dec delta=<0..39>` lowers it (higher priority). Output: `{"changed": true, "delta": 5, "nice_after": 5, "nice_before": 0, "pid": 1234}`. If the result would leave -20..19, nothing is changed and the call is refused (exit 2, `proc.invalid_argument`). A negative delta is refused; use the other verb.
+* `nice.set value=<-20..19>` → `{"changed": true, "nice": 10, "pid": 1234, "threads": [...]}`. `changed` is true when any thread changed; a thread that already had the value is left alone. A value outside -20..19 is refused (exit 2).
+* `nice.inc delta=<0..39>` raises the nice value (lower priority); `nice.dec delta=<0..39>` lowers it (higher priority). Output: `{"changed": true, "delta": 5, "nice_after": 5, "nice_before": 0, "pid": 1234, "threads": [...]}`. If the result would leave -20..19, nothing is changed and the call is refused (exit 2, `proc.invalid_argument`). A negative delta is refused; use the other verb.
 * Lowering a nice value below its current value needs `CAP_SYS_NICE` (root) unless the target process's `RLIMIT_NICE` allows it (a soft limit of `n` allows nice values down to `20 - n`); otherwise the call fails with `proc.permission_denied` (exit 1) and nothing changes.
-* On Linux the nice value belongs to a thread: these verbs (like `renice`) change the thread whose ID is the PID, which is the main thread. Other threads of a multi-threaded process keep their values.
+* On Linux the nice value belongs to a thread. `nice.set`, `nice.inc`, `nice.dec` and `setPriority` change **every thread** listed in `/proc/<pid>/task` (one `setpriority(PRIO_PROCESS, <tid>)` each; earlier releases, like `renice`, changed only the main thread). `nice.inc` and `nice.dec` move each thread from its own value; if any thread would leave -20..19 the call is refused and nothing changes. `nice.get`, `nice_before`/`nice_after` and `previous_nice` report the main thread.
+* The output has a `threads` array, main thread first: `{"tid", "nice_before", "nice_after", "changed", "status"}` with `status` `ok`, `gone` (the thread ended before it was changed; not an error) or `error` (with an `error` object). A thread started while the call runs is not changed.
+* If some threads fail and others were changed, the changed ones keep their new value and the call fails with `proc.partial_failure` (exit 1), the `threads` array listing each failure. If no thread could be changed, the call fails with the error of the first thread (for example `proc.permission_denied`).
 * `setPriority` sets the nice value from a class or from `nice=`:
 
   | Class | Nice value |
@@ -162,43 +170,14 @@ resh proc://1234.setPriority nice=7
     "class": "background",
     "nice": 10,
     "pid": 1234,
-    "previous_nice": 0
+    "previous_nice": 0,
+    "threads": [
+      { "changed": true, "nice_after": 10, "nice_before": 0, "status": "ok", "tid": 1234 }
+    ]
   }
   ```
 
-### 3.3 io.peek
-
-```bash
-resh proc://1234.io.peek stream=stdout max_bytes=1024
-resh proc://1234.io.peek stream=both
-```
-
-`io.peek` reads the tail of `<state_dir>/resh/proc/<pid>/stdout.log` and `stderr.log`, where `<state_dir>` is `$XDG_STATE_HOME` or `~/.local/state`. If neither `XDG_STATE_HOME` nor `HOME` gives a directory the call fails (`proc.failed`); it never falls back to a shared directory such as `/tmp`. **Nothing in resh creates or writes these files.** `io.peek` does not capture a running process's output; it only returns data if something else (a supervisor script, a redirect) wrote those files. For an ordinary process it fails with `proc.log_not_found` (exit 1).
-
-Arguments:
-
-* `stream=stdout|stderr|both` (default `stdout`)
-* `max_bytes=<1..16777216>` (default 4096) and `tail=<1..16777216>` (default `max_bytes`): the last `min(tail, max_bytes)` bytes of the file are returned
-* `encoding=auto|utf8|base64` (default `auto`, which uses base64, with `auto_fallback: true`, when the data is not valid UTF-8; `utf8` replaces invalid bytes with U+FFFD). A cut at the start of the tail can split a multi-byte character, which makes `auto` fall back to base64.
-* `json=true|false` (default true; any of `true/false/1/0/yes/no/on/off`). `json=false` prints only the `data` text (already encoded) and is allowed only with `stream=stdout`.
-
-`bytes_read` is the number of bytes returned; `truncated` is true when the file holds more than that. Only regular files are read: a FIFO, device or directory at the log path is refused (`proc.failed`) without blocking on it. An unreadable file is `proc.permission_denied`.
-
-```json
-{
-  "auto_fallback": false,
-  "bytes_read": 26,
-  "data": "worker started\nprocessing\n",
-  "encoding": "utf8",
-  "pid": 1234,
-  "stream": "stdout",
-  "truncated": false
-}
-```
-
-With `stream=both` the per-stream fields are nested under `streams.stdout` and `streams.stderr`. A stream that cannot be read appears as `{"error": {"code", "message"}}` inside `streams`; the other stream is still shown, and the call fails with that stream's code (exit 1). Earlier releases exited 0 in that case.
-
-### 3.4 limits.set
+### 3.3 limits.set
 
 ```bash
 resh proc://1234.limits.set nofile=4096
@@ -206,7 +185,7 @@ resh proc://1234.limits.set nofile=1024:4096 core=0 dry_run=true
 resh proc://self.limits.set pid=1234 cpu=60s
 ```
 
-`limits.set` reads and changes the limits of the target process with `prlimit(2)`. The target is the PID in the URL, or `pid=<n>` (useful with `proc://self`; with a numeric URL, `pid=` must name the same PID). `proc://self` is the resh process itself, which exits right after the call, so changing it has no lasting effect.
+`limits.set` reads and changes the limits of the target process with `prlimit(2)`. The target is the PID in the URL, or `pid=<n>` with `proc://self` (with a numeric URL, `pid=` must name the same PID). The resh process itself is refused, also as a dry run (`proc.invalid_target`).
 
 * Arguments are `<resource>=<soft>`, `<resource>=<soft>:<hard>` or `<resource>=:<hard>` (an empty side keeps the current value). Resources: `cpu`, `as`, `data`, `stack`, `core`, `nofile`, `fsize`, `memlock`, `nproc`. At least one is required.
 * Values: a number, `unlimited`, a number with an `s` suffix (seconds; `cpu` only), or with `K`, `M` or `G` (powers of 1000). A number too large to be a limit is refused (use `unlimited`).
@@ -242,42 +221,22 @@ Permissions: an unprivileged user can change the limits of their own processes a
 
 ### Output channels
 
-`proc` writes its JSON to **stdout**, including on failure: the failure object has `pid`, `verb`, `"ok": false` and `"error": {"code": "proc.<code>", "message": "..."}` (plus the verb's partial results, such as `results` for `limits.set` or `streams` for `io.peek stream=both`). One line `Error: [proc.<code>] proc <verb>: <message>` goes to stderr.
+`proc` writes its JSON to **stdout**, including on failure: the failure object has `pid`, `verb`, `"ok": false` and `"error": {"code": "proc.<code>", "message": "..."}` (plus the verb's partial results, such as `results` for `limits.set` or `threads` for the nice verbs). One line `Error: [proc.<code>] proc <verb>: <message>` goes to stderr.
 
 ### Exit codes and error codes
 
-Exit codes: 0 success; 1 the operation failed (`proc.not_found`, `proc.permission_denied`, `proc.log_not_found`, `proc.failed`, `proc.unsupported_platform`); 2 invalid usage, nothing was done (`proc.invalid_argument`, `proc.invalid_target`). No verb exits 124. **Breaking change:** earlier releases used exit 3 for "process not found", exit 4 for permission errors, exit 3 for invalid `nice`/`class`/`io.peek` values, and exit 2 for a missing `io.peek` log.
+Exit codes: 0 success; 1 the operation failed (`proc.not_found`, `proc.permission_denied`, `proc.partial_failure`, `proc.failed`, `proc.unsupported_platform`); 2 invalid usage, nothing was done (`proc.invalid_argument`, `proc.invalid_target`, `proc.unknown_verb`). No verb exits 124. **Breaking change:** earlier releases used exit 3 for "process not found", exit 4 for permission errors and exit 3 for invalid `nice`/`class` values.
 
 | Code | Exit | When |
 | ---- | ---- | ---- |
-| `proc.invalid_argument` | 2 | Unknown verb or argument, `timeout_ms`, `dry_run` on a verb other than `limits.set`, a missing `sig`/`value`/`delta` or `limits.set` resource, an invalid value (signal name or number, nice value, delta, class, stream, encoding, size, boolean, limit value, `pid=`), a nice result outside -20..19 (`nice.inc`, `nice.dec`), a soft limit above the hard limit, or `pid=` different from the URL's PID. |
-| `proc.invalid_target` | 2 | The target is not `self` or a PID from 1 to 2147483647. |
+| `proc.invalid_argument` | 2 | Unknown argument, `timeout_ms`, `dry_run` on a verb other than `limits.set`, a missing `sig`/`value`/`delta` or `limits.set` resource, an invalid value (signal name or number, nice value, delta, class, boolean, limit value, `pid=`), a nice result outside -20..19 for any thread (`nice.inc`, `nice.dec`), a soft limit above the hard limit, or `pid=` different from the URL's PID. |
+| `proc.invalid_target` | 2 | The target is not `self` or a PID from 1 to 2147483647, or a verb other than `nice.get` names the resh process itself (`self`, its PID, or `limits.set pid=`). |
+| `proc.unknown_verb` | 2 | The verb does not exist (with a "did you mean" hint), including the removed `io.peek`. |
 | `proc.not_found` | 1 | No process has that PID (`ESRCH`). |
-| `proc.permission_denied` | 1 | The kernel refused (`EPERM`/`EACCES`): another user's process, lowering a nice value, raising a hard limit; or an `io.peek` log file that cannot be read. |
-| `proc.log_not_found` | 1 | `io.peek`: the log file does not exist. |
-| `proc.failed` | 1 | Any other system call failure (for example a limit above the kernel's maximum, `EINVAL`), an `io.peek` log path that is not a regular file, or no state directory. |
+| `proc.permission_denied` | 1 | The kernel refused (`EPERM`/`EACCES`): another user's process, lowering a nice value, raising a hard limit, or reading `/proc/<pid>/task`. |
+| `proc.partial_failure` | 1 | Nice verbs: some threads were changed and others failed; `threads` lists each result. |
+| `proc.failed` | 1 | Any other system call failure (for example a limit above the kernel's maximum, `EINVAL`). |
 | `proc.unsupported_platform` | 1 | Not Linux: the system calls are implemented for Linux only. |
-
-------- | ---- | ---- |
-| all | 0 | Success |
-| all | 1 | Invalid PID in the URL (rejected before any system call) |
-| signal verbs | 1 | Missing or unknown `sig`, or another `kill` failure |
-| signal verbs | 3 | Process not found |
-| signal verbs | 4 | Permission denied |
-| `nice.get` | 1 | Any failure, including no such process or permission denied |
-| `nice.set` | 2 | `value` missing or not an integer |
-| `nice.set` | 3 | `value` outside -20..19 |
-| `nice.set`, `nice.inc`, `nice.dec` | 4 | Permission denied while setting |
-| `nice.set`, `nice.inc`, `nice.dec` | 1 | Other failures, including no such process |
-| `nice.inc`, `nice.dec` | 2 | `delta` missing or not an integer |
-| `nice.inc`, `nice.dec` | 3 | Result outside -20..19 |
-| `setPriority` | 2 | `nice` is not an integer |
-| `setPriority` | 3 | Unknown `class` |
-| `setPriority` | 4 | No such process, permission denied, or another priority failure |
-| `io.peek` | 3 | Invalid `stream`, `encoding`, `max_bytes`, `tail`, or `json=false` with a stream other than stdout |
-| `io.peek` | 2 | Log file not found or unreadable (`stream=stdout` or `stderr`) |
-| `limits.set` | 2 | `pid=` is not a positive integer |
-| `limits.set` | 1 | Any resource failed (unknown name, bad value, soft above hard, `setrlimit` error) or invalid `dry_run` |
 
 ---
 
@@ -294,7 +253,7 @@ Exit codes: 0 success; 1 the operation failed (`proc.not_found`, `proc.permissio
 
 ### 4.3 Filesystem & Storage
 
-No file access except `io.peek`, which reads only files under the resh state directory (see 3.3).
+No file access, except reading `/proc/<pid>/task` to list a process's threads.
 
 ### 4.4 Network & Remote Operations
 
@@ -334,7 +293,6 @@ Linux only. The signal table and signal numbers are Linux's (for example USR1 is
 * Send TERM before KILL and give the process time to clean up.
 * Check that the PID is the process you expect before sending a signal.
 * `limits.set` changes a running process; a child it starts later inherits the limits it has then.
-* Do not rely on `io.peek` to see a process's output unless you arrange for the log files to be written.
 
 ### Automation
 

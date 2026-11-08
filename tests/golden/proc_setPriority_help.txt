@@ -1,10 +1,10 @@
 Handle: proc
 Verb: setPriority
-Definition: Sets the nice value of a process from a named priority class or an
-  explicit nice value.
+Definition: Sets the nice value of every thread of a process from a named
+  priority class or an explicit nice value.
 
 Usage:
-  resh proc://<pid|self>.setPriority
+  resh proc://<pid>.setPriority
     [class=idle|background|normal|high|realtime] [nice=<-20..19>]
 
 Example:
@@ -16,7 +16,16 @@ Example Output:
     "class": "background",
     "nice": 10,
     "pid": 1234,
-    "previous_nice": 0
+    "previous_nice": 0,
+    "threads": [
+      {
+        "changed": true,
+        "nice_after": 10,
+        "nice_before": 0,
+        "status": "ok",
+        "tid": 1234
+      }
+    ]
   }
 
   Shown with --json-pretty. Classes map to nice values idle=19,

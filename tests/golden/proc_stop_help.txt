@@ -3,7 +3,7 @@ Verb: stop
 Definition: Sends SIGSTOP to a process to pause it.
 
 Usage:
-  resh proc://<pid|self>.stop
+  resh proc://<pid>.stop
 
 Example:
   resh --json-pretty proc://1234.stop

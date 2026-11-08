@@ -3,7 +3,7 @@ Verb: usr2
 Definition: Sends SIGUSR2 to a process.
 
 Usage:
-  resh proc://<pid|self>.usr2
+  resh proc://<pid>.usr2
 
 Example:
   resh --json-pretty proc://1234.usr2

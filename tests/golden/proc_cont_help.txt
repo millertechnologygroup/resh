@@ -3,7 +3,7 @@ Verb: cont
 Definition: Sends SIGCONT to a process to resume it after a stop.
 
 Usage:
-  resh proc://<pid|self>.cont
+  resh proc://<pid>.cont
 
 Example:
   resh --json-pretty proc://1234.cont

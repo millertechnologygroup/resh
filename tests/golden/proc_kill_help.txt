@@ -3,7 +3,7 @@ Verb: kill
 Definition: Sends SIGKILL to a process to terminate it immediately.
 
 Usage:
-  resh proc://<pid|self>.kill
+  resh proc://<pid>.kill
 
 Example:
   resh --json-pretty proc://1234.kill

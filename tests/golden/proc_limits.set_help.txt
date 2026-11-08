@@ -8,13 +8,13 @@ Usage:
     resources: cpu as data stack core nofile fsize memlock nproc
 
 Example:
-  resh --json-pretty proc://self.limits.set nofile=1024 dry_run=true
+  resh --json-pretty proc://1234.limits.set nofile=1024 dry_run=true
 
 Example Output:
   {
     "backend": "prlimit",
     "dry_run": true,
-    "pid": 41872,
+    "pid": 1234,
     "results": {
       "nofile": {
         "after": {
@@ -34,5 +34,5 @@ Example Output:
 
   Shown with --json-pretty. A value is a number, unlimited, a number with
   an s suffix (cpu only, seconds), or with K, M, or G (powers of 1000);
-  an empty side keeps the current value. pid=<n> targets that process
-  instead of self. self is the short-lived resh process.
+  an empty side keeps the current value. pid=<n> names the target when
+  the URL is self; the resh process itself is refused.

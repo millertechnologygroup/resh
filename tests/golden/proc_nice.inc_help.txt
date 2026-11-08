@@ -1,10 +1,10 @@
 Handle: proc
 Verb: nice.inc
-Definition: Raises the nice value of a process by a delta, lowering its
-  priority.
+Definition: Raises the nice value of every thread of a process by a delta,
+  lowering its priority.
 
 Usage:
-  resh proc://<pid|self>.nice.inc delta=<0..39>
+  resh proc://<pid>.nice.inc delta=<0..39>
 
 Example:
   resh --json-pretty proc://1234.nice.inc delta=5
@@ -15,8 +15,17 @@ Example Output:
     "delta": 5,
     "nice_after": 5,
     "nice_before": 0,
-    "pid": 1234
+    "pid": 1234,
+    "threads": [
+      {
+        "changed": true,
+        "nice_after": 5,
+        "nice_before": 0,
+        "status": "ok",
+        "tid": 1234
+      }
+    ]
   }
 
-  Shown with --json-pretty. A result outside -20..19 is refused and
-  nothing is changed.
+  Shown with --json-pretty. Each thread moves from its own value; if any
+  would leave -20..19, the call is refused and nothing is changed.

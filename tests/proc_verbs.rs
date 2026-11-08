@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 
 const VERBS: &[&str] = &[
     "nice.get",
-    "io.peek",
     "signal",
     "term",
     "int",
@@ -37,7 +36,6 @@ fn options_for(verb: &str) -> &'static [&'static str] {
         "nice.set" => &["value"],
         "nice.inc" | "nice.dec" => &["delta"],
         "setPriority" => &["class", "nice"],
-        "io.peek" => &["stream", "max_bytes", "tail", "encoding", "json"],
         "limits.set" => &[
             "pid", "dry_run", "cpu", "as", "data", "stack", "core", "nofile", "fsize", "memlock",
             "nproc",
@@ -52,7 +50,8 @@ const ERROR_CODES: &[&str] = &[
     "proc.invalid_target",
     "proc.not_found",
     "proc.permission_denied",
-    "proc.log_not_found",
+    "proc.partial_failure",
+    "proc.unknown_verb",
     "proc.failed",
     "proc.unsupported_platform",
 ];
@@ -112,8 +111,54 @@ struct Kid(Child);
 impl Kid {
     fn spawn() -> Self {
         let mut cmd = Command::new("sleep");
-        cmd.arg("60")
-            .stdin(Stdio::null())
+        cmd.arg("60");
+        Self::start(cmd)
+    }
+
+    /// This test binary running `thread_helper` with `n` extra threads;
+    /// returns once they all exist.
+    fn threaded(n: usize) -> Self {
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "thread_helper",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("PROC_THREAD_HELPER", n.to_string());
+        let kid = Self::start(cmd);
+        let end = Instant::now() + Duration::from_secs(10);
+        let mut last = 0;
+        loop {
+            let c = kid.tids().len();
+            if c > n && c == last {
+                return kid;
+            }
+            last = c;
+            assert!(Instant::now() < end, "helper has {c} threads");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn tids(&self) -> Vec<u32> {
+        std::fs::read_dir(format!("/proc/{}/task", self.0.id()))
+            .map(|d| {
+                d.filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The nice value of thread `tid`.
+    fn thread_nice(&self, tid: u32) -> i64 {
+        let stat =
+            std::fs::read_to_string(format!("/proc/{}/task/{tid}/stat", self.0.id())).unwrap();
+        let rest = stat.rsplit_once(") ").unwrap().1;
+        rest.split_whitespace().nth(16).unwrap().parse().unwrap()
+    }
+
+    fn start(mut cmd: Command) -> Self {
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         unsafe {
@@ -284,15 +329,17 @@ fn nice_verbs() {
     assert_eq!(kid.nice(), base + 1);
     let r = resh(&[&kid.url("nice.set"), "value=15"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
-    assert_eq!(
-        r.json,
-        json!({"changed": true, "nice": 15, "pid": kid.0.id()})
-    );
+    assert_eq!(r.json["changed"], true);
+    assert_eq!(r.json["nice"], 15);
+    assert_eq!(r.json["threads"][0]["tid"], kid.0.id());
+    assert_eq!(r.json["threads"][0]["nice_after"], 15);
     assert_eq!(kid.nice(), 15);
     let r = resh(&[&kid.url("setPriority"), "class=idle"]);
     assert_eq!(r.code, 0);
+    let mut j = r.json.clone();
+    j.as_object_mut().unwrap().remove("threads");
     assert_eq!(
-        r.json,
+        j,
         json!({"backend": "linux-setpriority", "class": "idle", "nice": 19,
                "pid": kid.0.id(), "previous_nice": 15})
     );
@@ -340,47 +387,6 @@ fn nice_errors_change_nothing() {
         let mut argv = vec![url.as_str()];
         argv.extend(arg);
         assert_fail(&resh(&argv), 1, "proc.not_found");
-    }
-}
-
-#[test]
-fn io_peek_reads_logs_from_the_state_directory() {
-    let state = tempfile::tempdir().unwrap();
-    let dir = state.path().join("resh/proc/4242");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("stdout.log"), "worker started\nprocessing\n").unwrap();
-    std::fs::write(dir.join("stderr.log"), b"\xff\xfe").unwrap();
-    let env = [("XDG_STATE_HOME", state.path().to_str().unwrap())];
-    let r = resh_env(&["proc://4242.io.peek"], &env);
-    assert_eq!(r.code, 0, "{}", r.stderr);
-    assert_eq!(r.json["data"], "worker started\nprocessing\n");
-    assert_eq!(r.json["truncated"], false);
-    let r = resh_env(&["proc://4242.io.peek", "stream=stderr"], &env);
-    assert_eq!(r.json["encoding"], "base64");
-    assert_eq!(r.json["auto_fallback"], true);
-    let r = resh_env(
-        &["proc://4242.io.peek", "stream=both", "max_bytes=11"],
-        &env,
-    );
-    assert_eq!(r.code, 0);
-    assert_eq!(r.json["streams"]["stdout"]["data"], "processing\n");
-    assert_eq!(r.json["streams"]["stdout"]["truncated"], true);
-    let r = resh_env(&["proc://4242.io.peek", "json=false"], &env);
-    assert_eq!(r.stdout, "worker started\nprocessing\n");
-    // Missing logs, bad arguments.
-    assert_fail(
-        &resh_env(&["proc://4243.io.peek"], &env),
-        1,
-        "proc.log_not_found",
-    );
-    std::fs::remove_file(dir.join("stderr.log")).unwrap();
-    let r = resh_env(&["proc://4242.io.peek", "stream=both"], &env);
-    assert_fail(&r, 1, "proc.log_not_found");
-    assert_eq!(r.json["streams"]["stdout"]["bytes_read"], 26);
-    for bad in ["stream=x", "max_bytes=0", "json=false stream=both"] {
-        let mut argv = vec!["proc://4242.io.peek"];
-        argv.extend(bad.split(' '));
-        assert_fail(&resh_env(&argv, &env), 2, "proc.invalid_argument");
     }
 }
 
@@ -515,7 +521,6 @@ fn golden(verb: &str) -> &'static str {
         "nice.inc" => include_str!("golden/proc_nice.inc_help.txt"),
         "nice.dec" => include_str!("golden/proc_nice.dec_help.txt"),
         "setPriority" => include_str!("golden/proc_setPriority_help.txt"),
-        "io.peek" => include_str!("golden/proc_io.peek_help.txt"),
         "limits.set" => include_str!("golden/proc_limits.set_help.txt"),
         _ => unreachable!(),
     }
@@ -646,17 +651,13 @@ fn help_examples_run_and_match_their_sample_output() {
             .trim()
             .to_string();
         let kid = Kid::spawn();
-        let state = tempfile::tempdir().unwrap();
-        let dir = state.path().join(format!("resh/proc/{}", kid.pid()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("stdout.log"), "worker started\nprocessing\n").unwrap();
         if *verb == "nice.dec" {
             assert_eq!(resh(&[&kid.url("nice.set"), "value=10"]).code, 0);
         }
         let local = example.replace("1234", &kid.pid());
         let mut argv: Vec<&str> = local.split_whitespace().collect();
         assert_eq!(argv.remove(0), "resh");
-        let r = resh_env(&argv, &[("XDG_STATE_HOME", state.path().to_str().unwrap())]);
+        let r = resh(&argv);
         if *verb == "nice.dec" && !may_lower_nice_to(5) {
             assert_fail(&r, 1, "proc.permission_denied");
             continue;
@@ -696,4 +697,106 @@ fn lowering_nice_without_privilege_is_permission_denied() {
     let r = resh(&[&kid.url("nice.inc"), "delta=1"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!(kid.nice(), 11);
+}
+
+/// Not a test of its own: with PROC_THREAD_HELPER=<n> it starts n sleeping
+/// threads and never returns. `Kid::threaded` runs this test binary that way
+/// to get a multi-threaded child.
+#[test]
+fn thread_helper() {
+    let Some(n) = std::env::var("PROC_THREAD_HELPER")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    else {
+        return;
+    };
+    for _ in 0..n {
+        std::thread::spawn(|| {
+            loop {
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        });
+    }
+    loop {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}
+
+#[test]
+fn nice_verbs_change_every_thread() {
+    let kid = Kid::threaded(3);
+    let tids = kid.tids();
+    assert!(tids.len() >= 4, "{tids:?}");
+    for (verb, arg, want) in [
+        ("nice.set", "value=6", 6),
+        ("nice.inc", "delta=3", 9),
+        ("setPriority", "class=background", 10),
+    ] {
+        let r = resh(&[&kid.url(verb), arg]);
+        assert_eq!(r.code, 0, "{verb}: {}{}", r.stdout, r.stderr);
+        let threads = r.json["threads"].as_array().unwrap();
+        assert_eq!(threads.len(), tids.len(), "{verb}");
+        assert_eq!(threads[0]["tid"], kid.0.id());
+        for t in &tids {
+            assert_eq!(kid.thread_nice(*t), want, "{verb}: tid {t}");
+        }
+    }
+}
+
+#[test]
+fn some_threads_failing_is_a_partial_failure() {
+    if is_root() {
+        return; // root may lower nice values; see tests/proc_e2e_docker.rs
+    }
+    let kid = Kid::threaded(2);
+    let other = *kid.tids().iter().find(|t| **t != kid.0.id()).unwrap();
+    assert_eq!(resh(&[&kid.url("nice.set"), "value=10"]).code, 0);
+    let r = unsafe { libc::setpriority(libc::PRIO_PROCESS, other, 16) };
+    assert_eq!(r, 0);
+    let r = resh(&[&kid.url("nice.set"), "value=13"]);
+    assert_fail(&r, 1, "proc.partial_failure");
+    let failed: Vec<&Value> = r.json["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["status"] == "error")
+        .collect();
+    assert_eq!(failed.len(), 1, "{}", r.stdout);
+    assert_eq!(failed[0]["tid"], other);
+    assert_eq!(failed[0]["error"]["code"], "proc.permission_denied");
+    assert_eq!(kid.thread_nice(kid.0.id()), 13);
+    assert_eq!(kid.thread_nice(other), 16);
+}
+
+#[test]
+fn the_resh_process_itself_is_refused_and_io_peek_is_gone() {
+    for verb in ["kill", "stop", "term", "usr1"] {
+        let r = resh(&[&format!("proc://self.{verb}")]);
+        assert_fail(&r, 2, "proc.invalid_target");
+        assert!(r.stderr.contains("resh process itself"), "{}", r.stderr);
+    }
+    for (verb, arg) in [
+        ("signal", "sig=0"),
+        ("nice.set", "value=19"),
+        ("nice.inc", "delta=1"),
+        ("setPriority", "class=idle"),
+        ("limits.set", "nofile=64"),
+    ] {
+        assert_fail(
+            &resh(&[&format!("proc://self.{verb}"), arg]),
+            2,
+            "proc.invalid_target",
+        );
+    }
+    let r = resh(&["proc://self.limits.set", "nofile=64", "dry_run=true"]);
+    assert_fail(&r, 2, "proc.invalid_target");
+    let r = resh(&["proc://self.nice.get"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.json["nice"].is_number());
+    let kid = Kid::spawn();
+    let r = resh(&[&kid.url("io.peek")]);
+    assert_fail(&r, 2, "proc.unknown_verb");
+    assert!(r.stderr.contains("io.peek was removed"), "{}", r.stderr);
+    let r = resh(&["proc", "io.peek", "--help"]);
+    assert_eq!(r.code, 2, "{}", r.stdout);
 }

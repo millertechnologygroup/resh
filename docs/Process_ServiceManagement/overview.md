@@ -53,7 +53,7 @@ resh svc://nginx.restart
 
 * Each domain has its own handle and its own verbs:
   * `cron`: `list`, `add`, `rm`, `enable`, `disable`
-  * `proc`: `signal`, `term`, `int`, `hup`, `kill`, `stop`, `cont`, `usr1`, `usr2`, `nice.get`, `nice.set`, `nice.inc`, `nice.dec`, `setPriority`, `io.peek`, `limits.set`
+  * `proc`: `signal`, `term`, `int`, `hup`, `kill`, `stop`, `cont`, `usr1`, `usr2`, `nice.get`, `nice.set`, `nice.inc`, `nice.dec`, `setPriority`, `limits.set`
   * `svc`: `status`, `is-enabled`, `start`, `stop`, `restart`, `reload`, `enable`, `disable`, `mask`, `unmask`, `wait`, `logs`, `scale`
 * Help for any handle or verb: `resh <handle> --help`, `resh <handle> <verb> --help`.
 
@@ -61,7 +61,7 @@ resh svc://nginx.restart
 
 * `cron` `add`, `rm`, `enable` and `disable` support `dry_run` (true/false/1/0/yes/no/on/off, or a bare `dry_run` word; any other value is an error).
 * `svc` and the `proc` signal and nice verbs have **no dry run**; they act immediately. `proc` `limits.set` has `dry_run`.
-* Input checks done before any action: `proc` PIDs must be 1 to 2147483647 (or `self`), and every `proc` verb refuses unknown arguments and invalid values (exit 2, `proc.invalid_argument`); `svc` service names are rejected if they are empty or longer than 256 bytes, start with `-` or `.`, or contain anything but letters, digits, `_`, `.`, `@`, `-` and `\` (exit 2, `svc.invalid_target`). `svc` also refuses unknown arguments and invalid values (exit 2, `svc.invalid_argument`).
+* Input checks done before any action: `proc` PIDs must be 1 to 2147483647 (or `self`, which only `nice.get` accepts: no `proc` verb signals or changes the resh process itself), and every `proc` verb refuses unknown arguments and invalid values (exit 2, `proc.invalid_argument`); `svc` service names are rejected if they are empty or longer than 256 bytes, start with `-` or `.`, or contain anything but letters, digits, `_`, `.`, `@`, `-` and `\` (exit 2, `svc.invalid_target`). `svc` also refuses unknown arguments and invalid values (exit 2, `svc.invalid_argument`).
 * `cron` does not reject newlines in job fields; see the limitations in [cron.md](cron.md).
 
 ### Timeouts
@@ -77,7 +77,7 @@ resh svc://nginx.restart
 
 ### Limited verbs
 
-* `proc` `io.peek` reads log files in the resh state directory that nothing in resh writes.
+* `proc` `io.peek` was removed (it read log files that nothing writes); it is now an unknown verb (`proc.unknown_verb`).
 
 ---
 

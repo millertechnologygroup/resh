@@ -3,7 +3,7 @@ Verb: usr1
 Definition: Sends SIGUSR1 to a process.
 
 Usage:
-  resh proc://<pid|self>.usr1
+  resh proc://<pid>.usr1
 
 Example:
   resh --json-pretty proc://1234.usr1
