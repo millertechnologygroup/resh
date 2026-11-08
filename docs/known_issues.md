@@ -416,6 +416,18 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
 - apt: package upgrades no longer install packages that were not installed
   (`--only-upgrade`); config-files packages are no longer listed as
   installed. dnf 5 is supported.
+- snapshot `include_versions: minimal` records the upstream version only
+  (epoch and distribution revision dropped per manager) and marks the
+  lockfile; restore keeps any installed build of a locked upstream version,
+  and `mode: exact` installs the newest available build of it.
+- install `allow_downgrade` (default false): a requested version older than
+  the installed one is refused before anything runs (exit 1,
+  `pkg.downgrade_refused`); with it apt passes `--allow-downgrades`, dnf and
+  yum use `downgrade`, apk installs the version.
+- info and search `repository` is the suite/component (such as
+  `noble/main`), as in snapshot; the source URL is in the new
+  `repository_url` field. Breaking for scripts that read the URL from
+  `repository`.
 - Tested end to end in Docker against apt (Debian 13, Ubuntu 24.04), dnf
   (Fedora 42), yum (Rocky 9), pacman (Arch) and apk (Alpine).
 
