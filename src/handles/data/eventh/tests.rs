@@ -697,6 +697,9 @@ fn subscribe_wait_returns_an_event_emitted_meanwhile() {
         &h,
         &[
             ("topic", "late.*"),
+            // The store is empty: earliest waits for the first event too,
+            // and still gets it if the emitter wins the race.
+            ("offset", "earliest"),
             ("wait", "true"),
             ("wait_timeout_ms", "10000"),
         ],

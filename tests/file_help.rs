@@ -374,11 +374,17 @@ fn every_example_runs_and_matches_its_output() {
             other => panic!("no fixture for {other}"),
         }
 
+        // The watcher starts at an unknown time: change the file until the
+        // example has seen a change and ended.
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let watcher = (*verb == "watch").then(|| {
             let t = target.clone();
+            let done = done.clone();
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(700));
-                std::fs::write(&t, "changed").unwrap();
+                while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(200));
+                    std::fs::write(&t, "changed").unwrap();
+                }
             })
         });
         let out = resh()
@@ -386,6 +392,7 @@ fn every_example_runs_and_matches_its_output() {
             .timeout(Duration::from_secs(60))
             .output()
             .unwrap();
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(w) = watcher {
             w.join().unwrap();
         }

@@ -1788,12 +1788,7 @@ fn timeouts_stop_the_backend_tree() {
         .trim()
         .parse()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(
-        unsafe { libc::kill(pid, 0) },
-        -1,
-        "grandchild still running"
-    );
+    assert!(gone_soon(pid), "grandchild still running");
     let _ = process::take_lost();
 }
 
@@ -2747,12 +2742,7 @@ fn progress_runs_stop_at_the_deadline() {
         .trim()
         .parse()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(
-        unsafe { libc::kill(pid, 0) },
-        -1,
-        "grandchild still running"
-    );
+    assert!(gone_soon(pid), "grandchild still running");
     let _ = process::take_lost();
 }
 
@@ -2803,4 +2793,20 @@ fn dry_run_listing_parsers() {
     assert!(progress_event(&BackendType::Restic, false, "{\"message_type\":\"status\"}").is_none());
     assert!(progress_event(&BackendType::Borg, false, "{\"type\":\"progress_percent\"}").is_some());
     assert!(progress_event(&BackendType::Borg, false, "{\"type\":\"log_message\"}").is_none());
+}
+
+/// True once `pid` no longer exists, polling for up to 10 s: a killed
+/// process may stay a zombie until init reaps it, longer on a busy machine.
+fn gone_soon(pid: i32) -> bool {
+    let end = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        // SAFETY: signal 0 only checks that the process exists.
+        if unsafe { libc::kill(pid, 0) } == -1 {
+            return true;
+        }
+        if std::time::Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }

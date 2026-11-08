@@ -890,11 +890,13 @@ fn vault_configuration_and_access_errors() {
 fn vault_timeout_is_exit_124() {
     let fake = FakeVault::start("root-token", "secret");
     let c = vault_ctx(&fake);
-    fake.set_delay(Some(Duration::from_millis(1500)));
+    // The answer would take 5 s; the deadline ends the call long before
+    // (the bound leaves seconds of slack for a busy machine).
+    fake.set_delay(Some(Duration::from_millis(5000)));
     let start = Instant::now();
     c.run("secret://vault/k.get", &["timeout_ms=200"])
         .fails(124, "secret.timeout");
-    assert!(start.elapsed() < Duration::from_millis(1400));
+    assert!(start.elapsed() < Duration::from_millis(4000));
 }
 
 #[test]

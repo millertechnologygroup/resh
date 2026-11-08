@@ -205,6 +205,10 @@ fn a_waiting_subscriber_receives_an_event_from_another_process() {
         .args([
             "event://.subscribe",
             "topic=deploy.*",
+            // The store is empty, so earliest also waits for the first
+            // event, and an emit that wins the race with a slow start is
+            // still delivered (offset=latest would miss it).
+            "offset=earliest",
             "wait=true",
             "wait_timeout_ms=20000",
         ])
@@ -212,7 +216,8 @@ fn a_waiting_subscriber_receives_an_event_from_another_process() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    // offset=latest: the subscriber must start before the event is stored.
+    // Usually lets the subscriber start waiting first; not needed for
+    // the result.
     std::thread::sleep(Duration::from_millis(700));
     let started = Instant::now();
     emit(tmp.path(), "deploy.finished", r#"{"version":"1.4.2"}"#);

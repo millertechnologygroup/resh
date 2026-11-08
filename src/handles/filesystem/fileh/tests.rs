@@ -4,6 +4,7 @@
 
 use super::common::{Code, verb_options};
 use super::{FileHandle, HELP_PATH, OPERATION_VERBS};
+use crate::core::test_support::{when_open, when_watched};
 use crate::core::{Args, Handle, IoStreams, Status};
 use serde_json::Value;
 use std::fs;
@@ -870,17 +871,17 @@ fn tail_follow_prints_appended_data_until_timeout() {
     let d = tmp();
     let p = file(&d, "f", "first\n");
     let p2 = p.clone();
-    let writer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
+    // Appends once tail has the file open, however slow it is to start.
+    let writer = when_open(&p, move || {
         let mut f = fs::OpenOptions::new().append(true).open(&p2).unwrap();
         std::io::Write::write_all(&mut f, b"second\n").unwrap();
     });
     let start = std::time::Instant::now();
-    let o = call(&p, "tail", &[("follow", "true"), ("timeout_ms", "1200")]);
+    let o = call(&p, "tail", &[("follow", "true"), ("timeout_ms", "3000")]);
     writer.join().unwrap();
     o.ok();
     assert_eq!(o.out, "first\nsecond\n");
-    assert!(start.elapsed() >= Duration::from_millis(1100));
+    assert!(start.elapsed() >= Duration::from_millis(2900));
 }
 
 #[test]
@@ -888,11 +889,8 @@ fn tail_follow_rereads_a_truncated_file() {
     let d = tmp();
     let p = file(&d, "f", "old content\n");
     let p2 = p.clone();
-    let writer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        fs::write(&p2, "new\n").unwrap();
-    });
-    let o = call(&p, "tail", &[("follow", "true"), ("timeout_ms", "1000")]);
+    let writer = when_open(&p, move || fs::write(&p2, "new\n").unwrap());
+    let o = call(&p, "tail", &[("follow", "true"), ("timeout_ms", "3000")]);
     writer.join().unwrap();
     assert_eq!(o.ok().out, "old content\nnew\n");
 }
@@ -902,11 +900,8 @@ fn tail_follow_fails_when_the_file_disappears() {
     let d = tmp();
     let p = file(&d, "f", "x\n");
     let p2 = p.clone();
-    let remover = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        fs::remove_file(&p2).unwrap();
-    });
-    let o = call(&p, "tail", &[("follow", "true"), ("timeout_ms", "3000")]);
+    let remover = when_open(&p, move || fs::remove_file(&p2).unwrap());
+    let o = call(&p, "tail", &[("follow", "true"), ("timeout_ms", "30000")]);
     remover.join().unwrap();
     o.fails(Code::NotFound);
 }
@@ -1173,18 +1168,13 @@ fn find_symlink_loop_is_a_warning_only() {
 
 // --- watch -----------------------------------------------------------------
 
-fn after_ms(ms: u64, f: impl FnOnce() + Send + 'static) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(ms));
-        f()
-    })
-}
-
 #[test]
 fn watch_reports_create() {
     let d = tmp();
     let dir = d.path().to_path_buf();
-    let t = after_ms(400, move || fs::write(dir.join("new.txt"), "x").unwrap());
+    let t = when_watched(d.path(), move || {
+        fs::write(dir.join("new.txt"), "x").unwrap()
+    });
     let o = call(
         d.path(),
         "watch",
@@ -1203,7 +1193,7 @@ fn watch_reports_modify_of_a_file() {
     let d = tmp();
     let p = file(&d, "conf", "a");
     let p2 = p.clone();
-    let t = after_ms(400, move || fs::write(&p2, "b").unwrap());
+    let t = when_watched(&p, move || fs::write(&p2, "b").unwrap());
     let o = call(
         &p,
         "watch",
@@ -1220,7 +1210,7 @@ fn watch_reports_rename_and_remove() {
     let d = tmp();
     let a = file(&d, "a", "x");
     let dir = d.path().to_path_buf();
-    let t = after_ms(400, move || {
+    let t = when_watched(d.path(), move || {
         fs::rename(dir.join("a"), dir.join("b")).unwrap();
         fs::remove_file(dir.join("b")).unwrap();
     });

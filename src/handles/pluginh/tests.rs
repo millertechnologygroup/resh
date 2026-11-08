@@ -792,7 +792,16 @@ fn run_plugin(env: &Env, id: &str) -> std::process::Child {
             Err(e) => panic!("cannot start {}: {e}", bin.display()),
         }
     };
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Wait until the child runs the plugin binary (exec done), however
+    // slow the machine is.
+    let exe = format!("/proc/{}/exe", child.id());
+    let bin = fs::canonicalize(&bin).unwrap();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while fs::read_link(&exe).ok().as_deref() != Some(bin.as_path())
+        && std::time::Instant::now() < end
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     child
 }
 

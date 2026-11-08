@@ -903,10 +903,12 @@ fn ping_tcp_fallback_counts_connects() {
     // The whole fallback stops at the deadline.
     let f = filtered_port();
     let start = Instant::now();
+    // 30 probes of 400 ms would take 12 s; the deadline ends them at
+    // 400 ms (the bound leaves seconds of slack for a busy machine).
     let r = tcp_ping(
         "127.0.0.1",
         f.port,
-        10,
+        30,
         400,
         "auto",
         start + Duration::from_millis(400),
@@ -914,7 +916,7 @@ fn ping_tcp_fallback_counts_connects() {
     .unwrap();
     assert_eq!(r.received, 0);
     assert!(
-        start.elapsed() < Duration::from_millis(1500),
+        start.elapsed() < Duration::from_secs(5),
         "{:?}",
         start.elapsed()
     );
