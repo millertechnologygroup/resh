@@ -218,8 +218,15 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
 - `limits.set` changes the target process with `prlimit` (the URL PID or
   `pid=`), checks every value before changing anything, has a real dry run,
   and reports `changed`, `error` or `skipped` per resource.
-- `io.peek` no longer falls back to /tmp, refuses FIFOs and directories
-  without blocking, and sets `truncated` correctly.
+- `io.peek` was removed (it read log files that nothing writes); it is now
+  an unknown verb (exit 2, `proc.unknown_verb`).
+- Verbs other than `nice.get` refuse the resh process itself (`self`, its
+  PID, or `limits.set pid=`): exit 2, `proc.invalid_target`. Breaking:
+  `self` was accepted by every verb.
+- `nice.set`, `nice.inc`, `nice.dec` and `setPriority` change every thread
+  of the process (they changed only the main thread, like `renice`) and
+  report a `threads` array; when some threads fail and others change, the
+  call exits 1 with `proc.partial_failure`.
 
 ### svc
 
@@ -980,9 +987,6 @@ typed structs:
   - `add` reports `/var/spool/cron/crontabs/<user>` while the other verbs
     report `/var/spool/cron/<user>` (`:3991, 5483`).
   - `list` ignores all arguments (`:1280-1300`).
-- **proc.**
-  - `io.peek` reads log files in the resh state directory that nothing in
-    resh writes.
 
 ### Automation
 
