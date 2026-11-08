@@ -264,7 +264,7 @@ Three built-in hooks act on every event that `emit` stores, while they are enabl
 | ----- | ------------------------------------- |
 | `fs`  | Replaces `<store>/hooks/fs/<topic>.json` with the event (the stored record, one JSON object including its sequence number `seq`). The file always holds the topic's latest event: under parallel emits a slower one never replaces a newer event. The file is written to a temporary file and renamed into place. |
 | `log` | Appends the event as one JSON line to `<store>/hooks/log/<topic>.log`. Read it with `resh log:///<path>.tail`, for example `resh log:///home/alice/.local/state/resh/events/hooks/log/jobs.done.log.tail lines=10`. |
-| `mq`  | Puts the event's `data` (as compact JSON text) on the `mq` queue named after the topic, through the mq handle's own `put`, so `resh mq://<topic>.get` returns it. A topic that is not a valid queue name (for example one containing `:` or starting with `.`) is skipped with a warning. |
+| `mq`  | Puts the stored event (the same one-line JSON object the `log` hook writes: `id`, `topic`, `seq`, `timestamp_unix_ms`, `tags`, `ttl_ms`, `data` and the other event fields) on the `mq` queue named after the topic, through the mq handle's own `put`, so `resh mq://<topic>.get` returns it. A topic that is not a valid queue name (for example one containing `:` or starting with `.`) is skipped with a warning. |
 
 `<store>` is the event store directory (section 1). The hooks run in the order `fs`, `log`, `mq`, after the event was stored. Directories they create are 0700 and files 0600; a symlink or other non-regular file at a path a hook writes is refused, never followed.
 

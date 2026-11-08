@@ -269,7 +269,7 @@ that fails adds a warning but never fails the emit."#,
 Shown with --json-pretty. global_hooks lists the enabled hooks; all are
 disabled until enabled with hooks.enable. After emit stores an event,
 log appends it as a JSON line to <store>/hooks/log/<topic>.log, fs
-replaces <store>/hooks/fs/<topic>.json with it, and mq puts its data on
+replaces <store>/hooks/fs/<topic>.json with it, and mq puts it on
 the mq queue named after the topic (<store> is the event store,
 normally ~/.local/state/resh/events)."#,
                 ),

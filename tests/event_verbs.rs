@@ -483,7 +483,12 @@ fn mq_hook_message_is_read_with_mq_get() {
     assert_eq!(json_of(&out)["hooks"][0]["ok"], true);
     let (code, out, err) = run(tmp.path(), &["mq://orders.get"]);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(out, r#"{"id":42}"#);
+    let msg = json_of(&out);
+    assert_eq!(msg["data"], json!({"id": 42}));
+    assert_eq!(msg["topic"], "orders");
+    assert_eq!(msg["seq"], 1);
+    assert!(msg["timestamp_unix_ms"].is_i64());
+    assert!(!out.contains('\n'), "one JSON line: {out}");
     let (code, _, _) = run(tmp.path(), &["mq://orders.get"]);
     assert_eq!(code, 1, "the queue held exactly one message");
 }

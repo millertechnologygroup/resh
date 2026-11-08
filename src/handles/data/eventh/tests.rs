@@ -1292,12 +1292,34 @@ fn mq_hook_queues_the_data_on_the_topic_queue() {
     let dir = TempDir::new().unwrap();
     let h = handle(&dir);
     enable(&h, "mq");
-    let o = emit_with(&h, &[("topic", "orders.new"), ("data", r#"{"id": 7}"#)]);
+    let o = emit_with(
+        &h,
+        &[
+            ("topic", "orders.new"),
+            ("data", r#"{"id": 7}"#),
+            ("tags", r#"["shop"]"#),
+            ("ttl_ms", "60000"),
+        ],
+    );
     assert_eq!(
         hooks_of(&o),
         json!([{"name": "mq", "ok": true, "warning": null}])
     );
-    assert_eq!(mq_messages(&dir, "orders.new"), [r#"{"id":7}"#]);
+    // The message is the whole stored event: the same line the log hook
+    // writes.
+    let msgs = mq_messages(&dir, "orders.new");
+    assert_eq!(msgs.len(), 1);
+    let m: Value = serde_json::from_str(&msgs[0]).unwrap();
+    let e = &o.json()["event"];
+    assert_eq!(m["data"], json!({"id": 7}));
+    assert_eq!(m["topic"], "orders.new");
+    assert_eq!(m["seq"], 1);
+    assert_eq!(m["id"], e["id"]);
+    assert_eq!(m["timestamp_unix_ms"], e["timestamp_unix_ms"]);
+    assert_eq!(m["tags"], json!(["shop"]));
+    assert_eq!(m["ttl_ms"], 60000);
+    let stored = fs::read_to_string(base(&dir).join("orders.new.jsonl")).unwrap();
+    assert_eq!(msgs[0], stored.trim_end());
 
     // A topic that is not a valid queue name is skipped with a warning.
     let o = emit_with(&h, &[("topic", "a:b"), ("data", "1")]);
@@ -1429,7 +1451,11 @@ fn hooks_under_parallel_emits_keep_every_event() {
     assert_eq!(latest["seq"], 40);
     let mut queued: Vec<i64> = mq_messages(&dir, "par")
         .iter()
-        .map(|m| m.parse().unwrap())
+        .map(|m| {
+            serde_json::from_str::<Value>(m).unwrap()["data"]
+                .as_i64()
+                .unwrap()
+        })
         .collect();
     queued.sort();
     assert_eq!(queued, (0..40).collect::<Vec<_>>());

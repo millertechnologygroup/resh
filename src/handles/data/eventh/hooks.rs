@@ -5,7 +5,8 @@
 //!   `resh log:///<that path>.tail`;
 //! * `fs`: replaces `<store>/hooks/fs/<topic>.json` with the topic's latest
 //!   event (the highest sequence number wins, also under parallel emits);
-//! * `mq`: puts the event's `data` (as JSON text) on the mq queue named
+//! * `mq`: puts the stored event (the same JSON object the log hook writes)
+//!   on the mq queue named
 //!   after the topic, through the mq handle's own `put`.
 //!
 //! Directories are created 0700 and files 0600; a symlink at any path a
@@ -184,7 +185,8 @@ fn run_fs(store: &Store, evt: &EventEnvelope, deadline: Option<Instant>) -> Resu
 }
 
 fn run_mq(store: &Store, evt: &EventEnvelope, deadline: Option<Instant>) -> Result<(), String> {
-    super::super::mqh::put_data(&mq_root(store), &evt.topic, &evt.data.to_string(), deadline)
+    let record = stored_line(evt)?;
+    super::super::mqh::put_data(&mq_root(store), &evt.topic, &record, deadline)
         .map_err(|e| format!("not forwarded to mq queue {:?}: {e}", evt.topic))
 }
 
