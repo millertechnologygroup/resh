@@ -366,6 +366,10 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   `max_process_classes` work; `env.list include_raw` is masked; no
   subprocesses are run (`kernel.machine` is the hardware name); `disk` lists
   `overlay`, decodes mount escapes and no longer panics on non-ASCII names.
+- `cpu` reports `cgroup_utilization_pct` (the cgroup's CPU usage over the
+  sample as a share of its quota; null without a quota). Breaking: `disk`
+  `used_pct` is df's Use% (used / (used + avail), rounded up to a whole
+  percent); the old used / total value is `used_of_total_pct`.
 
 ### cert
 
@@ -1165,9 +1169,10 @@ typed structs:
   - `clone depth=<n>` works over network remotes only; libgit2's local
     transport cannot make shallow clones, so file:// URLs and local paths are
     refused (exit 2).
-- **system.** `/proc`-based figures (system memory, CPU utilization, load,
-  uptime) describe the whole host inside a container; a `statvfs` hung past
-  `timeout_ms` leaves a worker thread behind.
+- **system.** `/proc`-based figures (system memory, host CPU utilization,
+  load, uptime) describe the whole host inside a container (`cpu` also
+  reports `cgroup_utilization_pct`, the cgroup's usage as a share of its
+  quota); a `statvfs` hung past `timeout_ms` leaves a worker thread behind.
 - **pkg.** Every verb needs `manager` in `input`, but the `PKG_HELP_TEXT`
   examples omit it. Fixed: every example sets manager (tested).
 
