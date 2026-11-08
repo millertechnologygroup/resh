@@ -2547,5 +2547,13 @@ fn unknown_verb_is_an_error() {
     let mut stdin = std::io::empty();
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let mut io = IoStreams::new(&mut stdin, &mut out, &mut err);
-    assert!(h.call("explode", &Args::new(), &mut io).is_err());
+    let st = h.call("explode", &Args::new(), &mut io).unwrap();
+    assert_eq!(st.exit_code(), 2);
+    assert!(
+        st.reason
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("[archive.unknown_verb] "),
+        "{st:?}"
+    );
 }

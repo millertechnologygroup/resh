@@ -130,7 +130,7 @@ fn every_error_maps_to_a_listed_code() {
     // result checks.
     for code in listed.keys() {
         assert!(
-            seen.contains(code) || ["pkg.partial_failure"].contains(code),
+            seen.contains(code) || ["pkg.partial_failure", "pkg.unknown_verb"].contains(code),
             "{code} is listed but never produced"
         );
     }

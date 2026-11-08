@@ -623,13 +623,14 @@ fn usage_errors_exit_2_and_change_nothing() {
     ] {
         f.run(args).fails(2, code);
     }
-    // Errors resh reports before the handle runs: no JSON, same line.
+    // Errors resh reports before the handle runs: no JSON, same line, with
+    // the verb's own argument code.
     let r = f.run(&["cron://local.rm", "id=x", "dry_run=perhaps"]);
     assert_eq!(r.code, 2);
-    r.stderr_is("cron.invalid_argument");
+    r.stderr_is("cron.rm_invalid_argument");
     let r = f.run(&["cron://local.list", "dry_run"]);
     assert_eq!(r.code, 2);
-    r.stderr_is("cron.invalid_argument");
+    r.stderr_is("cron.list_invalid_argument");
     assert_eq!(f.crontab_writes(), 0);
     assert!(f.calls_to("systemctl").iter().all(|c| c[1] == "--version"));
 }

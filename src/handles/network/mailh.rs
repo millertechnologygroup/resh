@@ -6453,6 +6453,14 @@ mod mail_verb_tests {
             stdout: &mut o,
             stderr: &mut e,
         };
-        assert!(h.call("bogus", &Args::new(), &mut io).is_err());
+        let st = h.call("bogus", &Args::new(), &mut io).unwrap();
+        assert_eq!(st.exit_code(), 2);
+        assert!(
+            st.reason
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("[mail.unknown_verb] "),
+            "{st:?}"
+        );
     }
 }

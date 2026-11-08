@@ -2895,6 +2895,7 @@ pub fn exit_for(code: &str) -> i32 {
     if code.ends_with("_timeout") {
         EXIT_TIMEOUT
     } else if code.contains("_invalid_")
+        || code == "archive.unknown_verb"
         || code.ends_with("_7z_unsupported")
         || code.ends_with("_unsupported_for_raw")
     {
@@ -2986,7 +2987,7 @@ impl Handle for ArchiveHandle {
                 |o, _| remove_archive(o),
             ),
             _ => Ok(Status::coded(
-                crate::core::status::exit::USAGE,
+                exit_for("archive.unknown_verb"),
                 "archive.unknown_verb",
                 format!(
                     "unknown verb for archive://: {verb} (verbs: {}); nothing was done",
