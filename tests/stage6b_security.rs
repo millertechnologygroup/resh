@@ -519,7 +519,7 @@ fn backup_backend_failure_is_a_failure() {
 // ---------------------------------------------------------------------------
 
 fn assert_cron_rejected(r: &Run, field: &str) {
-    assert_eq!(r.code, 1, "{}", r.stdout);
+    assert_eq!(r.code, 2, "{}", r.stdout);
     assert_eq!(r.json["ok"], false, "{}", r.stdout);
     assert_eq!(
         r.json["error"]["code"], "cron.add_invalid_argument",
@@ -579,7 +579,7 @@ fn cron_add_refuses_schedules_crontab_would_misread() {
             "command=/bin/true",
             "dry_run=true",
         ]));
-        assert_eq!(r.code, 1, "{schedule}: {}", r.stdout);
+        assert_eq!(r.code, 2, "{schedule}: {}", r.stdout);
         assert_eq!(r.json["ok"], false, "{schedule}");
         assert!(!f.crontab_file().exists());
     }
@@ -824,7 +824,7 @@ fn cron_disable_refuses_other_files() {
         "id=x",
         &format!("cron_file={}", outside.display()),
     ]));
-    assert_eq!(r.code, 1, "{}", r.stdout);
+    assert_eq!(r.code, 2, "{}", r.stdout);
     assert_eq!(r.json["ok"], false, "{}", r.stdout);
     assert_eq!(std::fs::read_to_string(&outside).unwrap(), content);
 }

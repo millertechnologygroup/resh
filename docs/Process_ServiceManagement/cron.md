@@ -47,29 +47,37 @@ resh cron://local.rm id=daily-backup backend=cron dry_run=true
 ### Interface Model
 
 * Five verbs: `list`, `add`, `rm`, `enable`, `disable`.
-* `rm`, `enable` and `disable` need at least one selector: `id`, `schedule`, `command`, `match_command`, `match_comment`, `unit_name` or `match_unit`.
+* `rm`, `enable` and `disable` need at least one selector: `id`, `schedule`, `command`, `match_command`, `match_comment`, `unit_name` or `match_unit`. **Every selector given must match** (see 3.4).
 * Backend and scope are chosen with options (`backend=`, `scope=`, `unit_scope=`).
+
+### Arguments are checked first
+
+Every verb accepts only the arguments listed in its usage (section 3 and `resh cron <verb> --help`). Before anything is read or changed, each verb refuses, with exit 2 and the code `cron.<verb>_invalid_argument` (`error.field` names the argument):
+
+* an unknown argument (with a "did you mean" hint for a likely typo, such as `schedul`), including `dry_run` on `list`;
+* an empty value, or a value with a line break or other control character;
+* a value outside its documented set (`scope`, `state`, `format`, `sort_by`, ...), a malformed number (`max_entries`, `now_unix`, `timeout_ms`) or a malformed boolean;
+* an option of the backend that does not run (for example `unit_scope` with `backend=cron`, see 3.3 and 3.4).
+
+Since this release unknown arguments are refused; before, they were ignored.
+
+### Booleans
+
+Every boolean option (`dry_run`, `include_system`, `include_next_run`, `include_raw`, `include_paths`, `allow_duplicate`, `persistent`, `require_match`, `remove_units`, `start_now`, `stop_now`) accepts `true`, `false`, `1`, `0`, `yes`, `no`, `on`, `off` in any case. Anything else is refused with exit 2. Before this release the booleans of `add`, `rm`, `enable` and `disable` other than `dry_run` were true only for the exact value `true`.
 
 ### Dry run
 
-`add`, `rm`, `enable` and `disable` accept `dry_run`. The values `true`, `false`, `1`, `0`, `yes`, `no`, `on`, `off` (any case) are accepted, and a bare `dry_run` word means `dry_run=true`. Any other value is an error and nothing is changed. With a dry run the response reports what would be matched or written (`add` includes a `preview` object), and no crontab or unit file is touched. A misspelled key (for example `dryrun`) is not recognized and is ignored, so the change runs for real.
-
-### Other boolean options
-
-`list` booleans (`include_system`, `include_next_run`, `include_raw`, `include_paths`) accept `true`/`1`/`yes` and `false`/`0`/`no`; anything else is an error.
-
-For `add`, `rm`, `enable` and `disable`, the booleans `allow_duplicate`, `persistent`, `include_next_run`, `require_match`, `remove_units`, `start_now` and `stop_now` are true **only for the exact lowercase value `true`**. Any other value, including `yes`, `1` or `TRUE`, means false.
+`add`, `rm`, `enable` and `disable` accept `dry_run`, and a bare `dry_run` word means `dry_run=true`. With a dry run the response reports what would be matched or written (`add` includes a `preview` object), and no crontab or unit file is changed and no timer is started, stopped, enabled or disabled. Crontabs and unit files are still read.
 
 ### Timeouts
 
-No `cron` verb has a timeout and none reads `timeout_ms`; a `timeout_ms` argument is silently ignored. Each verb runs `crontab` or `systemctl` commands and waits for them to finish.
+Every verb accepts `timeout_ms` (1 to 86400000, default **60000**): the time for the whole verb, every `crontab` and `systemctl` call included. A tool still running at the deadline is stopped (with everything it started), and resh exits **124** with `cron.timeout`: what the verb did before the deadline stays done, so check before retrying.
 
 ### Output and exit status
 
 * Success: exit 0 and a JSON object with `"ok": true`.
-* Failure: the JSON object has `"ok": false` and an `error` object with `code` and `message`; resh exits 1 and prints `Error: cron <verb>: <message>` on stderr. In `format=text` a failure is still printed as the JSON error object.
-* Missing required arguments to `add` (`schedule`, `command`) and invalid `list` options are reported as `Error: <reason>` on stderr only, with exit 1.
-* Time-zone usage errors exit **2** (nothing is read or written): `add` with a `timezone` that is not an IANA name (`cron.add_invalid_argument`, `field` `timezone`) or that the cron backend cannot apply (`cron.add_timezone_unsupported`), and `list` with an invalid `timezone` (`Error: cron.list_invalid_argument: timezone=...` on stderr, no JSON). This follows the project-wide convention (0 success, 1 failure, 2 invalid usage, 124 timeout); the other `cron` errors still exit 1 until the handle is aligned with it.
+* Failure: the JSON object has `"ok": false` and an `error` object with `code` and `message` (and `field` when one argument is at fault); stderr has one line `Error: [<code>] <message>`. In `format=text` a failure is still printed as the JSON error object.
+* Exit codes: **2** invalid usage (nothing was read or changed), **1** the operation failed (no match, a tool or host error, a partial failure), **124** the deadline passed. Section 3.5 lists every code.
 * The JSON `ok` field and the exit status always agree.
 
 ---
@@ -95,13 +103,18 @@ resh cron://<label>.list [scope=current|user|system|all] [users=<user,...>]
   [include_next_run=true|false] [now_unix=<seconds>] [timezone=<IANA zone>]
   [max_entries=<n>] [sort_by=none|user|schedule|command|source] [sort_order=asc|desc]
   [include_raw=true|false] [include_paths=true|false] [format=json|text]
+  [timeout_ms=<ms>]
 ```
 
-* `scope` defaults to `current` (the current user's crontab via `crontab -l`). `scope=user` requires `users=`. `system` reads `/etc/crontab` and `/etc/cron.d`.
-* `match_*` filters are case-insensitive substring matches.
-* Commented-out jobs appear with `"enabled": false`; plain comment lines appear with `"comment_only": true`.
-* `max_entries` defaults to 1024; `truncated` is true when more entries existed.
-* `include_next_run=true` adds `next_run_unix` and `next_run_iso8601` to enabled entries. `now_unix` is the reference time (Unix seconds from 0 to 253402300799, i.e. up to the year 9999; default: now; anything else is an error). A schedule is read in its own `CRON_TZ` zone when it has one and the cron daemon is cronie. Otherwise it is read in `timezone`, and without `timezone` in the **host's local zone**, as cron reads it. `next_run_iso8601` carries that zone's offset, and the response's `next_run_timezone` names the zone used for entries without their own `CRON_TZ`. If the cron is not cronie, `CRON_TZ` lines are ignored for next-run times and a warning says so. A `timezone` that is not an IANA zone name (such as `Europe/Berlin` or `UTC`) is an error.
+* `scope` defaults to `current` (the current user's crontab via `crontab -l`). `scope=user` requires `users=`; `users=` is accepted with `scope=user` and `scope=all` only. `system` reads `/etc/crontab` and `/etc/cron.d`; `all` reads the current user's crontab, the `users=` crontabs and, with `include_system=true`, the system files.
+* `include_files=<path,...>` (absolute paths) adds files in the system format (with a user column).
+* A crontab that cannot be read (or a user without one, read as empty) gives a warning, not a failure.
+* `match_*` filters are case-insensitive substring matches. `match_comment` matches the comment line directly above a job (such as the `# job-id=... description=...` line `add` writes) and the job's inline ` # comment`.
+* Commented-out jobs appear with `"enabled": false`. A commented line counts as a job only when it is one: five valid time fields (or an `@` keyword), the user column in system files, and a command. Other comment lines appear with `"comment_only": true` and count as neither enabled nor disabled jobs: `state=enabled` and `state=disabled` leave them out, and `entries_disabled` counts only disabled jobs. Before this release a commented sentence of six or more words was listed as a disabled job.
+* Environment lines (`SHELL=`, `MAILTO=`, `CRON_TZ=`) are not entries. Any other line that is not a job is skipped with a warning.
+* `max_entries` (0 to 4294967295) defaults to 1024; `truncated` is true when more entries existed. `entries_total` and `entries_disabled` count all entries that passed the filters.
+* `include_raw=true` adds `raw`, an object with the full text of each crontab and file that was read, by path. `include_paths=true` adds `paths`, the path of each source.
+* `include_next_run=true` adds `next_run_unix` and `next_run_iso8601` to enabled jobs (`@` keywords included, except `@reboot`). Next runs follow crontab's rules: weekdays 0-7 with Sunday as 0 and 7, names such as `mon`, and a job whose day-of-month and weekday fields are both restricted (neither starts with `*`) runs when either matches. A local time skipped by a daylight-saving change has no run that day; a repeated local time runs at its first occurrence. `now_unix` is the reference time (Unix seconds from 0 to 253402300799, i.e. up to the year 9999; default: now; anything else is an error). A schedule is read in its own `CRON_TZ` zone when it has one and the cron daemon is cronie. Otherwise it is read in `timezone`, and without `timezone` in the **host's local zone**, as cron reads it. `next_run_iso8601` carries that zone's offset, and the response's `next_run_timezone` names the zone used for entries without their own `CRON_TZ`. If the cron is not cronie, `CRON_TZ` lines are ignored for next-run times and a warning says so. A `timezone` that is not an IANA zone name (such as `Europe/Berlin` or `UTC`) is an error.
 * An entry that follows a `CRON_TZ=` line has a `timezone` field with that zone.
 * systemd timers are not listed.
 
@@ -157,22 +170,27 @@ Output (abbreviated to one entry, shown with `--json-pretty`):
 ```text
 resh cron://<label>.add schedule=<expr> command=<cmd>
   [backend=auto|cron|systemd] [id=<id>] [description=<text>]
-  [scope=current|user|system] [user=<name>] [cron_file=<path>]
-  [unit_name=<name>] [unit_scope=auto|user|system]
-  [allow_duplicate=true|false] [persistent=true|false]
-  [accuracy_sec=<v>] [random_delay_sec=<v>]
+  [timezone=<IANA zone>] [include_next_run=true|false]
+  [now_unix=<seconds>] [allow_duplicate=true|false]
+  [dry_run=true|false] [format=json|text] [timeout_ms=<ms>]
+  cron backend only: [scope=current|user|system] [user=<name>]
+  [cron_file=<path>]
+  systemd backend only: [unit_name=<name>]
+  [unit_scope=auto|user|system] [persistent=true|false]
+  [accuracy_sec=<span>] [random_delay_sec=<span>]
   [service_user=<name>] [service_working_dir=<path>]
-  [env=KEY=VAL,KEY2=VAL2] [env_<KEY>=<value>]
-  [timezone=<IANA zone>] [include_next_run=true|false] [now_unix=<seconds>]
-  [dry_run=true|false] [format=json|text]
+  [env=<KEY=VAL,...>] [env_<KEY>=<value>]
 ```
 
-* `backend` defaults to `auto`, which uses **systemd whenever `systemctl --version` runs**, and cron otherwise. Pass `backend=cron` to get a crontab line on a systemd host.
-* Cron backend: `scope=current` (default) and `scope=user` add to a user crontab through `crontab`; `scope=system` appends to `/etc/crontab` or `cron_file=` with a user column (`user=`, default `root`). `id` and `description` are written as a comment line above the job: `# job-id=<id> description=<text>`.
-* systemd backend: writes `<unit_name>.service` and `<unit_name>.timer` into `~/.config/systemd/user` (user scope) or `/etc/systemd/system` (system scope), runs `daemon-reload`, and enables and starts the timer (`systemctl enable --now`). `unit_scope=auto` means system for root and user otherwise. The unit name is derived from the command if `unit_name` is not given. `persistent` (default true), `accuracy_sec`, `random_delay_sec`, `service_user`, `service_working_dir` and the `env` options apply only to the systemd backend.
-* `allow_duplicate` defaults to **true**, so the same job can be added twice. With `allow_duplicate=false`, an existing job with the same schedule, command and time zone makes `add` return `"ok": true, "duplicate": true` without writing.
+* `backend` defaults to `auto`, which uses **systemd whenever `systemctl --version` runs**, and cron otherwise. Pass `backend=cron` to get a crontab line on a systemd host. A requested backend whose tool is missing gives `cron.add_backend_unavailable` (exit 1).
+* **Options of the other backend are refused** (exit 2, `cron.add_invalid_argument`, `field` naming the option), so nothing passed is silently ignored: the cron backend refuses `unit_name`, `unit_scope`, `persistent`, `accuracy_sec`, `random_delay_sec`, `service_user`, `service_working_dir`, `env` and `env_<KEY>`; the systemd backend refuses `scope`, `user` and `cron_file`. With `backend=auto` the check follows the backend chosen. Before this release they were ignored.
+* Cron backend: `scope=current` (default) adds to the current user's crontab, `scope=user` to the crontab of `user=` (default: the current user), both through `crontab`; `scope=system` appends to `/etc/crontab` or `cron_file=` with a user column (`user=`, default `root`). `user` is refused with `scope=current`, and `cron_file` with any scope but `system`. `id` and `description` are written as a comment line above the job: `# job-id=<id> description=<text>`. `crontab` is run without `-u` for the user running resh, because cronie refuses `-u` to anyone but root.
+* A crontab or cron file that exists but cannot be read is never replaced: `add` fails (`cron.add_error`, exit 1). A user without a crontab starts with an empty one.
+* systemd backend: writes `<unit_name>.service` and `<unit_name>.timer` into `~/.config/systemd/user` (user scope) or `/etc/systemd/system` (system scope), runs `daemon-reload`, and enables and starts the timer (`systemctl enable --now`). `unit_scope=auto` means system for root and user otherwise. Before anything is written, the service manager of that scope must answer (`systemctl [--user] show`); otherwise `cron.add_systemd_unavailable` (exit 1). If `daemon-reload` or `enable` fails after the unit files were written, `add` fails with `cron.add_error` and the message names the files. The unit name is `unit_name`, else `id`, else derived from the command. `persistent` defaults to true.
+* `env=KEY=VAL,KEY2=VAL2` items must each be `KEY=VALUE`; `env_<KEY>=<value>` sets one variable (and wins over `env`).
+* `allow_duplicate` defaults to **true**, so the same job can be added twice. With `allow_duplicate=false`, an existing enabled job with the same schedule, command (whitespace aside), user column and time zone, or for systemd an existing timer of that unit name, makes `add` return `"ok": true, "duplicate": true` without writing.
 * `include_next_run` (default true) reports the job's next run (`next_run_unix`, `next_run_iso8601`) and the zone it was computed in (`next_run_timezone`).
-  * `now_unix` is the reference "now" the next run is counted from: Unix seconds from 0 to 253402300799 (up to the year 9999), default the current time. It changes only the reported next run, never the job. A value that is not an integer in that range is refused with `cron.add_invalid_argument` (`field` `now_unix`), exit 1.
+  * `now_unix` is the reference "now" the next run is counted from: Unix seconds from 0 to 253402300799 (up to the year 9999), default the current time. It changes only the reported next run, never the job. A value that is not an integer in that range is refused with `cron.add_invalid_argument` (`field` `now_unix`), exit 2.
   * The schedule is read in `timezone`, and without it in the **host's local zone**, which is where cron and systemd run a job without a zone.
 
 **Host local zone.** Found the way the C library finds it: the `TZ` variable when set (a zone name, `:name`, or a zoneinfo path such as `/usr/share/zoneinfo/Europe/Berlin`), else the zone `/etc/localtime` links to, else `/etc/timezone` when that zone's current offset matches the host's. If none of these names a known zone (for example `TZ` holds a POSIX rule, or `/etc/localtime` is a plain copy), only the host's current UTC offset is known: next runs use that offset, `next_run_timezone` is the offset (such as `+03:00`), and a warning says the zone has no name and the offset does not follow daylight-saving changes.
@@ -195,15 +213,18 @@ resh cron://<label>.add schedule=<expr> command=<cmd>
 
   Jobs above the block are not affected. Later `add` calls insert jobs without a zone above the marker line and append zoned jobs to the block, each with its own `CRON_TZ` line. `rm` removes a job's `CRON_TZ` line with it when nothing but blank lines separates that line from the next `CRON_TZ` line or the end of the file. Removing it then changes no other job. The marker goes once the block is empty. `disable` and `enable` leave `CRON_TZ` lines in place. `list`, `rm`, `enable` and `disable` report each job's `timezone`. A job you add **by hand** below the block runs in the zone of the `CRON_TZ` line above it, as cronie reads the file; add such jobs above the marker.
 
-**Argument checks (since v1.0.4-beta).** Before anything is written, and before a dry-run preview is returned, every value is checked against the syntax of the place it is written to. A refused value gives `"ok": false`, exit 1, error code `cron.add_invalid_argument` and `error.field` naming the argument:
+**Argument checks (since v1.0.4-beta).** Before anything is written, and before a dry-run preview is returned, every value is checked against the syntax of the place it is written to. A refused value gives `"ok": false`, exit 2, error code `cron.add_invalid_argument` and `error.field` naming the argument:
 
 * No argument may contain a line break or other control character.
-* `schedule` must be five crontab fields or one of `@reboot`, `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`, `@hourly` (a malformed schedule keeps the code `cron.add_invalid_schedule`).
+* `schedule` is required (`cron.add_missing_schedule`) and `command` must be given and not blank (`cron.add_missing_command`).
+* `schedule` must be five valid crontab fields or one of `@reboot`, `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`, `@midnight`, `@hourly`; anything else gives `cron.add_invalid_schedule` (exit 2). Each field is checked as cron reads it: minute 0-59, hour 0-23, day 1-31, month 1-12 or `jan`-`dec`, weekday 0-7 (0 and 7 are Sunday) or `sun`-`sat`; `*`, lists, ranges and `/step` (step 1 or more), no reversed ranges. A step after a single value (`5/10`) is refused because cronie and Debian's cron both reject it; write `5-59/10`.
 * `id` is 1-128 characters of letters, digits and `. _ @ : + -`.
 * Cron backend: `command` must not contain an unescaped `%` (cron would turn it into a line break and feed the rest to the command's standard input); write `\%` for a literal `%`. As in cron, `\\` is an escaped backslash, so the `%` in `\\%` is unescaped and refused. `user` must be a user name. With `scope=system`, `cron_file` must be `/etc/crontab` or `/etc/cron.d/<name>` with a name of letters, digits, `_` and `-`, and resh refuses to read or write it through a symbolic link. The file is replaced atomically (through a hidden temporary file in the same directory, which cron ignores) and keeps its permission bits; if it exists but cannot be read, `add` fails instead of replacing it.
 * systemd backend: the unit name (`unit_name`, else `id`, else derived from the command) must be letters, digits and `_ . : @ -`, not starting with `-` or `.` and not ending with `@`. `service_user` must be a user name, `service_working_dir` an absolute path (or `~`), `accuracy_sec`/`random_delay_sec` a time span such as `30s` or `5min`, and `env` names letters, digits and `_`. `command` must not start with a systemd `ExecStart=` prefix (`@ - : + !`), and no value written into a unit may end with a backslash. Existing unit files that are symbolic links are not replaced.
 
 In the unit files, `%` is written as `%%` (so it is not a systemd specifier) and `env` values are escaped for systemd's double quotes, so each value means exactly what was passed. The timer is enabled with `systemctl enable --now -- <unit>.timer`.
+
+**Schedule translation (systemd backend).** The crontab schedule becomes an `OnCalendar=` expression with the same runs. Lists, ranges and steps are written out value by value; weekdays become `Sun`..`Sat`. Examples: `0 2 * * *` → `2:0`, `* * * * *` → `*:*` (every minute), `*/15 * * * *` → `*:0,15,30,45`, `0 9-17 * * *` → `9,10,11,12,13,14,15,16,17:0`, `30 6 * * mon-fri` → `Mon,Tue,Wed,Thu,Fri *-*-* 6:30`, `0 3 1,15 * *` → `*-*-1,15 3:0`, `@weekly` and `0 0 * * 0` → `Sun *-*-* 0:0`; `0 * * * *`, `0 0 * * *`, `0 0 1 * *`, `0 0 1 1 *` (and `@hourly`, `@daily`/`@midnight`, `@monthly`, `@yearly`/`@annually`) become `hourly`, `daily`, `monthly`, `yearly`. Two schedules are refused with `cron.add_schedule_translation_unsupported` (exit 2, nothing written): `@reboot`, and a schedule whose day-of-month and weekday fields are both restricted (cron runs it when either matches; a calendar expression needs both). Before this release `* * * * *` ran every second, `@weekly` ran on Mondays, hour ranges gave invalid expressions, and steps and day restrictions were refused.
 
 ```bash
 resh cron://local.add schedule=@daily command=/opt/backup.sh backend=cron
@@ -228,6 +249,7 @@ Output (shown with `--json-pretty`):
       "user": "alice"
     },
     "next_run_iso8601": "2026-10-17T00:00:00+00:00",
+    "next_run_timezone": "UTC",
     "next_run_unix": 1792195200,
     "schedule": "@daily"
   },
@@ -243,20 +265,45 @@ Output (shown with `--json-pretty`):
 resh cron://<label>.rm|enable|disable [id=<id>] [schedule=<expr>] [command=<cmd>]
   [match_command=<text>] [match_comment=<text>] [unit_name=<name>] [match_unit=<text>]
   [backend=both|cron|systemd] [scope=all|current|user|system] [users=<user,...>]
-  [unit_scope=auto|user|system|both] [require_match=true|false]
-  [dry_run=true|false] [format=json|text]
-  [cron_file=<path>]
+  [cron_file=<path>] [unit_scope=auto|user|system|both] [require_match=true|false]
+  [dry_run=true|false] [format=json|text] [timeout_ms=<ms>]
   rm only:      [remove_units=true|false]
   enable only:  [start_now=true|false]
   disable only: [stop_now=true|false]
 ```
 
-* `backend` defaults to `both` and `scope` defaults to `all` (current user's crontab, `/etc/crontab` and `/etc/cron.d`). Narrow them (for example `backend=cron scope=current`) to avoid touching system files.
-* `require_match` defaults to true: if nothing matches, the response has `"ok": false` with code `cron.<verb>_no_match` and resh exits 1.
-* `disable` comments a crontab line out by prefixing `# `; `enable` removes the prefix. `enable` only uncomments a commented line that starts with a real cron schedule (five valid time fields, or an `@` keyword, followed by a command). Ordinary comments are left alone. A commented line that is itself a valid cron entry (such as an example in a distribution's crontab header) is treated as a disabled job and can be enabled by a broad `match_command`.
-* systemd timers are found by the UNIT column of `systemctl list-timers --all --plain`. `disable` disables the timer and, with `stop_now` (default true), stops it. `enable` enables it and, with `start_now` (default true), starts it. `rm` stops and disables it and, with `remove_units` (default true), deletes the `.timer` and `.service` files.
-* If systemd is not available, the systemd part is skipped with a warning.
-* `cron_file=<path>` makes `rm`, `enable` and `disable` act on that system cron file only, instead of the crontabs chosen by `scope`. They rewrite it, so the path must be `/etc/crontab` or `/etc/cron.d/<name>`, as for `add`. Any other path gives `"ok": false`, exit 1, error code `cron.<verb>_invalid_argument` and `error.field` `cron_file`, and nothing is read or written. `disable` has checked this since v1.0.4-beta. Before this release `rm` and `enable` ignored `cron_file`.
+**Selectors.** At least one is required (`cron.<verb>_no_selector`, exit 2), and **every selector given must match**:
+
+| Selector | Crontab job | systemd timer |
+| -------- | ----------- | ------------- |
+| `id` | the `# job-id=<id>` comment directly above the job | the `[id=<id>]` that `add` writes into the unit Description |
+| `schedule` | the five fields (or `@` keyword), whitespace aside | never matches a timer |
+| `command` | the command, whitespace aside | the service's `ExecStart` as `add` writes it for that command |
+| `match_command` | case-insensitive substring of the command | substring of the service's `ExecStart` |
+| `match_comment` | substring of the comment line above the job or its inline ` # comment` | substring of the timer and service Descriptions |
+| `unit_name` | never matches a crontab job | the timer name, with or without `.timer` |
+| `match_unit` | never matches a crontab job | substring of the timer name |
+
+`id`, `command`, `match_command` and `match_comment` read the unit files in the unit directory `add` uses (`~/.config/systemd/user` or `/etc/systemd/system`), so for timers installed elsewhere only `unit_name` and `match_unit` match. Before this release `rm` required all selectors while `enable` and `disable` took any one of them (and ignored `schedule` without `command`).
+
+Selector values are checked like `add`'s: `id` as a job id, `schedule` as a crontab schedule, `unit_name` as a unit name; an empty value is refused (an empty `match_command` would match every job).
+
+**Targets.**
+
+* `backend` defaults to `both` and `scope` defaults to `all`: the current user's crontab, the crontabs of `users=` (accepted with `scope=user` and `scope=all` only), `/etc/crontab` and `/etc/cron.d`. Narrow them (for example `backend=cron scope=current`) to avoid touching system files. `scope=user` requires `users=`.
+* `cron_file=<path>` makes the verb act on that system cron file only, instead of the crontabs chosen by `scope`. It must be `/etc/crontab` or `/etc/cron.d/<name>`, as for `add`; any other path is refused (exit 2, `cron.<verb>_invalid_argument`, `field` `cron_file`) and nothing is read or written. A missing file matches nothing.
+* With `backend=cron`, `unit_name`, `match_unit`, `unit_scope` and the verb's timer option (`remove_units`, `start_now`, `stop_now`) are refused; with `backend=systemd`, `schedule`, `scope`, `users` and `cron_file` are refused (exit 2, `cron.<verb>_invalid_argument`). Since this release `disable` checks `scope`, `users` and `unit_scope` like `rm` and `enable`.
+* System files have a user column: `command` and `match_command` see the command after it, and entries report that user.
+
+**Changes.**
+
+* `disable` comments a crontab line out by prefixing `# `; `enable` removes the prefix. A commented line counts as a disabled job only when it is one (five valid time fields or an `@` keyword, the user column in system files, and a command); ordinary comments are never uncommented. A commented line that is itself a valid cron entry (such as an example in a distribution's crontab header) is treated as a disabled job and can be enabled by a broad `match_command`.
+* `rm` removes a job, enabled or disabled, with its `# job-id=` comment line.
+* A user crontab is read and written through `crontab` (`-u` only for another user). A crontab that cannot be read is a failure when it was named (`scope=current`, `scope=user`, `users=`, `cron_file`) and a warning otherwise (`scope=all` and `scope=system`).
+* systemd timers are found with `systemctl list-timers --all` and `systemctl list-unit-files --type=timer`, so a disabled, stopped timer that systemd no longer has loaded is found too. `disable` disables the timer and, with `stop_now` (default true), stops it. `enable` enables it and, with `start_now` (default true), starts it (`enable --now`). `rm` stops and disables it and, with `remove_units` (default true), deletes the `.timer` and `.service` files from the unit directory and runs `daemon-reload`. A timer counts as already enabled when it is enabled (and, with `start_now`, active), and as already disabled when it is disabled (and, with `stop_now`, not active).
+* `unit_scope=auto` is the system manager for root and the user manager otherwise. If that service manager does not answer, the systemd part is skipped with a warning when `backend=both`, and the verb fails (`cron.<verb>_error`, exit 1) when `backend=systemd`.
+* `require_match` defaults to true: if nothing matches (jobs already in the wanted state count as matches), the response has `"ok": false` with code `cron.<verb>_no_match` and resh exits 1.
+* **Partial failure.** If a crontab, cron file or timer could not be changed, the verb fails with `cron.<verb>_error` (exit 1) and the message lists what failed. The response still lists the changes that were made; a job that could not be changed is not listed.
 
 ```bash
 resh cron://local.disable match_command=backup backend=cron scope=current
@@ -295,19 +342,41 @@ Output of `rm` (shown with `--json-pretty`):
 
 `enable` and `disable` return the same kind of object with `enabled`/`disabled` lists (entries carry `was_disabled`/`was_enabled`) and `already_enabled_count`/`already_disabled_count`. See `resh cron enable --help` and `resh cron disable --help` for the full example output.
 
-### 3.5 Error example
+### 3.5 Errors
 
 ```json
 {
   "ok": false,
   "error": {
     "code": "cron.add_invalid_schedule",
-    "message": "Invalid cron schedule '0 0 * * 0': ..."
+    "field": "schedule",
+    "message": "Invalid cron schedule '0 0 * * 8': schedule weekday 8 is out of range 0-7"
   }
 }
 ```
 
-Error codes used in the `error.code` field include `cron.add_invalid_argument`, `cron.add_invalid_schedule`, `cron.add_missing_command`, `cron.add_backend_unavailable`, `cron.add_systemd_unavailable`, `cron.add_schedule_translation_unsupported`, `cron.add_timezone_unsupported`, `cron.<verb>_invalid_argument` (`rm`, `enable`, `disable`: `cron_file`), `cron.<verb>_no_selector`, `cron.<verb>_invalid_backend`, `cron.<verb>_no_match`, `cron.<verb>_error` and `cron.list_error`. They exit 1, except the time-zone errors described in section 2, which exit 2.
+stderr: `Error: [cron.add_invalid_schedule] Invalid cron schedule '0 0 * * 8': ...`
+
+| Code | Exit | When |
+| ---- | ---- | ---- |
+| `cron.invalid_argument` | 2 | Unknown verb, an argument that is not `key=value`, or a malformed `dry_run` (the last two are reported by resh before the handle runs, without JSON) |
+| `cron.list_invalid_argument` | 2 | A `list` argument is unknown or invalid (`field` names it) |
+| `cron.add_invalid_argument` | 2 | An `add` argument is unknown or invalid, or belongs to the other backend |
+| `cron.add_missing_schedule` | 2 | `add` without `schedule` |
+| `cron.add_missing_command` | 2 | `add` without `command`, or with a blank one |
+| `cron.add_invalid_schedule` | 2 | `schedule` is not a valid crontab schedule |
+| `cron.add_timezone_unsupported` | 2 | `timezone` with the cron backend where cron is not cronie |
+| `cron.add_schedule_translation_unsupported` | 2 | The schedule has no systemd calendar equivalent (`@reboot`, or both day fields restricted) |
+| `cron.rm_invalid_argument`, `cron.enable_invalid_argument`, `cron.disable_invalid_argument` | 2 | An argument is unknown or invalid, or belongs to the backend that does not run |
+| `cron.rm_invalid_backend`, `cron.enable_invalid_backend`, `cron.disable_invalid_backend` | 2 | `backend` is not `both`, `cron` or `systemd` |
+| `cron.rm_no_selector`, `cron.enable_no_selector`, `cron.disable_no_selector` | 2 | No selector given |
+| `cron.rm_no_match`, `cron.enable_no_match`, `cron.disable_no_match` | 1 | Nothing matched and `require_match` is true |
+| `cron.add_backend_unavailable` | 1 | The requested backend's tool (`crontab`, `systemctl`) is missing, or neither is there for `auto` |
+| `cron.add_systemd_unavailable` | 1 | The user or system service manager does not answer |
+| `cron.list_error`, `cron.add_error` | 1 | Reading or writing failed (for example a crontab that cannot be read, `crontab` refusing the new crontab, `systemctl` failing) |
+| `cron.rm_error`, `cron.enable_error`, `cron.disable_error` | 1 | A crontab that was named could not be read, or a change could not be made (partial failure: the response lists what was done) |
+| `cron.failed` | 1 | An unexpected handle error reported by resh (such as standard output closed) |
+| `cron.timeout` | 124 | `timeout_ms` passed; the running tool was stopped and the outcome is unknown |
 
 ---
 
@@ -315,15 +384,11 @@ Error codes used in the `error.code` field include `cron.add_invalid_argument`, 
 
 These are current behaviors of this release, verified in `src/handles/processes/cronh.rs`:
 
-* **Weekday numbering.** Schedules are validated and next-run times computed with the `cron` crate, which numbers weekdays 1-7 with Sunday = 1, while crontab uses 0-7 with Sunday = 0 (and 7). As a result `add` rejects a numeric weekday of `0` (for example `0 0 * * 0`), and `next_run_*` for numeric weekdays 1-7 is one day early (crontab's 1 = Monday is computed as Sunday). Three-letter day names (`sun`, `mon`, …) are interpreted correctly.
-* **Six-field expressions.** Before v1.0.4-beta `add` accepted the `cron` crate's six-field form (with seconds) and wrote it unchanged, so cron read the sixth field as the start of the command. Such schedules are now refused; use five fields.
-* **`@midnight`** is not accepted by `add` (use `@daily`).
-* **systemd OnCalendar translation** (`add` with the systemd backend) handles only simple schedules, and some translations are wrong:
-  * `* * * * *` becomes `*:*:*`, which systemd runs every **second**, not every minute.
-  * `@weekly` becomes `weekly`, which systemd runs on **Monday**; cron runs `@weekly` on Sunday.
-  * A daily schedule with an hour or minute range or list (for example `0 9-17 * * *`) is copied as `9-17:0`, which is not valid systemd syntax.
-  * Schedules with steps (`*/5`) or a specific day of month, month or weekday (other than the fixed patterns for hourly, daily, monthly and yearly) are rejected with `cron.add_schedule_translation_unsupported`.
-  * `@reboot` is rejected for systemd.
+* **Fixed in this release.** Next-run times now follow crontab's own rules (weekday 0 and 7 are Sunday; numeric weekdays were a day off before, and `0 0 * * 0` was refused), `@midnight` is accepted by `add`, and the systemd translation keeps every schedule's meaning (see 3.3).
+* **Six-field expressions.** Before v1.0.4-beta `add` accepted a six-field form (with seconds) and wrote it unchanged, so cron read the sixth field as the start of the command. Such schedules are refused; use five fields.
+* **systemd translation limits.** `@reboot` and schedules with both day fields restricted cannot be expressed as one `OnCalendar=` and are refused (3.3). Use `backend=cron` for them.
+* **Daylight-saving changes.** Next-run times skip a local time that does not exist on a DST start day; cron implementations differ in how they run such jobs.
+* **Timers installed elsewhere.** `rm`, `enable` and `disable` read `id`, commands and descriptions only from unit files in resh's unit directory (3.4).
 * **`allow_duplicate` defaults to true.** Pass `allow_duplicate=false` to skip an identical existing job.
 * **Next-run times use the host's local zone** without `timezone` (and without a `CRON_TZ` for the entry). Before this release they were computed in UTC. If the local zone cannot be named, its current offset is used and a warning says so (see 3.3).
 * **Time zones with the cron backend need cronie.** See 3.3. Jobs typed in by hand below the time-zone block run in the zone above them.
@@ -361,12 +426,13 @@ Use `svc://` to manage services and `proc://` to signal processes; `cron` only m
 
 * Do not put secrets in commands or `env` values; they are stored in plain text in crontabs or unit files.
 * System scope and system unit scope need root.
-* See the newline limitation in 3.6: never pass untrusted input as a job field.
+* Commands are code (3.6): never pass untrusted input as a job field.
 * Use `dry_run` before `rm`, `enable` or `disable` with broad selectors.
+* A new crontab is handed to `crontab` on standard input from memory; no temporary file is written.
 
 ### 4.8 System Information
 
-`list` reports the schedule, its fields, command, user, source file and line, enabled state, the `CRON_TZ` zone of the entry, and optionally the next run time (subject to the weekday limitation above).
+`list` reports the schedule, its fields, command, user, source file and line, enabled state, comment, the `CRON_TZ` zone of the entry, and optionally the next run time.
 
 ---
 
@@ -376,8 +442,8 @@ Linux only. Nothing was built or tested on macOS, BSD or Windows.
 
 | Backend | Status |
 | ------- | ------ |
-| crontab | `list` verified live. Changing verbs are covered by unit tests of the generated crontab text (including a byte-identical disable/enable round trip); no live crontab was changed during verification. |
-| systemd timers | Implemented; timer discovery reads the UNIT column of `systemctl list-timers`. Not exercised on a live systemd host. |
+| crontab | Every verb tested end to end in throwaway containers (`tests/cron_e2e_docker.rs`): cronie on Fedora (time zones, `-u` refused to non-root users) and Debian's cron, as root and as an ordinary user, checked with `crontab -l` and the cron files. |
+| systemd timers | Every verb tested end to end in a container running systemd: timers created, listed, enabled, disabled and removed, checked with `systemctl list-timers` and `systemd-analyze calendar`. User units are covered by unit tests only. |
 
 ---
 
@@ -390,12 +456,11 @@ Linux only. Nothing was built or tested on macOS, BSD or Windows.
 * Pass `backend=cron` or `backend=systemd` explicitly; `auto` picks systemd whenever `systemctl` exists.
 * Narrow `scope` and `backend` for `rm`, `enable` and `disable` (the defaults are `all` and `both`).
 * Prefer `disable` over `rm` for temporary changes.
-* Use day names rather than numbers for weekdays.
 
 ### Automation
 
-* Check the exit code; on failure read `error.code` and `error.message`.
-* Remember that booleans other than `dry_run` on the changing verbs are true only for `true`.
+* Check the exit code (0, 1, 2 or 124); on failure read `error.code` and `error.message`.
+* Set `timeout_ms` to bound a verb; after exit 124, check the state before retrying.
 
 ### CI/CD integration
 
@@ -434,6 +499,6 @@ resh cron://local.enable id=maint backend=cron scope=current
 
 * Implemented in Rust in `src/handles/processes/cronh.rs`.
 * Crontab access through the `crontab` command and direct reads/writes of `/etc/crontab` and `/etc/cron.d`; systemd access through `systemctl` and unit files.
-* Schedule validation and next-run times use the `cron` crate (see the weekday limitation); time zone names are checked against the IANA database built into the `chrono-tz` crate.
+* Schedules are parsed and next-run times computed by resh itself, following cron's field rules; time zone names are checked against the IANA database built into the `chrono-tz` crate.
 * Each `resh` invocation is a separate process; nothing is kept between calls.
-* Unknown argument names are ignored.
+* Unknown argument names are refused (exit 2).

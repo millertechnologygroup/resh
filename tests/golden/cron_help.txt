@@ -1,0 +1,27 @@
+Handle: cron
+
+Description:
+  The cron handle manages scheduled jobs as crontab entries, through the crontab
+  command, or as systemd service and timer units, through systemctl. It can
+  list, add, remove, enable, and disable jobs on the local host. The host part
+  of the URL is only a label and is ignored, such as cron://local.
+
+Available Verbs:
+  list      Lists crontab entries for the chosen scope as JSON or text, with
+            optional filters, sorting, and next-run times (systemd timers are
+            not listed).
+  add       Adds a scheduled job as a crontab line or as a systemd service and
+            timer pair, preferring systemd when backend is auto.
+  enable    Re-enables matching jobs by uncommenting crontab lines or by
+            enabling (and by default starting) systemd timers.
+  disable   Disables matching jobs without deleting them by commenting out
+            crontab lines or by disabling (and by default stopping) systemd
+            timers.
+  rm        Removes matching jobs from crontabs and deletes matching systemd
+            timers, by default along with their unit files.
+
+Usage:
+  resh cron://<label>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh cron <verb> --help

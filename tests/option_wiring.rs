@@ -390,8 +390,15 @@ fn cron_timezone_must_be_an_iana_name() {
 
     let r = f.run(CRONIE, &["cron://local.list", "timezone=Mars/Olympus"]);
     assert_eq!(r.code, 2);
-    assert!(r.stdout.is_empty());
-    assert!(r.stderr.contains("timezone=Mars/Olympus"), "{}", r.stderr);
+    assert_eq!(r.json["error"]["code"], "cron.list_invalid_argument");
+    assert_eq!(r.json["error"]["field"], "timezone");
+    assert!(
+        r.stderr
+            .starts_with("Error: [cron.list_invalid_argument] timezone must be an IANA"),
+        "{}",
+        r.stderr
+    );
+    assert!(r.stderr.contains("Mars/Olympus"), "{}", r.stderr);
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +421,7 @@ fn cron_rm_and_enable_refuse_cron_files_outside_cron_directories() {
                 &format!("cron_file={}", outside.display()),
             ],
         );
-        assert_eq!(r.code, 1, "{verb}: {}", r.stdout);
+        assert_eq!(r.code, 2, "{verb}: {}", r.stdout);
         assert_eq!(
             r.json["error"]["code"],
             format!("cron.{verb}_invalid_argument")

@@ -1,0 +1,56 @@
+Handle: cron
+Verb: disable
+Definition: Disables matching jobs without deleting them by commenting out
+  crontab lines or by disabling (and by default stopping) systemd timers.
+
+Usage:
+  resh cron://<label>.disable [id=<id>] [schedule=<expr>]
+    [command=<cmd>] [match_command=<text>] [match_comment=<text>]
+    [unit_name=<name>] [match_unit=<text>] [backend=both|cron|systemd]
+    [scope=all|current|user|system] [users=<user,...>]
+    [cron_file=<path>] [unit_scope=auto|user|system|both]
+    [stop_now=true|false] [require_match=true|false]
+    [dry_run=true|false] [format=json|text] [timeout_ms=<ms>]
+    every selector given must match; cron_file: /etc/crontab or
+    /etc/cron.d/<name> only, and replaces scope
+
+Example:
+  resh cron://local.disable match_command=backup backend=cron scope=current
+
+Example Output:
+  {
+    "already_disabled_count": {
+      "cron": 0,
+      "systemd": 0
+    },
+    "backend": "cron",
+    "cron_modified_sources": [
+      "/var/spool/cron/alice"
+    ],
+    "disabled": {
+      "cron": [
+        {
+          "command": "/opt/backup.sh",
+          "line_number": 1,
+          "schedule": "0 2 * * *",
+          "source": "/var/spool/cron/alice",
+          "user": "alice",
+          "was_enabled": true
+        }
+      ],
+      "systemd": []
+    },
+    "dry_run": false,
+    "matched_count": {
+      "cron": 1,
+      "systemd": 0
+    },
+    "ok": true,
+    "systemd_scopes_touched": [],
+    "timestamp_unix_ms": 1792161012345,
+    "warnings": []
+  }
+
+  Shown with --json-pretty. At least one selector (id, schedule, command,
+  match_command, match_comment, unit_name, or match_unit) is required.
+  match_comment matches the comment line above a job or its inline comment.

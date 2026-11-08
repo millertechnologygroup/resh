@@ -1,0 +1,51 @@
+Handle: cron
+Verb: rm
+Definition: Removes matching jobs from crontabs and deletes matching systemd
+  timers, by default along with their unit files.
+
+Usage:
+  resh cron://<label>.rm [id=<id>] [schedule=<expr>] [command=<cmd>]
+    [match_command=<text>] [match_comment=<text>] [unit_name=<name>]
+    [match_unit=<text>] [backend=both|cron|systemd]
+    [scope=all|current|user|system] [users=<user,...>]
+    [cron_file=<path>] [unit_scope=auto|user|system|both]
+    [remove_units=true|false] [require_match=true|false]
+    [dry_run=true|false] [format=json|text] [timeout_ms=<ms>]
+    every selector given must match; cron_file: /etc/crontab or
+    /etc/cron.d/<name> only, and replaces scope
+
+Example:
+  resh cron://local.rm id=backup backend=cron scope=current dry_run=true
+
+Example Output:
+  {
+    "backend": "cron",
+    "cron_modified_sources": [
+      "/var/spool/cron/alice"
+    ],
+    "dry_run": true,
+    "matched_count": {
+      "cron": 1,
+      "systemd": 0
+    },
+    "ok": true,
+    "removed": {
+      "cron": [
+        {
+          "command": "/opt/backup.sh",
+          "id": "backup",
+          "line_number": 2,
+          "schedule": "0 2 * * *",
+          "source": "/var/spool/cron/alice",
+          "user": "alice"
+        }
+      ],
+      "systemd": []
+    },
+    "systemd_scopes_touched": [],
+    "timestamp_unix_ms": 1792161012345,
+    "warnings": []
+  }
+
+  Shown with --json-pretty. With dry_run=true the matches are reported but
+  nothing is changed; at least one selector is required.

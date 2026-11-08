@@ -1,0 +1,66 @@
+Handle: cron
+Verb: list
+Definition: Lists crontab entries for the chosen scope as JSON or text, with
+  optional filters, sorting, and next-run times (systemd timers are not listed).
+
+Usage:
+  resh cron://<label>.list [scope=current|user|system|all]
+    [users=<user,...>] [include_system=true|false]
+    [include_files=<path,...>] [state=all|enabled|disabled]
+    [match_command=<text>] [match_comment=<text>] [match_user=<text>]
+    [match_source=<text>] [include_next_run=true|false]
+    [now_unix=<seconds>] [timezone=<IANA zone>] [max_entries=<n>]
+    [sort_by=none|user|schedule|command|source] [sort_order=asc|desc]
+    [include_raw=true|false] [include_paths=true|false]
+    [format=json|text] [timeout_ms=<ms>]
+    timezone: zone for next-run times of entries without their own
+    CRON_TZ (default: the host's local zone); now_unix: reference
+    time for next runs, Unix seconds 0-253402300799 (default now);
+    include_raw adds the text of each source; timeout_ms: 60000
+
+Example:
+  resh cron://local.list
+
+Example Output:
+  {
+    "entries": [
+      {
+        "command": "/opt/backup.sh",
+        "comment_only": false,
+        "enabled": true,
+        "id": "user:alice:crontab:1",
+        "raw_line": "0 2 * * * /opt/backup.sh",
+        "schedule": "0 2 * * *",
+        "schedule_fields": {
+          "day_of_month": "*",
+          "day_of_week": "*",
+          "hour": "2",
+          "minute": "0",
+          "month": "*"
+        },
+        "source": "user",
+        "source_file": null,
+        "source_line": 1,
+        "user": "alice"
+      }
+    ],
+    "entries_disabled": 0,
+    "entries_returned": 1,
+    "entries_total": 1,
+    "human": {
+      "summary": "1 cron entries (1 enabled, 0 disabled) from scope 'current'."
+    },
+    "include_system": false,
+    "ok": true,
+    "scope": "current",
+    "timestamp_unix_ms": 1792161012345,
+    "truncated": false,
+    "users": [
+      "alice"
+    ],
+    "warnings": []
+  }
+
+  Shown with --json-pretty. Commented-out jobs appear with enabled false,
+  and comment lines appear with comment_only true. scope=user requires
+  users, and the match_* filters are case-insensitive substring matches.
