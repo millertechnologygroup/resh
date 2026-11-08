@@ -262,3 +262,11 @@ build-release.sh
 ## Claude Code local settings (machine-specific paths and permissions)
 .claude/settings.json
 .claude/settings.local.json
+
+## Claude Code agent worktrees and other local state
+.claude/
+
+## Node packages (resh has no JavaScript dependencies)
+node_modules/
+package.json
+package-lock.json
