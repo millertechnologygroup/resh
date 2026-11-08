@@ -395,6 +395,9 @@ mod tests {
         .unwrap();
         assert!(b.is_none());
         drop(a);
-        assert!(lock(t.path(), "x.lock", now).unwrap().is_some());
+        // A fork in another test thread may hold a copy of the descriptor
+        // until its exec; allow for that.
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        assert!(lock(t.path(), "x.lock", later).unwrap().is_some());
     }
 }

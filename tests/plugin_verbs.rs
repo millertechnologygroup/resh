@@ -12,6 +12,7 @@ use std::os::unix::fs::{MetadataExt, symlink};
 use std::path::{Path, PathBuf};
 
 use fake::{FakeRegistry, plugin_tar_gz, raw_tar_gz, sha256_hex};
+
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -22,9 +23,13 @@ const VERBS: &[&str] = &[
     "installed.list",
     "install",
     "update",
+    "rollback",
     "remove",
     "enable",
     "disable",
+    "keys.add",
+    "keys.list",
+    "keys.delete",
 ];
 
 struct Run {
@@ -116,7 +121,10 @@ impl Home {
         p.to_string_lossy().into_owned()
     }
 
+    /// The registry's CA file; also trusts the registry's publisher key.
     fn ca(&self, reg: &FakeRegistry) -> String {
+        let key = format!("key={}", reg.public_key());
+        self.run(&["plugin://keys.add", &key]).ok();
         self.file("ca.pem", reg.ca_pem.as_bytes())
     }
 
@@ -619,8 +627,153 @@ fn help_examples_run() {
     run("update").fails(1, "plugin.not_installed");
     h.run(&["plugin://aws.install", "source=file", "path=./aws-plugin"])
         .ok();
-    for verb in ["remove", "enable", "disable"] {
+    // A registry version on top, so there is a previous version.
+    reg.publish_ok("aws", "1.0.0");
+    let ca_arg = format!("ca_file={ca}");
+    let reg_arg = format!("registry={}", reg.base());
+    h.run(&["plugin://aws.install", &reg_arg, &ca_arg]).ok();
+    for verb in ["rollback", "remove", "enable", "disable"] {
         let j = run(verb).ok().clone();
         assert_eq!(j["args"]["dry_run"], true, "{verb}");
     }
+    let j = run("keys.add").ok().clone();
+    assert_eq!(j["result"]["changed"], true);
+    run("keys.list").ok();
+    run("keys.delete").ok();
+}
+
+// --- signatures, rollback, progress ---------------------------------------------
+
+/// The documented OpenSSL recipe (plugin.md 2.3) makes signatures resh
+/// accepts.
+#[test]
+fn openssl_signing_recipe_is_accepted() {
+    if std::process::Command::new("openssl")
+        .arg("version")
+        .output()
+        .is_err()
+    {
+        eprintln!("openssl not installed; skipped");
+        return;
+    }
+    let h = Home::new();
+    let reg = FakeRegistry::start();
+    let ca = h.file("ca.pem", reg.ca_pem.as_bytes());
+    let dir = h.path().join("pub");
+    fs::create_dir(&dir).unwrap();
+    let sh = |script: &str| -> String {
+        let out = std::process::Command::new("sh")
+            .current_dir(&dir)
+            .args(["-ec", script])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    let data = plugin_tar_gz("openssl");
+    fs::write(dir.join("tool.tar.gz"), &data).unwrap();
+    sh("openssl genpkey -algorithm ed25519 -out publisher.pem 2>/dev/null");
+    let pubkey = sh("openssl pkey -in publisher.pem -pubout -outform DER | tail -c 32 | base64");
+    let kid = sh(
+        "openssl pkey -in publisher.pem -pubout -outform DER | tail -c 32 | sha256sum | cut -c1-16",
+    );
+    let sha = sh("sha256sum tool.tar.gz | cut -d' ' -f1");
+    assert_eq!(sha, sha256_hex(&data));
+    let sig = sh("sha=$(sha256sum tool.tar.gz | cut -d' ' -f1); \
+         printf 'resh-plugin-v1:%s:%s:%s' tool 1.2.0 \"$sha\" > msg; \
+         openssl pkeyutl -sign -inkey publisher.pem -rawin -in msg | base64 -w0");
+    reg.publish_with(
+        "tool",
+        "1.2.0",
+        "tool.tar.gz",
+        &data,
+        Some(&sha),
+        serde_json::json!({"signature": sig, "key_id": kid}),
+    );
+    let r = format!("registry={}", reg.base());
+    let c = format!("ca_file={ca}");
+    h.run(&["plugin://tool.install", &r, &c])
+        .fails(1, "plugin.signature_invalid");
+    let j = h
+        .run(&[
+            "plugin://keys.add",
+            &format!("key={pubkey}"),
+            "name=publisher",
+        ])
+        .ok()
+        .clone();
+    assert_eq!(j["result"]["key"]["key_id"], kid.as_str());
+    let j = h.run(&["plugin://tool.install", &r, &c]).ok().clone();
+    assert_eq!(j["result"]["version"], "1.2.0");
+}
+
+#[test]
+fn unsigned_install_needs_allow_unsigned_and_warns() {
+    let h = Home::new();
+    let reg = FakeRegistry::start();
+    let ca = h.file("ca.pem", reg.ca_pem.as_bytes());
+    let data = plugin_tar_gz("u");
+    let sha = sha256_hex(&data);
+    reg.publish_with(
+        "demo",
+        "1.0.0",
+        "p.tar.gz",
+        &data,
+        Some(&sha),
+        serde_json::json!({}),
+    );
+    let r = format!("registry={}", reg.base());
+    let c = format!("ca_file={ca}");
+    h.run(&["plugin://demo.install", &r, &c])
+        .fails(1, "plugin.signature_required");
+    assert!(h.nothing_installed("demo"));
+    let run = h.run(&["plugin://demo.install", &r, &c, "allow_unsigned=true"]);
+    run.ok();
+    assert!(
+        run.stderr.contains("Warning: allow_unsigned=true"),
+        "{}",
+        run.stderr
+    );
+    // trust_key= for one call works with a signed version.
+    reg.publish_ok("demo", "1.1.0");
+    let t = format!("trust_key={}", reg.public_key());
+    h.run(&["plugin://demo.update", &r, &c])
+        .fails(1, "plugin.signature_invalid");
+    h.run(&["plugin://demo.update", &r, &c, &t]).ok();
+}
+
+#[test]
+fn rollback_and_progress() {
+    let h = Home::new();
+    let reg = FakeRegistry::start();
+    let ca = h.ca(&reg);
+    let [r, c] = reg_args(&reg.base(), &ca);
+    reg.publish_ok("demo", "1.0.0");
+    h.run(&["plugin://demo.install", &r, &c]).ok();
+    h.run(&["plugin://demo.rollback"])
+        .fails(1, "plugin.no_previous_version");
+    reg.publish_ok("demo", "2.0.0");
+    let run = h.run(&["plugin://demo.update", &r, &c, "progress=true"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let lines: Vec<Value> = run
+        .stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert!(lines.len() >= 6, "{}", run.stdout);
+    assert_eq!(lines[0]["event"], "progress");
+    assert_eq!(lines.last().unwrap()["op"], "plugin.update");
+    let l = h.run(&["plugin://installed.list"]).ok().clone();
+    assert_eq!(l["result"]["items"][0]["previous_version"], "1.0.0");
+    let j = h.run(&["plugin://demo.rollback"]).ok().clone();
+    assert_eq!(j["result"]["version"], "1.0.0");
+    assert_eq!(h.current("demo").as_deref(), Some("1.0.0"));
+    h.run(&["plugin://demo.rollback", "progress=true"])
+        .fails(2, "plugin.invalid_argument");
+    h.run(&["plugin://demo.remove"]).ok();
+    assert!(h.nothing_installed("demo"));
 }

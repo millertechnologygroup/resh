@@ -8,7 +8,8 @@ Usage:
   resh plugin://<plugin-id>.install [source=registry|url|file]
     [registry=<https-url>] [url=<https-url>] [path=<file>]
     [version=<version>] [verify=sha256|none] [force=true|false]
-    [allow_downgrade=true|false] [dry_run=true|false]
+    [allow_downgrade=true|false] [allow_unsigned=true|false]
+    [trust_key=<base64>] [progress=true|false] [dry_run=true|false]
     [timeout_ms=<ms>] [ca_file=<pem>]
 
 Example:

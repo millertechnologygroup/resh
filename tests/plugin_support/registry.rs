@@ -25,6 +25,33 @@ pub struct FakeRegistry {
     routes: Arc<Mutex<HashMap<String, Route>>>,
     hits: Arc<Mutex<Vec<String>>>,
     entries: Mutex<HashMap<String, serde_json::Value>>,
+    /// The publisher key that signs what `publish` publishes.
+    pub signer: ed25519_dalek::SigningKey,
+}
+
+/// Base64 (standard) of `data`.
+pub fn b64(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// The key id of a public key: first 16 hex digits of its SHA-256.
+pub fn key_id(key: &ed25519_dalek::VerifyingKey) -> String {
+    sha256_hex(key.as_bytes())[..16].to_string()
+}
+
+/// The signature resh expects: Ed25519 over
+/// `resh-plugin-v1:<id>:<version>:<sha256>`, base64.
+pub fn sign(key: &ed25519_dalek::SigningKey, id: &str, version: &str, sha: &str) -> String {
+    use ed25519_dalek::Signer;
+    b64(&key
+        .sign(format!("resh-plugin-v1:{id}:{version}:{sha}").as_bytes())
+        .to_bytes())
+}
+
+/// A fresh signing key.
+pub fn new_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&rand::random::<[u8; 32]>())
 }
 
 /// The platform key of this machine (`linux-x86_64`).
@@ -189,6 +216,7 @@ impl FakeRegistry {
             routes,
             hits,
             entries: Mutex::default(),
+            signer: new_key(),
         }
     }
 
@@ -226,7 +254,35 @@ impl FakeRegistry {
     /// Publishes `version` of plugin `id`: the registry entry (with every
     /// version published so far) and the artifact `bin` with `data`. `sha`
     /// is the checksum the registry gives (`None`: none at all).
+    /// Base64 of the signer's public key (for `trust_key=` / `keys.add`).
+    pub fn public_key(&self) -> String {
+        b64(self.signer.verifying_key().as_bytes())
+    }
+
+    /// Publishes like [`FakeRegistry::publish`], signed by the registry's
+    /// signer when `sha` is given.
     pub fn publish(&self, id: &str, version: &str, bin: &str, data: &[u8], sha: Option<&str>) {
+        let extra = match sha {
+            Some(s) => serde_json::json!({
+                "signature": sign(&self.signer, id, version, s),
+                "key_id": key_id(&self.signer.verifying_key()),
+            }),
+            None => serde_json::json!({}),
+        };
+        self.publish_with(id, version, bin, data, sha, extra);
+    }
+
+    /// Publishes with `extra` fields merged into the platform entry (a
+    /// `null` removes one).
+    pub fn publish_with(
+        &self,
+        id: &str,
+        version: &str,
+        bin: &str,
+        data: &[u8],
+        sha: Option<&str>,
+        extra: serde_json::Value,
+    ) {
         let mut entries = self.entries.lock().unwrap();
         let entry = entries
             .entry(id.to_string())
@@ -234,6 +290,13 @@ impl FakeRegistry {
         let mut spec = serde_json::json!({"os": std::env::consts::OS, "arch": std::env::consts::ARCH, "bin": bin});
         if let Some(s) = sha {
             spec["sha256"] = serde_json::json!(s);
+        }
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            if v.is_null() {
+                spec.as_object_mut().unwrap().remove(&k);
+            } else {
+                spec[k] = v;
+            }
         }
         entry["versions"][version] = serde_json::json!({
             "name": id,

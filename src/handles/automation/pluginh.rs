@@ -208,7 +208,8 @@ The full list also has filter.apply, sort.apply, and paginate.apply."#,
                 usage: "resh plugin://<plugin-id>.install [source=registry|url|file]\n  \
                     [registry=<https-url>] [url=<https-url>] [path=<file>]\n  \
                     [version=<version>] [verify=sha256|none] [force=true|false]\n  \
-                    [allow_downgrade=true|false] [dry_run=true|false]\n  \
+                    [allow_downgrade=true|false] [allow_unsigned=true|false]\n  \
+                    [trust_key=<base64>] [progress=true|false] [dry_run=true|false]\n  \
                     [timeout_ms=<ms>] [ca_file=<pem>]",
                 example: "resh plugin://aws.install source=file path=./aws-plugin dry_run=true",
                 example_output: None,
@@ -221,9 +222,21 @@ The full list also has filter.apply, sort.apply, and paginate.apply."#,
                 plan when dry_run is true.",
             detail: Some(VerbDetail {
                 usage: "resh plugin://<plugin-id>.update [registry=<https-url>]\n  \
-                    [url=<https-url>] [verify=sha256|none] [strict=true|false]\n  \
+                    [url=<https-url>] [verify=sha256|none] [allow_unsigned=true|false]\n  \
+                    [trust_key=<base64>] [strict=true|false] [progress=true|false]\n  \
                     [dry_run=true|false] [timeout_ms=<ms>] [ca_file=<pem>]",
                 example: "resh plugin://aws.update dry_run=true",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "rollback",
+            definition: "Switches an installed plugin back to the previous version that \
+                install and update keep, which then becomes the previous version.",
+            detail: Some(VerbDetail {
+                usage: "resh plugin://<plugin-id>.rollback [dry_run=true|false]\n  \
+                    [timeout_ms=<ms>]",
+                example: "resh --json-pretty plugin://aws.rollback dry_run=true",
                 example_output: None,
             }),
         },
@@ -331,6 +344,35 @@ and changed."#,
                 usage: "resh plugin://<plugin-id>.disable [scope=user|system]\n  \
                     [force=true|false] [reason=<text>] [dry_run=true|false]",
                 example: "resh --json-pretty plugin://aws.disable dry_run=true",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "keys.add",
+            definition: "Adds an Ed25519 publisher key to the user's trusted keys, which \
+                plugin signatures are checked against.",
+            detail: Some(VerbDetail {
+                usage: "resh plugin://keys.add key=<base64> [name=<text>]",
+                example: "resh plugin://keys.add key=11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "keys.list",
+            definition: "Lists the trusted publisher keys: the built-in official key, when \
+                set, and the user's trusted keys.",
+            detail: Some(VerbDetail {
+                usage: "resh plugin://keys.list",
+                example: "resh --json-pretty plugin://keys.list",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "keys.delete",
+            definition: "Removes a publisher key from the user's trusted keys by its key id.",
+            detail: Some(VerbDetail {
+                usage: "resh plugin://keys.delete key_id=<id>",
+                example: "resh plugin://keys.delete key_id=21fe31dfa154a261",
                 example_output: None,
             }),
         },
@@ -512,6 +554,9 @@ fn install_args(id: &str, args: &Args) -> PResult<PluginOpArgs> {
         purge: false,
         timeout_ms: r.timeout_ms(300_000)?,
         ca_file: r.ca_file()?,
+        allow_unsigned: r.bool("allow_unsigned", false)?,
+        trust_key: trust_key(&r)?,
+        progress: r.bool("progress", false)?,
     })
 }
 
@@ -563,6 +608,9 @@ fn update_args(id: &str, args: &Args) -> PResult<PluginOpArgs> {
         purge: false,
         timeout_ms: r.timeout_ms(300_000)?,
         ca_file: r.ca_file()?,
+        allow_unsigned: r.bool("allow_unsigned", false)?,
+        trust_key: trust_key(&r)?,
+        progress: r.bool("progress", false)?,
     })
 }
 
@@ -583,7 +631,28 @@ fn remove_args(id: &str, args: &Args) -> PResult<PluginOpArgs> {
         purge: r.bool("purge", false)?,
         timeout_ms: r.timeout_ms(30_000)?,
         ca_file: None,
+        allow_unsigned: false,
+        trust_key: None,
+        progress: false,
     })
+}
+
+fn trust_key(r: &ArgReader) -> PResult<Option<ed25519_dalek::VerifyingKey>> {
+    match r.string("trust_key")? {
+        None => Ok(None),
+        Some(k) => crate::handles::pluginh::sign::parse_public_key(&k)
+            .map(Some)
+            .map_err(|e| PluginError::usage(format!("invalid trust_key: {e}; nothing was done"))),
+    }
+}
+
+fn rollback_args(id: &str, args: &Args) -> PResult<PluginOpArgs> {
+    let r = ArgReader::new(args);
+    let mut a = remove_args(id, &Args::new())?;
+    a.mode = Mode::Rollback;
+    a.dry_run = r.bool("dry_run", false)?;
+    a.timeout_ms = r.timeout_ms(30_000)?;
+    Ok(a)
 }
 
 fn enable_args(args: &Args) -> PResult<SetEnabledOptions> {
@@ -632,14 +701,39 @@ impl PluginHandle {
         let parsed = match verb {
             "install" => install_args(&id, args),
             "update" => update_args(&id, args),
+            "rollback" => rollback_args(&id, args),
             _ => remove_args(&id, args),
         };
         let op_args = match parsed {
             Ok(a) => a,
             Err(e) => return Ok(status_of(Some(&e))),
         };
-        let out = engine::run(&op_args);
+        // progress=true: one JSON line per event, flushed, before the result.
+        let out = if op_args.progress {
+            let stdout = &mut *io.stdout;
+            let mut sink = |ev: serde_json::Value| {
+                let _ = writeln!(stdout, "{ev}");
+                let _ = stdout.flush();
+            };
+            engine::run(&op_args, Some(&mut sink))
+        } else {
+            engine::run(&op_args, None)
+        };
         write_json(io, &out.envelope)?;
+        // Warnings (an unsigned or unverified install) also go to stderr;
+        // then the error line is written here too.
+        for w in &out.envelope.warnings {
+            writeln!(io.stderr, "Warning: {w}")?;
+        }
+        if let Some(e) = &out.error
+            && !out.envelope.warnings.is_empty()
+        {
+            writeln!(
+                io.stderr,
+                "{}",
+                crate::core::status::error_line(e.code, &e.message)
+            )?;
+        }
         Ok(status_of(out.error.as_ref()))
     }
 
@@ -651,6 +745,7 @@ impl PluginHandle {
             "available.list" => catalog::available_list(&self.target, args),
             "available.search" => catalog::available_search(&self.target, args),
             "available.info" => available::available_info(&self.target, args),
+            "keys.add" | "keys.list" | "keys.delete" => catalog::keys(verb, &self.target, args),
             _ => catalog::installed_list(&self.target, args),
         };
         // Refused arguments (exit 2) print only the error line.
@@ -666,9 +761,13 @@ impl Handle for PluginHandle {
         &[
             "install",
             "update",
+            "rollback",
             "remove",
             "enable",
             "disable",
+            "keys.add",
+            "keys.list",
+            "keys.delete",
             "available.list",
             "available.search",
             "available.info",
@@ -729,7 +828,7 @@ impl Handle for PluginHandle {
             return Ok(status_of(Some(&e)));
         }
         match verb {
-            "install" | "update" | "remove" | "enable" | "disable" => {
+            "install" | "update" | "rollback" | "remove" | "enable" | "disable" => {
                 self.lifecycle(verb, args, io)
             }
             _ => self.catalog_verb(verb, args, io),

@@ -101,7 +101,7 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
     } else if main_part.starts_with("plugin://") {
         // plugin://<id>.enable; without this the plugin branch below would
         // take the whole host "<id>.enable" as the verb.
-        &["enable", "disable"]
+        &["enable", "disable", "rollback"]
     } else {
         &[]
     };

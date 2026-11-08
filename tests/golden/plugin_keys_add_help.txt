@@ -1,0 +1,10 @@
+Handle: plugin
+Verb: keys.add
+Definition: Adds an Ed25519 publisher key to the user's trusted keys, which
+  plugin signatures are checked against.
+
+Usage:
+  resh plugin://keys.add key=<base64> [name=<text>]
+
+Example:
+  resh plugin://keys.add key=11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=

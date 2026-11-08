@@ -1,0 +1,10 @@
+Handle: plugin
+Verb: keys.list
+Definition: Lists the trusted publisher keys: the built-in official key, when
+  set, and the user's trusted keys.
+
+Usage:
+  resh plugin://keys.list
+
+Example:
+  resh --json-pretty plugin://keys.list

@@ -12,7 +12,10 @@ Lifecycle verbs name the plugin before the verb; catalog and listing verbs take 
 resh plugin://<plugin-id>.<verb> key=value ...     install, update, remove, enable, disable
 resh plugin://available.<verb> key=value ...       available.list, available.search, available.info
 resh plugin://installed.list key=value ...
+resh plugin://keys.<verb> key=value ...            keys.add, keys.list, keys.delete
 ```
+
+Lifecycle verbs: `install`, `update`, `rollback`, `remove`, `enable`, `disable`.
 
 The older doubled forms `plugin://available.available.list` and `plugin://installed.installed.list` are still accepted. A lifecycle verb with no plugin id (for example `plugin://install`) is an error (exit 2, `plugin.invalid_target`).
 
@@ -25,6 +28,7 @@ Local state (all under the XDG directories of the user running resh):
 | System enable state (`scope=system`) | `/var/lib/resh/plugins/state.json` (needs write access there) |
 | `available.search` cache | `$XDG_STATE_HOME/resh/plugins/index-cache.json` (default index) or `cache-<url>.json` |
 | `available.info` index cache | `$XDG_CACHE_HOME/resh/plugin-indexes/<index>_<channel>.json` (default `~/.cache/...`) |
+| Trusted publisher keys (`keys.add`, `keys.list`, `keys.delete`) | `$XDG_CONFIG_HOME/resh/plugin-trusted-keys.json` (default `~/.config/...`; 0600 in a 0700 directory) |
 | Plugin data deleted by `remove purge=true` | `resh/plugins/<plugin-id>` under `$XDG_STATE_HOME`, `$XDG_CACHE_HOME` and `$XDG_CONFIG_HOME` |
 
 ### 1.1 Safe locations
@@ -51,13 +55,47 @@ Files are never written through a symbolic link: state and cache files are writt
 
 * A registry entry gives, per platform, an artifact name and a SHA-256. With `verify=sha256`, that SHA-256 must be 64 hexadecimal digits. A missing, empty or malformed checksum fails with `plugin.verify_failed` before anything is downloaded.
 * The downloaded artifact is hashed and compared before anything is unpacked. A mismatch (a tampered artifact) fails with `plugin.verify_failed` and nothing is installed; the installed version, if any, stays active.
-* **Limit:** the checksum comes from the same registry as the artifact. It proves the artifact was not altered in transit and matches what the registry published. It does **not** prove who published the plugin; there is no signature support. A compromised or malicious registry is not detected; trust rests on HTTPS and on the registry operator.
+* The checksum alone comes from the same registry as the artifact; who published the plugin is proven by the publisher signature over that checksum (2.3).
 * `source=url` (and `update url=`) has no trusted checksum, so it is refused under `verify=sha256` (exit 2) and needs an explicit `verify=none`.
 * `source=file` (a local file) is accepted under `verify=sha256` without a checksum; no transport is involved.
-* `verify=none` skips the checksum. The artifact is then **installed unverified** (the result carries a warning): only HTTPS protects it. Use it only for artifacts you have checked yourself.
+* `verify=none` skips the checksum and the signature. The artifact is then **installed unverified** (the result carries a warning, also printed on stderr): only HTTPS protects it. Use it only for artifacts you have checked yourself.
 * `verify` accepts exactly `sha256` or `none`. Any other value (such as `md5`, `NONE`, `off` or empty) is an error (exit 2) and nothing runs.
 
-### 2.3 Artifact contents
+### 2.3 Publisher signatures
+
+Registry artifacts must be signed by a trusted publisher key (Ed25519). The registry gives, next to `sha256`, the signature and the id of the key that made it:
+
+```json
+"linux-x86_64": { "bin": "tool.tar.gz", "sha256": "<64 hex digits>",
+                  "signature": "<base64 of the 64-byte Ed25519 signature>",
+                  "key_id": "<16 hex digits>" }
+```
+
+* **Signed bytes:** the ASCII string `resh-plugin-v1:<plugin-id>:<version>:<sha256>`, with `<sha256>` the artifact's SHA-256 in lower-case hex and no trailing newline. The plugin id and version are included so a signature cannot be reused for another plugin or version.
+* **Key id:** the first 16 hex digits of the SHA-256 of the 32-byte raw public key.
+* **Public keys** are written as base64 of the 32 raw bytes.
+* The signature is checked before the artifact is downloaded, and the downloaded artifact must then match the signed checksum (2.2).
+* **Trusted keys:** the built-in official key (empty in this release, see 2.3.1), the keys in the trust store (`keys.add`), and `trust_key=<base64>` for one call.
+* A registry artifact without `signature`/`key_id` fails with `plugin.signature_required`; a signature by an untrusted key, a malformed signature, or one that does not match fails with `plugin.signature_invalid` (both exit 1, before anything is downloaded).
+* `allow_unsigned=true` installs an artifact without a trusted signature (missing signature or unknown key), with a warning in `warnings` and on stderr. A signature made by a **trusted** key that does not match is always refused.
+* `source=url` with `verify=none` remains the explicit override for unverified artifacts. `source=file` artifacts carry no registry data and are installed without a checksum or signature (no transport is involved).
+
+Signing an artifact with OpenSSL (Ed25519 needs `-rawin`):
+
+```bash
+openssl genpkey -algorithm ed25519 -out publisher.pem                  # once
+openssl pkey -in publisher.pem -pubout -outform DER | tail -c 32 | base64   # public key (keys.add key=)
+openssl pkey -in publisher.pem -pubout -outform DER | tail -c 32 | sha256sum | cut -c1-16   # key_id
+sha=$(sha256sum tool.tar.gz | cut -d' ' -f1)
+printf 'resh-plugin-v1:%s:%s:%s' tool 1.2.0 "$sha" > msg
+openssl pkeyutl -sign -inkey publisher.pem -rawin -in msg | base64 -w0   # signature
+```
+
+#### 2.3.1 Setting the official key (project owner)
+
+`OFFICIAL_KEY` in `src/handles/pluginh/sign.rs` is the slot for the official registry's publisher key, trusted by every resh. It is **empty** in this release: no key is compiled in, so only keys a user adds (or passes with `trust_key=`) are trusted. To set it, the owner generates the official key pair offline (as above), keeps the private key off the build machines, puts the base64 public key (44 characters) into `OFFICIAL_KEY`, and rebuilds; `keys.list` then shows it with `origin: "builtin"` and `official_key_set: true`.
+
+### 2.4 Artifact contents
 
 * An artifact whose name ends in `.tar.gz` is unpacked; anything else is installed as a single executable file named like the plugin.
 * A `.tar.gz` artifact may contain only regular files and directories with plain relative paths. A symbolic link, hard link, device node, FIFO, absolute path or `..` entry fails the whole install with `plugin.extract_failed`, and nothing is installed. An existing installed version is left untouched.
@@ -66,29 +104,30 @@ Files are never written through a symbolic link: state and cache files are writt
 * Size limits: an artifact may be at most 512 MiB (download or local file), hold at most 100,000 entries and unpack to at most 2 GiB. Larger artifacts fail with `plugin.download_failed` or `plugin.extract_failed`.
 * The plugin executable is the first regular file of `bin/plugin`, `plugin`, `bin/<os>-<arch>/plugin`, `<plugin-id>`, or else the first executable file at the top level of the artifact.
 
-### 2.4 Plugin ids and versions
+### 2.5 Plugin ids and versions
 
 * Plugin ids, versions and artifact names taken from a registry must each be a single safe path component: 1-128 characters of `A-Z a-z 0-9 . _ + -`, starting with a letter or digit.
 * An id containing `/` (for example `plugin://acme/tool.install`) is refused (exit 2, `plugin.invalid_target`), and the id `locks` is reserved.
 * The id is checked before anything is fetched; a registry-supplied version or artifact name is checked before the artifact is downloaded (`plugin.catalog_invalid`). Nothing is written when either check fails.
 
-### 2.5 How an install is applied
+### 2.6 How an install is applied
 
-The new version is unpacked into a private staging directory (`<store>/.staging/<random>`), then moved to `<store>/<id>/versions/<version>`, and `<store>/<id>/current` is switched to it in one rename. Only then is the old version deleted. A failure or timeout before the switch leaves the installed version active and removes the staged files; nothing half-installed is left behind. Install, update and remove of one plugin take a lock (`<store>/.locks/<id>.lock`), so two of them never run at once; a second one waits, up to its `timeout_ms`.
+The new version is unpacked into a private staging directory (`<store>/.staging/<random>`), then moved to `<store>/<id>/versions/<version>`, and `<store>/<id>/current` is switched to it in one rename. The version that was current becomes the previous one (`<store>/<id>/previous`, used by `rollback`); any older version is deleted, so at most two versions are kept. A failure or timeout before the switch leaves the installed version active and removes the staged files; nothing half-installed is left behind. Install, update and remove of one plugin take a lock (`<store>/.locks/<id>.lock`), so two of them never run at once; a second one waits, up to its `timeout_ms`.
 
 ---
 
 ## 3. Response Envelopes
 
-Every verb prints one JSON object on stdout, except when its arguments are refused (exit 2), which prints only the error line. On failure resh also prints `Error: [<code>] <message>` on stderr. Exit codes: 0 success, 1 failed, 2 invalid usage (nothing was done), 124 timeout.
+Every verb prints one JSON object on stdout, except when its arguments are refused (exit 2), which prints only the error line. With `progress=true`, `install` and `update` first print progress events, one JSON object per line, each flushed as it happens: `{"event":"progress","handle":"plugin","verb":"install","plugin":"<id>","step":"<step>","ts":...}` with steps `resolve` (`version`), `signature` (`key_id`, `key_origin`), `download` (`bytes`, `total`; at most every 256 KiB and at the end), `verify` (`sha256`), `extract` (`files`, `bytes`) and `activate` (`version`). The result is the last line. On failure resh also prints `Error: [<code>] <message>` on stderr. Exit codes: 0 success, 1 failed, 2 invalid usage (nothing was done), 124 timeout.
 
 Every envelope has `op`, `ok`, `code` (the exit code), `target`, `args`, `actions`, `result`, `error` and `ts`; `error` is `null` on success and `{"code": "plugin.<name>", "message": "..."}` on failure. On failure `actions` lists the steps that ran, the last one with `ok: false`.
 
-* **install, update, remove, enable, disable**: `target` is an object (`name`, `requested_name`, `install_root`, and `version`/`bin_path` when known); `warnings` is present when there are warnings. Actions have `id`, `type`, `name`, `ok` and optional `details`.
+* **install, update, rollback, remove, enable, disable**: `target` is an object (`name`, `requested_name`, `install_root`, and `version`/`bin_path` when known); `warnings` is present when there are warnings. Actions have `id`, `type`, `name`, `ok` and optional `details`.
   * install/update `result`: `installed`, `changed`, `version`, `previous_version`.
+  * rollback `result`: `changed`, `version` (now current), `previous_version` (the replaced one).
   * remove `result`: `removed`, `purged`, `installed`, `previous_version`.
   * enable/disable `result`: `installed`, `version`, `scope`, `enabled`, `was_enabled`, `changed`, and `reason` when given.
-* **available.list, available.search, available.info, installed.list**: `target` is the stage URL; `warnings` is always present.
+* **available.list, available.search, available.info, installed.list, keys.***: `target` is the stage URL; `warnings` is always present.
 
 Real output of a local-file install dry run (paths shortened):
 
@@ -145,11 +184,14 @@ resh plugin://tool.install source=url url=https://example.org/tool.tar.gz verify
 | `url`             | Artifact URL (`https://` only), required for `source=url` |
 | `path`            | Local artifact file, required for `source=file` |
 | `version`         | Version to install from the registry (default `latest`, the highest version in semantic-version order: `1.10.0` is newer than `1.9.0`, a pre-release is older than its release) |
-| `verify`          | `sha256` (default) or `none`; see 2.2 |
+| `verify`          | `sha256` (default) or `none`; see 2.2 and 2.3 |
 | `force`           | Reinstall the same version, or allow a downgrade |
 | `allow_downgrade` | Allow installing a version older than the installed one (otherwise `plugin.downgrade_refused`) |
-| `dry_run`         | Resolve and report the plan; nothing is downloaded or written (a registry is still contacted to resolve the version) |
-| `timeout_ms`      | Deadline for the whole verb, default 300000; see 4.10 |
+| `allow_unsigned`  | Install a registry artifact without a trusted publisher signature, with a warning; see 2.3 |
+| `trust_key`       | Base64 Ed25519 public key trusted for this call only; see 2.3 |
+| `progress`        | Print progress events (one JSON line each) before the result; see 3 |
+| `dry_run`         | Resolve and report the plan; nothing is downloaded or written (a registry is still contacted to resolve the version and the signature is checked) |
+| `timeout_ms`      | Deadline for the whole verb, default 300000; see 4.12 |
 | `ca_file`         | PEM file of extra trusted CA certificates (not with `source=file`) |
 
 An option that does not apply to the chosen `source` (for example `registry` or `version` with `source=file`) is an error (exit 2). Installing the version that is already installed, without `force`, succeeds as a no-op (`changed: false`).
@@ -161,22 +203,31 @@ resh plugin://aws.update dry_run=true
 resh plugin://aws.update registry=https://plugins.example.org strict=true
 ```
 
-Resolves the newest version of an installed plugin from `registry` (default `https://plugins.reshshell.dev`), or takes the artifact at `url`, and installs and activates it (2.5). If anything fails, the previous version stays installed and active. Arguments: `registry` or `url` (not both), `verify` (as for install; a `url` update needs `verify=none`), `strict`, `dry_run`, `timeout_ms` (default 300000), `ca_file`.
+Resolves the newest version of an installed plugin from `registry` (default `https://plugins.reshshell.dev`), or takes the artifact at `url`, and installs and activates it (2.6). If anything fails, the previous version stays installed and active. Arguments: `registry` or `url` (not both), `verify` (as for install; a `url` update needs `verify=none`), `allow_unsigned`, `trust_key`, `strict`, `progress`, `dry_run`, `timeout_ms` (default 300000), `ca_file`. Signatures are checked as for install (2.3).
 
 When the installed version is current or newer, `update` succeeds as a no-op, or fails with `plugin.no_update_available` when `strict=true`. A `url` artifact has no version to compare, so a `url` update always installs it (as version `unknown`). Updating a plugin that is not installed fails with `plugin.not_installed` before anything is fetched. There is no `version` argument: update always targets the newest version.
 
-### 4.3 remove
+### 4.3 rollback
+
+```bash
+resh plugin://aws.rollback dry_run=true
+resh plugin://aws.rollback
+```
+
+Switches an installed plugin back to its previous version (the one the last `install` or `update` replaced), in one rename of `current`; the replaced version becomes the previous one, so a second `rollback` returns to it. Arguments: `dry_run`, `timeout_ms` (default 30000; bounds waiting for the plugin's lock). A plugin that is not installed fails with `plugin.not_installed`; one without a previous version with `plugin.no_previous_version`. `installed.list` reports `previous_version`.
+
+### 4.4 remove
 
 ```bash
 resh plugin://aws.remove dry_run=true
 resh plugin://aws.remove purge=true
 ```
 
-Removes the plugin's directory from the store (all its files). Arguments: `force` (remove even while a process runs a file of the plugin; otherwise `plugin.in_use`), `purge` (also delete the plugin's data directories `resh/plugins/<plugin-id>` under the XDG state, cache and config directories, and its user enable-state entry), `dry_run`, `timeout_ms` (default 30000). Removing a plugin that is not installed fails with `plugin.not_installed`.
+Removes the plugin's directory from the store (all its files, the current and the previous version). Arguments: `force` (remove even while a process runs a file of the plugin; otherwise `plugin.in_use`), `purge` (also delete the plugin's data directories `resh/plugins/<plugin-id>` under the XDG state, cache and config directories, and its user enable-state entry), `dry_run`, `timeout_ms` (default 30000). Removing a plugin that is not installed fails with `plugin.not_installed`.
 
 The plugin directory is first renamed into staging, so the plugin disappears at once, and then deleted. Nothing outside the store and the three data directories is deleted, whatever the store's `metadata.json` says. A purge directory that is a symbolic link is refused (`plugin.unsafe_path`) before anything is removed.
 
-### 4.4 enable / disable
+### 4.5 enable / disable
 
 ```bash
 resh plugin://aws.enable dry_run=true
@@ -192,7 +243,22 @@ Marks an installed plugin enabled or disabled in the state file of `scope` (`use
 * Writing `scope=system` needs write access to `/var/lib/resh/plugins` (otherwise `plugin.permission_denied`).
 * Concurrent changes of one state file are serialized with a lock; if another process holds it for more than 10 seconds, the verb fails with `plugin.locked`.
 
-### 4.5 installed.list
+### 4.6 keys.add / keys.list / keys.delete
+
+```bash
+resh plugin://keys.add key=11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo= name=acme
+resh --json-pretty plugin://keys.list
+resh plugin://keys.delete key_id=21fe31dfa154a261
+```
+
+Manage the user's trusted publisher keys (2.3) in `$XDG_CONFIG_HOME/resh/plugin-trusted-keys.json`.
+
+* `keys.add key=<base64> [name=<text>]` adds a public key (base64 of its 32 raw bytes; anything else is exit 2). Adding a key that is already trusted changes nothing (`changed: false`). `result.key` has `key_id`, `public_key`, `name`, `added_at`.
+* `keys.list` lists the built-in official key (when set, `origin: "builtin"`) and the trust store keys (`origin: "trust_store"`); `result.official_key_set` says whether the official key is set.
+* `keys.delete key_id=<id>` removes a trust store key; an unknown id is `plugin.not_found`. The built-in key cannot be removed.
+* These verbs read or write one local file and do not take `timeout_ms` or `dry_run`.
+
+### 4.7 installed.list
 
 ```bash
 resh --json-pretty plugin://installed.list format=names
@@ -201,9 +267,9 @@ resh plugin://installed.list prefix=aws sort=installed_at order=desc limit=10
 
 Lists the plugins in the local store. Arguments: `enabled` (boolean), `name` (exact), `prefix`, `tag` (from the plugin's own `manifest.json`), `source` (`registry`, `url`, `file`), `limit` (1-500, default 200), `offset`, `sort` (`name`, `installed_at`, `updated_at`), `order` (`asc`, `desc`), `format` (`full`, `summary`, `names`).
 
-`enabled` is the plugin's user enable state, or its system state when the user scope has no entry. `installed_at` is when the plugin was first installed, `updated_at` when its current version was installed. A store entry that cannot be read is listed with `health: "broken"` and a `problem`. Listing never creates the store.
+Each item also has `previous_version` (the version `rollback` would switch to, or `null`). `enabled` is the plugin's user enable state, or its system state when the user scope has no entry. `installed_at` is when the plugin was first installed, `updated_at` when its current version was installed. A store entry that cannot be read is listed with `health: "broken"` and a `problem`. Listing never creates the store.
 
-### 4.6 available.list
+### 4.8 available.list
 
 ```bash
 resh --json-pretty plugin://available.list query=docker limit=1
@@ -212,7 +278,7 @@ resh plugin://available.list source=file:/srv/catalog.json tags=container,docker
 
 Lists plugins from a catalog. `source=default` (the default) reads the catalog built into resh; `source=file:<path>` reads the given file. Other arguments: `query`, `tags` (`,`-separated, all must match), `publisher`, `platform` (`<os>-<arch>`, default the current platform), `include_prerelease`, `limit` (1-1000, default 100), `offset`, `format` (`summary` or `full`). No network access. A missing file is `plugin.not_found`, an invalid one `plugin.catalog_invalid`.
 
-### 4.7 available.search
+### 4.9 available.search
 
 ```bash
 resh --json-pretty plugin://available.search q=docker offline=true
@@ -225,7 +291,7 @@ Searches a plugin index and returns scored matches; a plugin that matches none o
 * `offline=true` reads only the cache and never contacts the network; with no cache it fails with `plugin.not_found`.
 * `refresh=true` always fetches. `offline=true` with `refresh=true` (or with `ca_file`) is an error (exit 2).
 
-### 4.8 available.info
+### 4.10 available.info
 
 ```bash
 resh --json-pretty plugin://available.info name=resh.docker offline=true
@@ -235,7 +301,7 @@ Reports index details for one plugin. Arguments: `name` or `id` (at least one re
 
 Without `offline=true` each index is fetched over HTTPS from `<index>/index-<channel>.json` unless a fresh cache exists (official: 1 hour, community: 30 minutes). An index that cannot be loaded is a warning while another one loads. The newest matching version that supports the target OS and architecture and this resh version (`compatibility.resh_min`/`resh_max`) is reported, official before community. No match is `plugin.not_found`.
 
-### 4.9 Errors
+### 4.11 Errors
 
 | Code | Exit | Meaning |
 | ---- | ---- | ------- |
@@ -248,7 +314,10 @@ Without `offline=true` each index is fetched over HTTPS from `<index>/index-<cha
 | `plugin.download_failed` | 1 | Connection, TLS or HTTP failure, or a download over the size limit |
 | `plugin.catalog_invalid` | 1 | A registry entry, index or catalog is not valid (or names an unsafe version or artifact) |
 | `plugin.verify_failed` | 1 | Checksum missing, malformed or not matching; nothing was installed |
-| `plugin.extract_failed` | 1 | The artifact cannot be unpacked or breaks the rules of 2.3 |
+| `plugin.signature_required` | 1 | A registry artifact has no publisher signature and `allow_unsigned` is not set |
+| `plugin.signature_invalid` | 1 | The signature is malformed, made by an untrusted key, or does not match |
+| `plugin.no_previous_version` | 1 | `rollback` found no previous version |
+| `plugin.extract_failed` | 1 | The artifact cannot be unpacked or breaks the rules of 2.4 |
 | `plugin.install_failed` | 1 | The new version could not be written or activated; the old one stays |
 | `plugin.downgrade_refused` | 1 | A newer version is installed and `allow_downgrade` is not set |
 | `plugin.no_update_available` | 1 | `update strict=true` found no newer version |
@@ -258,19 +327,20 @@ Without `offline=true` each index is fetched over HTTPS from `<index>/index-<cha
 | `plugin.permission_denied` | 1 | Permission denied (for example `scope=system` as a normal user) |
 | `plugin.unsafe_path` | 1 | A location breaks the rules of 1.1 (symlink, other owner, writable by others) |
 | `plugin.locked` | 1 | Another process kept the enable-state lock for 10 seconds |
-| `plugin.timeout` | 124 | `timeout_ms` was reached; see 4.10 for what was left done |
+| `plugin.timeout` | 124 | `timeout_ms` was reached; see 4.12 for what was left done |
 
-### 4.10 timeout_ms
+### 4.12 timeout_ms
 
 `timeout_ms` is a deadline for the whole verb (1 ms to 24 hours). Reaching it fails with `plugin.timeout` (exit 124).
 
 | Verb             | Default | Behavior at the deadline |
 | ---------------- | ------- | ------------------------ |
 | install, update  | 300000  | Covers resolving, downloading (including reading the body), unpacking, and waiting for the plugin's lock. A timeout before the new version is activated removes the staged files and leaves the installed version as it was |
+| rollback         | 30000   | Covers waiting for the plugin's lock; nothing is changed before the switch |
 | remove           | 30000   | Covers the in-use check and waiting for the lock. Checked before the plugin directory is renamed away; after that the removal completes |
 | available.search | 5000    | Covers fetching the index |
 | available.info   | 5000    | Covers fetching every index together |
-| enable, disable, available.list, installed.list | none | Refused (exit 2): these verbs read or write local files only |
+| enable, disable, available.list, installed.list, keys.* | none | Refused (exit 2): these verbs read or write local files only |
 
 ---
 
@@ -282,10 +352,10 @@ Only Linux is supported and verified. Registry artifacts are chosen by the `<os>
 
 ## 6. Limitations
 
-* Registry checksums prove integrity in transit only, not publisher authenticity (2.2). There is no signature support.
+* No official publisher key is built in yet (2.3.1): until the owner sets it, users must trust registry keys themselves with `keys.add` or `trust_key=`.
 * `source=url` cannot be verified; it needs `verify=none` and is then unverified.
 * The in-use check (`remove`, `disable`) looks for processes whose executable is a file of the plugin; a plugin run by an interpreter (for example `sh plugin`) is not detected.
-* Only the current version of a plugin is kept; there is no rollback to an earlier version except installing it again (`allow_downgrade=true`).
+* Only the current and one previous version are kept; older versions can only be installed again (`allow_downgrade=true`).
 
 ---
 
@@ -301,4 +371,4 @@ Only Linux is supported and verified. Registry artifacts are chosen by the `<os>
 
 ## 8. Implementation
 
-Written in Rust: `src/handles/automation/pluginh.rs` (help, argument parsing, dispatch), `src/handles/pluginh/plugin/engine.rs` (install/update/remove), `registry.rs` (resolution and checksums), `store.rs` (plugin store), `src/handles/pluginh/state.rs` (enable/disable), `catalog.rs` (`available.list`, `available.search`, `installed.list`), `available/` (`available.info`), `net.rs` (HTTPS), `paths.rs` (locations and safe file access) and `common.rs` (arguments, error codes, versions).
+Written in Rust: `src/handles/automation/pluginh.rs` (help, argument parsing, dispatch), `src/handles/pluginh/plugin/engine.rs` (install/update/remove), `registry.rs` (resolution and checksums), `store.rs` (plugin store), `src/handles/pluginh/state.rs` (enable/disable), `sign.rs` (signatures and trusted keys), `catalog.rs` (`available.list`, `available.search`, `installed.list`), `available/` (`available.info`), `net.rs` (HTTPS), `paths.rs` (locations and safe file access) and `common.rs` (arguments, error codes, versions).

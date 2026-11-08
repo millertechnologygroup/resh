@@ -28,6 +28,9 @@ Available Verbs:
                      installs and activates it, keeping the old version if
                      anything fails, or only reports the plan when dry_run is
                      true.
+  rollback           Switches an installed plugin back to the previous version
+                     that install and update keep, which then becomes the
+                     previous version.
   remove             Removes an installed plugin's files from the plugin store,
                      optionally purging its data, or only reports the planned
                      steps when dry_run is true.
@@ -36,6 +39,12 @@ Available Verbs:
   disable            Marks an installed plugin as disabled in the user or system
                      state file, refusing while the plugin is running unless
                      force is true.
+  keys.add           Adds an Ed25519 publisher key to the user's trusted keys,
+                     which plugin signatures are checked against.
+  keys.list          Lists the trusted publisher keys: the built-in official
+                     key, when set, and the user's trusted keys.
+  keys.delete        Removes a publisher key from the user's trusted keys by its
+                     key id.
 
 Usage:
   resh plugin://<plugin-id>.<verb> [key=value ...]

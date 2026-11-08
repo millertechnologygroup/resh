@@ -17,7 +17,10 @@ use super::paths;
 use crate::core::registry::{Args, Handle, IoStreams};
 use crate::core::status::Status;
 use crate::handles::automation::pluginh::PluginHandle;
-use fake::{FakeRegistry, add_file, plugin_tar_gz, raw_tar_gz, sha256_hex, tar_gz};
+use fake::{
+    FakeRegistry, add_file, b64, key_id, new_key, plugin_tar_gz, raw_tar_gz, sha256_hex, sign,
+    tar_gz,
+};
 
 struct Env {
     t: TempDir,
@@ -39,7 +42,9 @@ impl Env {
     fn plugin(&self, id: &str) -> PathBuf {
         self.store().join(id)
     }
+    /// The registry's CA file; also trusts the registry's publisher key.
     fn ca(&self, reg: &FakeRegistry) -> String {
+        super::sign::add_key(&reg.public_key(), Some("test registry")).unwrap();
         let p = self.root().join("ca.pem");
         fs::write(&p, &reg.ca_pem).unwrap();
         p.to_string_lossy().into_owned()
@@ -430,13 +435,14 @@ fn registry_resolution_errors() {
         .clone();
     assert_eq!(j["result"]["previous_version"], "1.10.0");
     assert_eq!(env.current("demo").as_deref(), Some("1.9.0"));
-    // Only the current version is kept.
-    assert_eq!(
-        fs::read_dir(env.plugin("demo").join("versions"))
-            .unwrap()
-            .count(),
-        1
-    );
+    // The current and one previous version are kept.
+    let mut v: Vec<_> = fs::read_dir(env.plugin("demo").join("versions"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    assert_eq!(v, ["1.10.0", "1.9.0"]);
 }
 
 #[test]
@@ -680,7 +686,10 @@ fn update_installs_the_newest_version() {
     assert_eq!(j["result"]["previous_version"], "1.0.0");
     assert_eq!(j["result"]["version"], "1.2.0");
     assert_eq!(env.current("demo").as_deref(), Some("1.2.0"));
-    assert!(!env.plugin("demo").join("versions/1.0.0").exists());
+    assert!(
+        env.plugin("demo").join("versions/1.0.0").is_dir(),
+        "kept as previous"
+    );
     // installed_at is kept; updated_at changes.
     let list = call("installed.list", "installed.list", &[]).ok().clone();
     let item = &list["result"]["items"][0];
@@ -1308,4 +1317,264 @@ fn a_damaged_plugin_can_still_be_removed() {
     let j = call("demo", "remove", &[]).ok().clone();
     assert!(j["warnings"][0].as_str().unwrap().contains("damaged"));
     assert!(env.nothing_installed("demo"));
+}
+
+// --- signatures, keys, rollback, progress -------------------------------------
+
+#[test]
+fn unsigned_or_untrusted_artifacts_are_refused() {
+    let env = Env::new();
+    let reg = FakeRegistry::start();
+    let ca_path = env.root().join("ca.pem");
+    fs::write(&ca_path, &reg.ca_pem).unwrap();
+    let ca = ca_path.to_string_lossy().into_owned();
+    let base = reg.base();
+    let a = [("registry", base.as_str()), ("ca_file", ca.as_str())];
+    let data = plugin_tar_gz("x");
+    let sha = sha256_hex(&data);
+    // Signed by the registry's key, which is not trusted yet.
+    reg.publish("demo", "1.0.0", "p.tar.gz", &data, Some(&sha));
+    let j = install("demo", &a).fails(1, SIGNATURE_INVALID).clone();
+    assert!(
+        j["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not trusted")
+    );
+    assert!(
+        !reg.hits().iter().any(|h| h.starts_with("/v1/artifacts/")),
+        "artifact fetched before the signature was checked"
+    );
+    assert!(env.nothing_installed("demo"));
+    // trust_key= for one call.
+    let pk = reg.public_key();
+    let mut t = a.to_vec();
+    t.push(("trust_key", pk.as_str()));
+    let j = install("demo", &t).ok().clone();
+    let sig = j["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["type"] == "signature")
+        .unwrap()
+        .clone();
+    assert_eq!(sig["details"]["key_origin"], "trust_key");
+    // Unsigned: refused unless allow_unsigned=true (with a warning).
+    reg.publish_with(
+        "bare",
+        "1.0.0",
+        "p.tar.gz",
+        &data,
+        Some(&sha),
+        serde_json::json!({}),
+    );
+    install("bare", &t).fails(1, SIGNATURE_REQUIRED);
+    let mut u = t.clone();
+    u.push(("allow_unsigned", "true"));
+    let j = install("bare", &u).ok().clone();
+    assert!(
+        j["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("allow_unsigned")
+    );
+    // A signature by a trusted key that does not match is always refused.
+    let other = sign(&reg.signer, "bare", "9.9.9", &sha);
+    reg.publish_with(
+        "forged",
+        "1.0.0",
+        "p.tar.gz",
+        &data,
+        Some(&sha),
+        serde_json::json!({"signature": other, "key_id": key_id(&reg.signer.verifying_key())}),
+    );
+    install("forged", &u).fails(1, SIGNATURE_INVALID);
+    // A key that is not trusted is accepted with allow_unsigned=true only.
+    let stranger = new_key();
+    reg.publish_with(
+        "stranger",
+        "1.0.0",
+        "p.tar.gz",
+        &data,
+        Some(&sha),
+        serde_json::json!({
+            "signature": sign(&stranger, "stranger", "1.0.0", &sha),
+            "key_id": key_id(&stranger.verifying_key()),
+        }),
+    );
+    install("stranger", &t).fails(1, SIGNATURE_INVALID);
+    install("stranger", &u).ok();
+    // Garbage signatures.
+    reg.publish_with(
+        "junk",
+        "1.0.0",
+        "p.tar.gz",
+        &data,
+        Some(&sha),
+        serde_json::json!({"signature": "!!!", "key_id": key_id(&reg.signer.verifying_key())}),
+    );
+    install("junk", &t).fails(1, SIGNATURE_INVALID);
+    // verify=none skips checksum and signature; file sources have none.
+    let mut n = t.clone();
+    n.push(("verify", "none"));
+    install("bare", &n).ok();
+    // Bad trust_key values are usage errors.
+    for bad in ["", "abc", &b64(&[1u8; 31])] {
+        install("demo", &[("registry", &base), ("trust_key", bad)]).fails(2, INVALID_ARGUMENT);
+    }
+}
+
+#[test]
+fn keys_add_list_remove() {
+    let env = Env::new();
+    let list = || call("keys.list", "keys.list", &[]).ok().clone();
+    let j = list();
+    assert_eq!(j["result"]["count"], 0);
+    assert_eq!(j["result"]["official_key_set"], false);
+    let k = new_key();
+    let pk = b64(k.verifying_key().as_bytes());
+    let kid = key_id(&k.verifying_key());
+    let j = call("keys.add", "keys.add", &[("key", &pk), ("name", "acme")])
+        .ok()
+        .clone();
+    assert_eq!(j["result"]["changed"], true);
+    assert_eq!(j["result"]["key"]["key_id"], kid.as_str());
+    let j = call("keys.add", "keys.add", &[("key", &pk)]).ok().clone();
+    assert_eq!(j["result"]["changed"], false);
+    let store = env.root().join("config/resh/plugin-trusted-keys.json");
+    assert_eq!(fs::metadata(&store).unwrap().mode() & 0o777, 0o600);
+    assert_eq!(
+        fs::metadata(store.parent().unwrap()).unwrap().mode() & 0o777,
+        0o700
+    );
+    let j = list();
+    assert_eq!(j["result"]["items"][0]["name"], "acme");
+    assert_eq!(j["result"]["items"][0]["origin"], "trust_store");
+    call("keys.delete", "keys.delete", &[("key_id", &kid)]).ok();
+    call("keys.delete", "keys.delete", &[("key_id", &kid)]).fails(1, NOT_FOUND);
+    assert_eq!(list()["result"]["count"], 0);
+    for (verb, a) in [
+        ("keys.add", &[][..]),
+        ("keys.add", &[("key", "nope")]),
+        ("keys.add", &[("key", pk.as_str()), ("nmae", "x")]),
+        ("keys.delete", &[]),
+        ("keys.list", &[("verbose", "true")]),
+    ] {
+        call(verb, verb, a).fails(2, INVALID_ARGUMENT);
+    }
+    call("aws", "keys.list", &[]).fails(2, INVALID_TARGET);
+    // A planted symlink at the trust store is never written through.
+    let victim = env.root().join("victim");
+    fs::write(&victim, b"keep").unwrap();
+    fs::remove_file(&store).unwrap();
+    symlink(&victim, &store).unwrap();
+    call("keys.add", "keys.add", &[("key", &pk)]).fails(1, UNSAFE_PATH);
+    assert_eq!(fs::read(&victim).unwrap(), b"keep");
+}
+
+#[test]
+fn rollback_switches_to_the_kept_previous_version() {
+    let env = Env::new();
+    let reg = FakeRegistry::start();
+    let ca = env.ca(&reg);
+    let base = reg.base();
+    let a = [("registry", base.as_str()), ("ca_file", ca.as_str())];
+    call("demo", "rollback", &[]).fails(1, NOT_INSTALLED);
+    reg.publish_ok("demo", "1.0.0");
+    install("demo", &a).ok();
+    call("demo", "rollback", &[]).fails(1, NO_PREVIOUS_VERSION);
+    reg.publish_ok("demo", "2.0.0");
+    call("demo", "update", &a).ok();
+    let l = call("installed.list", "installed.list", &[("format", "summary")])
+        .ok()
+        .clone();
+    assert_eq!(l["result"]["items"][0]["previous_version"], "1.0.0");
+    let j = call("demo", "rollback", &[("dry_run", "true")])
+        .ok()
+        .clone();
+    assert_eq!(j["result"]["changed"], false);
+    assert_eq!(env.current("demo").as_deref(), Some("2.0.0"));
+    let j = call("demo", "rollback", &[]).ok().clone();
+    assert_eq!(j["result"]["version"], "1.0.0");
+    assert_eq!(j["result"]["previous_version"], "2.0.0");
+    assert_eq!(j["target"]["version"], "1.0.0");
+    assert_eq!(env.current("demo").as_deref(), Some("1.0.0"));
+    // Rolling back again returns to 2.0.0.
+    call("demo", "rollback", &[]).ok();
+    assert_eq!(env.current("demo").as_deref(), Some("2.0.0"));
+    // A third version: only it and the one it replaced are kept.
+    reg.publish_ok("demo", "3.0.0");
+    call("demo", "update", &a).ok();
+    let mut v: Vec<_> = fs::read_dir(env.plugin("demo").join("versions"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    assert_eq!(v, ["2.0.0", "3.0.0"]);
+    for bad in [
+        &[("force", "true")][..],
+        &[("timeout_ms", "0")],
+        &[("dry_run", "x")],
+    ] {
+        call("demo", "rollback", bad).fails(2, INVALID_ARGUMENT);
+    }
+    // remove deletes both versions.
+    call("demo", "remove", &[]).ok();
+    assert!(env.nothing_installed("demo"));
+}
+
+#[test]
+fn progress_streams_json_lines_before_the_result() {
+    let env = Env::new();
+    let reg = FakeRegistry::start();
+    let ca = env.ca(&reg);
+    // A large artifact so several download events are written.
+    let big: Vec<u8> = (0..900_000u32).map(|i| (i % 251) as u8).collect();
+    let data = tar_gz(|b| {
+        add_file(b, "plugin", b"#!/bin/sh\n", 0o755);
+        add_file(b, "blob", &big, 0o644);
+    });
+    reg.publish("demo", "1.0.0", "p.tar.gz", &data, Some(&sha256_hex(&data)));
+    let r = install(
+        "demo",
+        &[
+            ("registry", &reg.base()),
+            ("ca_file", &ca),
+            ("progress", "true"),
+        ],
+    );
+    assert!(r.status.ok, "{}", r.stdout);
+    let lines: Vec<Value> = r
+        .stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let (events, last) = lines.split_at(lines.len() - 1);
+    assert_eq!(last[0]["op"], "plugin.install");
+    let steps: Vec<&str> = events.iter().map(|e| e["step"].as_str().unwrap()).collect();
+    assert_eq!(steps.first(), Some(&"resolve"));
+    assert!(steps.contains(&"signature"));
+    assert!(steps.iter().filter(|s| **s == "download").count() >= 1);
+    for s in ["verify", "extract", "activate"] {
+        assert!(steps.contains(&s), "{s} missing: {steps:?}");
+    }
+    let dl: Vec<&Value> = events.iter().filter(|e| e["step"] == "download").collect();
+    let lastdl = dl.last().unwrap();
+    assert_eq!(lastdl["bytes"], data.len());
+    assert_eq!(lastdl["total"], data.len());
+    for e in events {
+        assert_eq!(e["event"], "progress");
+        assert_eq!(e["handle"], "plugin");
+        assert_eq!(e["verb"], "install");
+    }
+    // Without progress, one JSON object only.
+    reg.publish_ok("demo", "1.1.0");
+    let r = call(
+        "demo",
+        "update",
+        &[("registry", &reg.base()), ("ca_file", &ca)],
+    );
+    assert_eq!(r.stdout.lines().count(), 1);
+    install("demo", &[("progress", "maybe")]).fails(2, INVALID_ARGUMENT);
 }

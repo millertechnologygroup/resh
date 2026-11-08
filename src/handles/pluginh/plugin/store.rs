@@ -226,6 +226,42 @@ impl PluginStore {
     /// The installed version of `id`: `current` must be a link to
     /// `versions/<version>`. `None` when the plugin is not installed.
     pub fn current_version(&self, id: &str) -> PResult<Option<String>> {
+        self.link_version(id, "current")
+    }
+
+    /// The previous version kept for `rollback`, when there is a valid one
+    /// whose directory exists.
+    pub fn previous_version(&self, id: &str) -> Option<String> {
+        self.link_version(id, "previous")
+            .ok()
+            .flatten()
+            .filter(|v| self.version_dir(id, v).is_dir())
+    }
+
+    /// Switches `current` to the previous version and records the replaced
+    /// version as the new previous one. Returns (new current, new previous).
+    pub fn rollback(&self, id: &str) -> PResult<(String, String)> {
+        let pdir = paths::ensure_dir(&self.root, &[id], 0o755)?;
+        let cur = self.current_version(id)?.ok_or_else(|| {
+            PluginError::failed(
+                crate::handles::pluginh::common::NOT_INSTALLED,
+                format!("plugin {id} is not installed"),
+            )
+        })?;
+        let prev = self.previous_version(id).ok_or_else(|| {
+            PluginError::failed(
+                crate::handles::pluginh::common::NO_PREVIOUS_VERSION,
+                format!("plugin {id} has no previous version to roll back to"),
+            )
+        })?;
+        set_link(&pdir, "previous", &cur)
+            .map_err(|e| install_failed("cannot record the previous version", &e))?;
+        set_link(&pdir, "current", &prev)
+            .map_err(|e| install_failed("cannot activate the previous version", &e))?;
+        Ok((prev, cur))
+    }
+
+    fn link_version(&self, id: &str, link_name: &str) -> PResult<Option<String>> {
         let dir = self.plugin_dir(id);
         match fs::symlink_metadata(&dir) {
             Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
@@ -241,7 +277,7 @@ impl PluginStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(io_error(&format!("cannot inspect {}", dir.display()), &e)),
         }
-        let link = dir.join("current");
+        let link = dir.join(link_name);
         let target = match fs::read_link(&link) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -342,6 +378,8 @@ impl PluginStore {
     pub fn commit(&self, id: &str, version: &str, staging: &Staging) -> PResult<Vec<String>> {
         let pdir = paths::ensure_dir(&self.root, &[id], 0o755)?;
         let versions = paths::ensure_dir(&self.root, &[id, "versions"], 0o755)?;
+        let old_current = self.current_version(id).ok().flatten();
+        let old_previous = self.previous_version(id);
         let target = versions.join(version);
         let parked = staging.dir.join("previous");
         let had_old = match fs::symlink_metadata(&target) {
@@ -364,19 +402,31 @@ impl PluginStore {
             return Err(install_failed("cannot move the new version into place", &e));
         }
         // Switch `current` atomically: a new link renamed over the old one.
-        let tmp_link = pdir.join(format!(".current-{}", uuid::Uuid::new_v4().simple()));
-        let switched = std::os::unix::fs::symlink(Path::new("versions").join(version), &tmp_link)
-            .and_then(|()| fs::rename(&tmp_link, pdir.join("current")));
-        if let Err(e) = switched {
-            let _ = fs::remove_file(&tmp_link);
+        if let Err(e) = set_link(&pdir, "current", version) {
             restore();
             return Err(install_failed("cannot activate the new version", &e));
         }
-        // Only the current version is kept.
+        // Keep exactly one previous version: the one that was current, or
+        // (when the same version was reinstalled) the previous one.
         let mut warnings = Vec::new();
+        let previous = match old_current {
+            Some(o) if o != version => Some(o),
+            _ => old_previous.filter(|p| p != version),
+        };
+        let linked = match &previous {
+            Some(p) => set_link(&pdir, "previous", p),
+            None => match fs::remove_file(pdir.join("previous")) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            },
+        };
+        if let Err(e) = linked {
+            warnings.push(format!("could not record the previous version: {e}"));
+        }
         if let Ok(entries) = fs::read_dir(&versions) {
             for entry in entries.flatten() {
-                if entry.file_name() == version {
+                let name = entry.file_name();
+                if name == version || previous.as_deref().is_some_and(|p| name == p) {
                     continue;
                 }
                 if let Err(e) = fs::remove_dir_all(entry.path()) {
@@ -446,6 +496,18 @@ fn inside(path: &Path, dir: &Path) -> bool {
                 && !rel.as_os_str().is_empty()
         })
         .unwrap_or(false)
+}
+
+/// Points `<dir>/<name>` at `versions/<version>` atomically (a new link
+/// renamed over the old one).
+fn set_link(dir: &Path, name: &str, version: &str) -> std::io::Result<()> {
+    let tmp = dir.join(format!(".{name}-{}", uuid::Uuid::new_v4().simple()));
+    let r = std::os::unix::fs::symlink(Path::new("versions").join(version), &tmp)
+        .and_then(|()| fs::rename(&tmp, dir.join(name)));
+    if r.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    r
 }
 
 /// The plugin executable inside an installed version directory: the first
@@ -582,7 +644,14 @@ mod tests {
             .flatten()
             .map(|e| e.file_name())
             .collect();
-        assert_eq!(versions, vec!["1.1.0"]);
+        let mut versions = versions;
+        versions.sort();
+        assert_eq!(
+            versions,
+            vec!["1.0.0", "1.1.0"],
+            "one previous version is kept"
+        );
+        assert_eq!(store.previous_version("demo").as_deref(), Some("1.0.0"));
         assert!(store.version_dir("demo", "1.1.0").join("two").is_file());
         // Reinstalling the same version replaces it in place.
         let s = staged(&store, "three");

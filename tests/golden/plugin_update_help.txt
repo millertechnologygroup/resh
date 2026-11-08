@@ -6,7 +6,8 @@ Definition: Resolves the newest version of an installed plugin and installs and
 
 Usage:
   resh plugin://<plugin-id>.update [registry=<https-url>]
-    [url=<https-url>] [verify=sha256|none] [strict=true|false]
+    [url=<https-url>] [verify=sha256|none] [allow_unsigned=true|false]
+    [trust_key=<base64>] [strict=true|false] [progress=true|false]
     [dry_run=true|false] [timeout_ms=<ms>] [ca_file=<pem>]
 
 Example:

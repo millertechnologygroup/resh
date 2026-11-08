@@ -43,15 +43,56 @@ pub struct Outcome {
     pub error: Option<PluginError>,
 }
 
-struct Ctx {
+/// Receives progress events (`progress=true`).
+pub type ProgressSink<'a> = &'a mut dyn FnMut(serde_json::Value);
+
+struct Ctx<'a> {
     actions: Actions,
     warnings: Vec<String>,
     target: TargetInfo,
     result: serde_json::Value,
+    progress: Option<ProgressSink<'a>>,
+    verb: &'static str,
 }
 
-/// Runs install, update or remove and builds its envelope.
-pub fn run(args: &PluginOpArgs) -> Outcome {
+impl Ctx<'_> {
+    /// Emits one progress event: `{"event":"progress","handle":"plugin",
+    /// "verb":..,"plugin":..,"step":..,"ts":.., ...details}`.
+    fn emit(&mut self, step: &str, details: serde_json::Value) {
+        let ev = progress_event(self.verb, &self.target.name, step, details);
+        if let Some(sink) = self.progress.as_mut() {
+            sink(ev);
+        }
+    }
+}
+
+/// `{"event":"progress","handle":"plugin","verb":..,"plugin":..,"step":..,
+/// "ts":.., ...details}`.
+fn progress_event(
+    verb: &str,
+    plugin: &str,
+    step: &str,
+    details: serde_json::Value,
+) -> serde_json::Value {
+    let mut ev = json!({
+        "event": "progress",
+        "handle": "plugin",
+        "verb": verb,
+        "plugin": plugin,
+        "step": step,
+        "ts": Utc::now().to_rfc3339(),
+    });
+    if let (Some(m), Some(d)) = (ev.as_object_mut(), details.as_object()) {
+        for (k, v) in d {
+            m.insert(k.clone(), v.clone());
+        }
+    }
+    ev
+}
+
+/// Runs install, update, rollback or remove and builds its envelope.
+/// `progress` receives progress events when the caller asked for them.
+pub fn run(args: &PluginOpArgs, progress: Option<ProgressSink<'_>>) -> Outcome {
     let deadline = Deadline::after_ms(args.timeout_ms);
     let install_root = PluginStore::default_root()
         .map(|p| p.to_string_lossy().into_owned())
@@ -67,14 +108,26 @@ pub fn run(args: &PluginOpArgs) -> Outcome {
             bin_path: None,
         },
         result: json!({}),
+        progress,
+        verb: match args.mode {
+            Mode::Install => "install",
+            Mode::Update => "update",
+            Mode::Rollback => "rollback",
+            Mode::Remove => "remove",
+        },
     };
     let res = match args.mode {
         Mode::Install | Mode::Update => install_or_update(args, &deadline, &mut ctx),
+        Mode::Rollback => rollback(args, &deadline, &mut ctx),
         Mode::Remove => remove(args, &deadline, &mut ctx),
     };
     let (op, verb_args) = match args.mode {
         Mode::Install => ("plugin.install", install_args(args)),
         Mode::Update => ("plugin.update", update_args(args)),
+        Mode::Rollback => (
+            "plugin.rollback",
+            json!({ "dry_run": args.dry_run, "timeout_ms": args.timeout_ms }),
+        ),
         Mode::Remove => (
             "plugin.remove",
             json!({
@@ -112,6 +165,9 @@ fn source_args(args: &PluginOpArgs, v: &mut serde_json::Value) {
     if let Some(ca) = &args.ca_file {
         v["ca_file"] = json!(ca.path);
     }
+    if let Some(k) = &args.trust_key {
+        v["trust_key"] = json!(crate::handles::pluginh::sign::key_id(k));
+    }
 }
 
 fn install_args(args: &PluginOpArgs) -> serde_json::Value {
@@ -124,6 +180,8 @@ fn install_args(args: &PluginOpArgs) -> serde_json::Value {
         "verify": args.verify.as_str(),
         "force": args.force,
         "allow_downgrade": args.allow_downgrade,
+        "allow_unsigned": args.allow_unsigned,
+        "progress": args.progress,
         "dry_run": args.dry_run,
         "timeout_ms": args.timeout_ms,
     });
@@ -135,6 +193,8 @@ fn update_args(args: &PluginOpArgs) -> serde_json::Value {
     let mut v = json!({
         "verify": args.verify.as_str(),
         "strict": args.strict,
+        "allow_unsigned": args.allow_unsigned,
+        "progress": args.progress,
         "dry_run": args.dry_run,
         "timeout_ms": args.timeout_ms,
     });
@@ -271,6 +331,8 @@ fn install_or_update(args: &PluginOpArgs, deadline: &Deadline, ctx: &mut Ctx) ->
         true,
         Some(json!({ "version": cand.version })),
     );
+    ctx.emit("resolve", json!({ "version": cand.version }));
+    check_signature(args, &cand, ctx)?;
 
     let from = match plan(args, installed.as_ref(), &cand)? {
         PlanDecision::NoOp { reason } => {
@@ -332,7 +394,12 @@ fn install_or_update(args: &PluginOpArgs, deadline: &Deadline, ctx: &mut Ctx) ->
     let data = obtain(&cand, fetcher.as_ref(), deadline, ctx)?;
     verify(args, &cand, &data, ctx)?;
     let artifact_sha256 = sha256_hex(&data);
+    if matches!(args.source, SourceSpec::File { .. }) {
+        let n = data.len();
+        ctx.emit("download", json!({ "bytes": n, "total": n }));
+    }
 
+    ctx.emit("verify", json!({ "sha256": artifact_sha256 }));
     let staging = store.staging()?;
     let payload = staging.payload();
     let what = "before the plugin was installed; nothing was installed";
@@ -343,12 +410,18 @@ fn install_or_update(args: &PluginOpArgs, deadline: &Deadline, ctx: &mut Ctx) ->
     };
     drop(data);
     match extracted {
-        Ok(stats) => ctx.actions.push(
-            "extract",
-            format!("Unpacked {} file(s), {} bytes", stats.files, stats.bytes),
-            true,
-            Some(json!({ "files": stats.files, "bytes": stats.bytes })),
-        ),
+        Ok(stats) => {
+            ctx.actions.push(
+                "extract",
+                format!("Unpacked {} file(s), {} bytes", stats.files, stats.bytes),
+                true,
+                Some(json!({ "files": stats.files, "bytes": stats.bytes })),
+            );
+            ctx.emit(
+                "extract",
+                json!({ "files": stats.files, "bytes": stats.bytes }),
+            );
+        }
         Err(e) => {
             ctx.actions.push(
                 "extract",
@@ -393,6 +466,7 @@ fn install_or_update(args: &PluginOpArgs, deadline: &Deadline, ctx: &mut Ctx) ->
         true,
         Some(json!({ "version": cand.version })),
     );
+    ctx.emit("activate", json!({ "version": cand.version }));
     drop(staging);
     ctx.actions
         .push("cleanup", "Staging cleanup completed", true, None);
@@ -405,6 +479,117 @@ fn install_or_update(args: &PluginOpArgs, deadline: &Deadline, ctx: &mut Ctx) ->
         "version": cand.version,
         "previous_version": from,
     });
+    Ok(())
+}
+
+/// The publisher signature of a registry artifact (plugin.md 2.3), checked
+/// before anything is downloaded. Only registry sources under
+/// `verify=sha256` carry signatures. `allow_unsigned=true` accepts a missing
+/// signature or an untrusted key, with a warning; a signature by a trusted
+/// key that does not match is always refused.
+fn check_signature(args: &PluginOpArgs, cand: &ArtifactCandidate, ctx: &mut Ctx) -> PResult<()> {
+    use crate::handles::pluginh::sign;
+    if !matches!(args.source, SourceSpec::Registry { .. }) || args.verify == VerifyMode::None {
+        return Ok(());
+    }
+    let sha = cand.sha256.as_deref().unwrap_or_default();
+    let keys = sign::trusted_keys(args.trust_key.as_ref())?;
+    let res = sign::verify(
+        &args.plugin_id,
+        &cand.version,
+        sha,
+        cand.signature.as_deref(),
+        cand.key_id.as_deref(),
+        &keys,
+    );
+    match res {
+        Ok((kid, origin)) => {
+            ctx.actions.push(
+                "signature",
+                format!("Signature verified with key {kid} ({origin})"),
+                true,
+                Some(json!({ "key_id": kid, "key_origin": origin })),
+            );
+            ctx.emit("signature", json!({ "key_id": kid, "key_origin": origin }));
+            Ok(())
+        }
+        Err(e) => {
+            let key_trusted = cand
+                .key_id
+                .as_deref()
+                .is_some_and(|k| keys.iter().any(|t| sign::key_id(&t.key) == k));
+            let bad_signature = cand.signature.is_some() && key_trusted;
+            if args.allow_unsigned && !bad_signature {
+                ctx.actions.push(
+                    "signature",
+                    "No trusted signature (allow_unsigned=true): the artifact is installed unsigned",
+                    true,
+                    Some(json!({ "reason": e.message })),
+                );
+                ctx.warnings.push(format!(
+                    "allow_unsigned=true: plugin {} {} has no trusted publisher signature ({})",
+                    args.plugin_id, cand.version, e.message
+                ));
+                Ok(())
+            } else {
+                ctx.actions
+                    .push("signature", "Signature check failed", false, None);
+                Err(e)
+            }
+        }
+    }
+}
+
+/// `rollback`: switches to the kept previous version.
+fn rollback(args: &PluginOpArgs, deadline: &Deadline, ctx: &mut Ctx) -> PResult<()> {
+    let id = args.plugin_id.as_str();
+    let Some(store) = PluginStore::open(false)? else {
+        return Err(not_installed(id));
+    };
+    let Some(cur) = store.installed(id)? else {
+        ctx.actions
+            .push("check", "resolve_installation", false, None);
+        return Err(not_installed(id));
+    };
+    ctx.target.version = Some(cur.version.clone());
+    ctx.target.bin_path = cur.bin_path.clone();
+    let Some(prev) = store.previous_version(id) else {
+        ctx.actions
+            .push("check", "find previous version", false, None);
+        return Err(PluginError::failed(
+            crate::handles::pluginh::common::NO_PREVIOUS_VERSION,
+            format!("plugin {id} has no previous version to roll back to"),
+        ));
+    };
+    ctx.actions.push(
+        "check",
+        "find previous version",
+        true,
+        Some(json!({ "current": cur.version, "previous": prev })),
+    );
+    if args.dry_run {
+        ctx.actions.push(
+            "activate",
+            "Dry run: no changes made",
+            true,
+            Some(json!({ "dry_run": true, "from_version": cur.version, "to_version": prev })),
+        );
+        ctx.result = json!({ "changed": false, "version": prev, "previous_version": cur.version });
+        return Ok(());
+    }
+    let _lock = store.lock(id, deadline)?;
+    deadline.check("before the rollback; nothing was changed")?;
+    let (now, before) = store.rollback(id)?;
+    ctx.actions.push(
+        "activate",
+        format!("Rolled back to version {now}"),
+        true,
+        Some(json!({ "version": now })),
+    );
+    let meta = store.installed(id)?;
+    ctx.target.version = Some(now.clone());
+    ctx.target.bin_path = meta.and_then(|m| m.bin_path);
+    ctx.result = json!({ "changed": true, "version": now, "previous_version": before });
     Ok(())
 }
 
@@ -435,7 +620,33 @@ fn obtain(
     ctx: &mut Ctx,
 ) -> PResult<Vec<u8>> {
     if let (Some(url), Some(fetcher)) = (&cand.url, fetcher) {
-        let res = fetcher.get(url, MAX_ARTIFACT_BYTES, "the plugin artifact");
+        // A download event at most every 256 KiB, and at the end, written
+        // while the body is read.
+        let mut last = 0u64;
+        let (verb, plugin) = (ctx.verb, ctx.target.name.clone());
+        let mut sink = ctx.progress.take();
+        let res = {
+            let mut on_chunk = |bytes: u64, total: Option<u64>| {
+                if let Some(sink) = sink.as_mut()
+                    && (bytes - last >= 256 * 1024 || Some(bytes) == total)
+                {
+                    last = bytes;
+                    sink(progress_event(
+                        verb,
+                        &plugin,
+                        "download",
+                        json!({ "bytes": bytes, "total": total }),
+                    ));
+                }
+            };
+            fetcher.get_with_progress(
+                url,
+                MAX_ARTIFACT_BYTES,
+                "the plugin artifact",
+                &mut on_chunk,
+            )
+        };
+        ctx.progress = sink;
         match &res {
             Ok(d) => ctx.actions.push(
                 "download",

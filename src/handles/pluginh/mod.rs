@@ -6,6 +6,7 @@ pub mod common;
 pub mod net;
 pub mod paths;
 pub mod plugin;
+pub mod sign;
 pub mod state;
 #[cfg(test)]
 mod tests;

@@ -16,7 +16,7 @@ This page covers the **Automation Utilities** handles:
 | Handle        | Purpose | Verbs |
 | ------------- | ------- | ----- |
 | `backup://`   | Run restic, borg, rsync or tar to create, list, restore, verify and prune snapshots | `create`, `list`, `restore`, `verify`, `prune`, `schedule` (installs a systemd timer or crontab line through `cron://`) |
-| `plugin://`   | Manage the local resh plugin store and read plugin catalogs | `install`, `update`, `remove`, `enable`, `disable`, `installed.list`, `available.list`, `available.search`, `available.info` |
+| `plugin://`   | Manage the local resh plugin store and read plugin catalogs | `install`, `update`, `rollback`, `remove`, `enable`, `disable`, `installed.list`, `available.list`, `available.search`, `available.info`, `keys.add`, `keys.list`, `keys.delete` |
 | `template://` | Render, validate and test Tera templates | `render`, `validate`, `test` |
 
 Detailed pages: [backup](backup.md), [plugin](plugin.md), [template](template.md). Built-in help: `resh <handle> --help` and `resh <handle> <verb> --help`.
@@ -36,7 +36,7 @@ Detailed pages: [backup](backup.md), [plugin](plugin.md), [template](template.md
 | Handle   | `dry_run` |
 | -------- | --------- |
 | backup   | Honored by `create`, `restore` (lists what would be restored), `prune` and `schedule` (cron add's dry run). `list` and `verify` refuse `dry_run` in any spelling (exit 2, `backup.invalid_argument`). An unrecognised value (such as `dry_run=maybe`) is refused |
-| plugin   | Honored by `install`, `update`, `remove`, `enable`, `disable`. Values other than true/false/1/0/yes/no/on/off are errors |
+| plugin   | Honored by `install`, `update`, `rollback`, `remove`, `enable`, `disable`. Values other than true/false/1/0/yes/no/on/off are errors |
 | template | Not read (no verb writes anything) |
 
 ### timeout_ms
@@ -44,7 +44,7 @@ Detailed pages: [backup](backup.md), [plugin](plugin.md), [template](template.md
 | Handle   | Enforced | Accepted but not used | Notes |
 | -------- | -------- | --------------------- | ----- |
 | backup   | every verb, as a deadline for the whole verb (backend runs and in-process tar/rsync work; `schedule` passes it to the cron handle) | none | At the deadline the backend's whole process tree is stopped and the verb fails with `backup.timeout`, exit 124. Malformed values are refused (exit 2) |
-| plugin   | `install`, `update`, `remove`, `available.search`, `available.info` (a deadline for the whole verb; exit 124) | none: `enable`, `disable`, `available.list` and `installed.list` refuse it (exit 2) | 1 ms to 24 hours; any other value is an error (exit 2) |
+| plugin   | `install`, `update`, `rollback`, `remove`, `available.search`, `available.info` (a deadline for the whole verb; exit 124) | none: `enable`, `disable`, `available.list`, `installed.list` and `keys.*` refuse it (exit 2) | 1 ms to 24 hours; any other value is an error (exit 2) |
 | template | none | all verbs ignore it | |
 
 ---
@@ -100,7 +100,8 @@ resh template://newsletter.html.test
 ### 4.2 plugin://
 
 * Sources: a registry over HTTPS (default), a direct HTTPS URL, or a local file.
-* Registry installs require a well-formed SHA-256 from the registry, checked before extraction (`verify=sha256`, the default). The checksum comes from the same registry, so it proves integrity in transit, not who published the plugin.
+* Registry installs require a well-formed SHA-256 from the registry, checked before extraction (`verify=sha256`, the default), and an Ed25519 publisher signature over it by a trusted key (`keys.add`, `trust_key=`; no official key is built in yet). Unsigned or untrusted artifacts are refused unless `allow_unsigned=true`.
+* install and update keep one previous version; `rollback` switches back to it. `progress=true` streams JSON progress lines.
 * `source=url` cannot be verified and needs an explicit `verify=none`, which installs the artifact **unverified** (only HTTPS protects it).
 * Plain `http://` registries and artifact URLs are refused, as are HTTPS-to-HTTP redirects.
 * Artifacts may contain only regular files and directories; links, devices, FIFOs, absolute and `..` paths fail the install with nothing installed.

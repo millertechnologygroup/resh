@@ -68,6 +68,18 @@ impl Fetcher {
     /// `plugin.not_found`; other failures are `plugin.download_failed`, and
     /// reaching the deadline is `plugin.timeout` (exit 124).
     pub fn get(&self, url: &Url, max_bytes: u64, what: &str) -> PResult<Vec<u8>> {
+        self.get_with_progress(url, max_bytes, what, &mut |_, _| {})
+    }
+
+    /// [`Fetcher::get`], calling `progress(bytes_so_far, total)` after each
+    /// chunk of the body (`total` from Content-Length when sent).
+    pub fn get_with_progress(
+        &self,
+        url: &Url,
+        max_bytes: u64,
+        what: &str,
+        progress: &mut dyn FnMut(u64, Option<u64>),
+    ) -> PResult<Vec<u8>> {
         if url.scheme() != "https" {
             return Err(PluginError::failed(
                 DOWNLOAD_FAILED,
@@ -110,6 +122,7 @@ impl Fetcher {
         {
             return Err(too_large(what, url, max_bytes));
         }
+        let total = resp.content_length();
         let mut body = Vec::new();
         let mut buf = [0u8; 64 * 1024];
         loop {
@@ -123,6 +136,7 @@ impl Fetcher {
                         return Err(too_large(what, url, max_bytes));
                     }
                     body.extend_from_slice(&buf[..n]);
+                    progress(body.len() as u64, total);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(_) if self.deadline.expired() => return Err(timed_out()),

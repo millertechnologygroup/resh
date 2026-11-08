@@ -65,6 +65,8 @@ pub fn resolve(
             path: None,
             sha256: None,
             version: "unknown".to_string(),
+            signature: None,
+            key_id: None,
         }),
         SourceSpec::File { path } => {
             match fs::metadata(path) {
@@ -89,6 +91,8 @@ pub fn resolve(
                 path: Some(path.clone()),
                 sha256: None,
                 version: "local".to_string(),
+                signature: None,
+                key_id: None,
             })
         }
     }
@@ -193,6 +197,8 @@ fn resolve_registry(
         path: None,
         sha256,
         version,
+        signature: spec.signature.clone(),
+        key_id: spec.key_id.clone(),
     })
 }
 

@@ -64,6 +64,9 @@ pub const PLATFORM_UNSUPPORTED: &str = "plugin.platform_unsupported";
 pub const DOWNLOAD_FAILED: &str = "plugin.download_failed";
 pub const CATALOG_INVALID: &str = "plugin.catalog_invalid";
 pub const VERIFY_FAILED: &str = "plugin.verify_failed";
+pub const SIGNATURE_REQUIRED: &str = "plugin.signature_required";
+pub const SIGNATURE_INVALID: &str = "plugin.signature_invalid";
+pub const NO_PREVIOUS_VERSION: &str = "plugin.no_previous_version";
 pub const EXTRACT_FAILED: &str = "plugin.extract_failed";
 pub const INSTALL_FAILED: &str = "plugin.install_failed";
 pub const DOWNGRADE_REFUSED: &str = "plugin.downgrade_refused";
@@ -88,6 +91,9 @@ pub const CODES: &[&str] = &[
     DOWNLOAD_FAILED,
     CATALOG_INVALID,
     VERIFY_FAILED,
+    SIGNATURE_REQUIRED,
+    SIGNATURE_INVALID,
+    NO_PREVIOUS_VERSION,
     EXTRACT_FAILED,
     INSTALL_FAILED,
     DOWNGRADE_REFUSED,
@@ -122,9 +128,13 @@ pub const VERBS: &[&str] = &[
     "installed.list",
     "install",
     "update",
+    "rollback",
     "remove",
     "enable",
     "disable",
+    "keys.add",
+    "keys.list",
+    "keys.delete",
 ];
 
 /// The arguments each verb accepts; the help usage lists exactly these.
@@ -179,6 +189,9 @@ pub fn verb_args(verb: &str) -> &'static [&'static str] {
             "verify",
             "force",
             "allow_downgrade",
+            "allow_unsigned",
+            "trust_key",
+            "progress",
             "dry_run",
             "timeout_ms",
             "ca_file",
@@ -187,12 +200,19 @@ pub fn verb_args(verb: &str) -> &'static [&'static str] {
             "registry",
             "url",
             "verify",
+            "allow_unsigned",
+            "trust_key",
             "strict",
+            "progress",
             "dry_run",
             "timeout_ms",
             "ca_file",
         ],
+        "rollback" => &["dry_run", "timeout_ms"],
         "remove" => &["force", "purge", "dry_run", "timeout_ms"],
+        "keys.add" => &["key", "name"],
+        "keys.list" => &[],
+        "keys.delete" => &["key_id"],
         "enable" | "disable" => &["scope", "force", "reason", "dry_run"],
         _ => &[],
     }

@@ -683,6 +683,87 @@ fn score(p: &SearchEntry, q: Option<&str>) -> (f64, Vec<String>) {
 }
 
 // ---------------------------------------------------------------------------
+// keys.add, keys.list, keys.delete
+// ---------------------------------------------------------------------------
+
+/// The trusted publisher keys (`sign.rs`).
+pub fn keys(verb: &str, target: &str, args: &Args) -> Outcome {
+    use super::sign;
+    let op = format!("plugin.{verb}");
+    let r = ArgReader::new(args);
+    let path = sign::store_path()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let res = (|| -> PResult<(Value, Value)> {
+        match verb {
+            "keys.add" => {
+                let key = r.string("key")?.ok_or_else(|| {
+                    PluginError::usage("keys.add needs key=<base64>; nothing was done")
+                })?;
+                let name = r.string("name")?;
+                if name
+                    .as_ref()
+                    .is_some_and(|n| n.chars().count() > 200 || n.chars().any(char::is_control))
+                {
+                    return Err(PluginError::usage(
+                        "name must be at most 200 characters without control characters; nothing was done",
+                    ));
+                }
+                let (entry, changed) = sign::add_key(&key, name.as_deref())?;
+                Ok((
+                    json!({"name": name}),
+                    json!({"changed": changed, "key": entry, "path": path}),
+                ))
+            }
+            "keys.delete" => {
+                let id = r.string("key_id")?.ok_or_else(|| {
+                    PluginError::usage("keys.delete needs key_id=<id>; nothing was done")
+                })?;
+                match sign::remove_key(&id)? {
+                    Some(k) => Ok((
+                        json!({"key_id": id}),
+                        json!({"changed": true, "key": k, "path": path}),
+                    )),
+                    None => Err(PluginError::failed(
+                        NOT_FOUND,
+                        format!("no trusted key with id {id} in {path}"),
+                    )),
+                }
+            }
+            _ => {
+                let mut items: Vec<Value> = Vec::new();
+                if !sign::OFFICIAL_KEY.is_empty()
+                    && let Ok(k) = sign::parse_public_key(sign::OFFICIAL_KEY)
+                {
+                    items.push(json!({"key_id": sign::key_id(&k), "public_key": sign::OFFICIAL_KEY, "name": "official", "origin": "builtin"}));
+                }
+                for k in sign::load_store()?.keys {
+                    let mut v = serde_json::to_value(&k).unwrap_or(Value::Null);
+                    v["origin"] = json!("trust_store");
+                    items.push(v);
+                }
+                Ok((
+                    json!({}),
+                    json!({"count": items.len(), "items": items, "official_key_set": !sign::OFFICIAL_KEY.is_empty(), "path": path}),
+                ))
+            }
+        }
+    })();
+    match res {
+        Ok((a, result)) => finish(&op, target, a, vec![], result, vec![], None),
+        Err(e) => finish(
+            &op,
+            target,
+            raw_args(args),
+            vec![],
+            Value::Null,
+            vec![],
+            Some(e),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // installed.list
 // ---------------------------------------------------------------------------
 
@@ -839,7 +920,8 @@ pub fn installed_list(target: &str, args: &Args) -> Outcome {
         .map(|it| match o.format {
             "names" => it["name"].clone(),
             "summary" => json!({
-                "name": it["name"], "version": it["version"], "enabled": it["enabled"],
+                "name": it["name"], "version": it["version"],
+                "previous_version": it["previous_version"], "enabled": it["enabled"],
                 "source": it["source"], "health": it["health"],
             }),
             _ => it,
@@ -872,6 +954,7 @@ fn installed_item(store: &PluginStore, id: &str) -> Value {
                 "source": {"type": m.source},
                 "paths": {"install_dir": m.install_path, "binary": m.bin_path},
                 "health": "ok",
+                "previous_version": store.previous_version(id),
                 "installed_at": m.installed_at,
                 "updated_at": m.updated_at.clone().unwrap_or(m.installed_at.clone()),
             });

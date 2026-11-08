@@ -1,0 +1,11 @@
+Handle: plugin
+Verb: rollback
+Definition: Switches an installed plugin back to the previous version that
+  install and update keep, which then becomes the previous version.
+
+Usage:
+  resh plugin://<plugin-id>.rollback [dry_run=true|false]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty plugin://aws.rollback dry_run=true

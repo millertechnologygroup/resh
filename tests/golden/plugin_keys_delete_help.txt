@@ -1,0 +1,9 @@
+Handle: plugin
+Verb: keys.delete
+Definition: Removes a publisher key from the user's trusted keys by its key id.
+
+Usage:
+  resh plugin://keys.delete key_id=<id>
+
+Example:
+  resh plugin://keys.delete key_id=21fe31dfa154a261

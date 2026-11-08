@@ -74,6 +74,7 @@ pub enum Mode {
     Install,
     Update,
     Remove,
+    Rollback,
 }
 
 /// Where an artifact comes from.
@@ -130,6 +131,12 @@ pub struct PluginOpArgs {
     pub purge: bool,
     pub timeout_ms: u64,
     pub ca_file: Option<CaFile>,
+    /// Install a registry artifact without a trusted signature.
+    pub allow_unsigned: bool,
+    /// An extra trusted publisher key for this call.
+    pub trust_key: Option<ed25519_dalek::VerifyingKey>,
+    /// Stream progress events.
+    pub progress: bool,
 }
 
 /// One version of a registry entry.
@@ -155,6 +162,12 @@ pub struct PlatformSpec {
     pub bin: String,
     #[serde(default)]
     pub sha256: Option<String>,
+    /// Base64 Ed25519 signature (see `sign.rs` for the signed bytes).
+    #[serde(default)]
+    pub signature: Option<String>,
+    /// Id of the signing key.
+    #[serde(default)]
+    pub key_id: Option<String>,
 }
 
 /// `GET <registry>/v1/plugins/<id>`.
@@ -191,6 +204,8 @@ pub struct ArtifactCandidate {
     /// The trusted SHA-256 (lower-case hex) when one is known.
     pub sha256: Option<String>,
     pub version: String,
+    pub signature: Option<String>,
+    pub key_id: Option<String>,
 }
 
 /// What install or update will do.
