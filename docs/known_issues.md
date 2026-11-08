@@ -310,7 +310,20 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   out of /tmp. `rules.save` writes 0600 (never through a symlink) and saves
   both iptables families.
 - `rules.add` on nftables uses the live chain hooked on the direction (inet
-  first); `log_prefix` works with `action=log`; `dnat`/`snat` are refused.
+  first); `log_prefix` works with `action=log`.
+- `rules.add` supports NAT: `action=dnat|snat` with `to=<addr>[:port]` (one
+  address, optional plain-decimal port or range; anything else exit 2).
+  iptables writes DNAT/SNAT in the nat table; nftables uses the NAT chain
+  hooked on the direction and otherwise creates `inet resh` with one;
+  firewalld writes dnat as a forward-port rich rule and masquerade as a rich
+  rule and refuses snat; ufw refuses NAT. Listed rules have a `to` field;
+  `rules.list` and `rules.delete` filter on `to=`, and idempotence compares
+  it.
+- `timeout_ms` is one deadline for the whole verb (was per command);
+  defaults are 30000 ms (`status`, `rules.*`) and 60000 ms (`rules.reload`,
+  `enable`, `disable`). A change that fails or times out part-way reports
+  `error.details.applied`, `stopped_at`, `not_applied` and, for
+  enable/disable/rules.reload, `backup_taken` and `backup_path`.
 - `backend=auto` prefers a running firewalld and an active ufw over
   nftables; failed listings are errors, not empty lists.
 - Not tested: iptables-legacy (the test host kernel has no legacy tables).
