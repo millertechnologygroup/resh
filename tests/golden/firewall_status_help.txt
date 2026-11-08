@@ -1,0 +1,50 @@
+Handle: firewall
+Verb: status
+Definition: Reports whether firewall backends are available, active, and
+  enabled, with their default policy and rule counts, as a JSON object.
+
+Usage:
+  resh firewall://.status
+    [backend=auto|all|iptables|nftables|ufw|firewalld]
+    [family=any|ipv4|ipv6] [include_metrics=true|false]
+    [include_rules_summary=true|false] [timeout_ms=<ms>]
+    [format_output=json|text]
+
+Example:
+  resh --json-pretty firewall://.status backend=nftables include_metrics=false
+
+Example Output:
+  {
+    "backends": [
+      {
+        "active": true,
+        "available": true,
+        "backend": "nftables",
+        "default_policy": "DROP",
+        "details": null,
+        "enabled": true,
+        "rule_count_ipv4": 4,
+        "rule_count_ipv6": 2,
+        "warnings": []
+      }
+    ],
+    "error": null,
+    "ok": true,
+    "query": {
+      "backend": "nftables",
+      "family": "any",
+      "format_output": "json",
+      "include_metrics": false,
+      "include_rules_summary": false,
+      "timeout_ms": 5000
+    },
+    "timestamp_unix_ms": 1792166145850,
+    "warnings": []
+  }
+
+  Shown for an nftables host with --json-pretty. With include_metrics=true,
+  details holds a one-line summary; include_rules_summary=true adds
+  rules_summary (counts by action and direction). family=ipv4 or ipv6 counts
+  that family only. An inet (nft) or ufw/firewalld rule counts for both
+  families. backend=auto picks a running firewalld, an active ufw, nftables,
+  then iptables.

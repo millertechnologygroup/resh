@@ -1,0 +1,65 @@
+Handle: firewall
+Verb: enable
+Definition: Enables the firewall backend, starting ufw or firewalld or loading
+  the rules file given by path for iptables or nftables.
+
+Usage:
+  resh firewall://.enable [path=<file>]
+    [backend=auto|iptables|nftables|ufw|firewalld]
+    [family=any|ipv4|ipv6]
+    [source_format=auto|backend_native|normalized_json]
+    [dry_run=true|false] [validate_only=true|false]
+    [backup_before_apply=true|false]
+    [fail_if_already_enabled=true|false] [timeout_ms=<ms>]
+    [format_output=json|text]
+
+Example:
+  resh --json-pretty firewall://.enable backend=ufw dry_run=true
+
+Example Output:
+  {
+    "actions": [
+      "ufw --force enable"
+    ],
+    "backend": "ufw",
+    "current_state": {
+      "active": false,
+      "available": true,
+      "enabled": false
+    },
+    "error": null,
+    "ok": true,
+    "previous_state": {
+      "active": false,
+      "available": true,
+      "enabled": false
+    },
+    "query": {
+      "backend": "ufw",
+      "backup_before_apply": true,
+      "dry_run": true,
+      "fail_if_already_enabled": false,
+      "family": "any",
+      "format_output": "json",
+      "path": null,
+      "source_format": "auto",
+      "timeout_ms": 10000,
+      "validate_only": false
+    },
+    "result": {
+      "already_enabled": false,
+      "backup_path": null,
+      "changed": false
+    },
+    "timestamp_unix_ms": 1792166145850,
+    "warnings": [
+      "backup_before_apply is not supported for ufw; no backup was taken",
+      "Dry run: no firewall changes applied."
+    ]
+  }
+
+  Shown for a host with ufw inactive, with --json-pretty. The states are read
+  also in a dry run. firewalld runs systemctl enable and start. iptables and
+  nftables load path (backed up first); with no rules active they need it
+  (firewall.path_required). A backend already enabled is left alone unless
+  path is given; fail_if_already_enabled=true makes that an error.

@@ -86,7 +86,7 @@ resh firewall://.rules.add proto=tcp dport=443 dry_run=true
 
 | Handle     | `timeout_ms`                                                                   |
 | ---------- | ------------------------------------------------------------------------------ |
-| `firewall` | Enforced on every backend command (child killed at the deadline), except the `iptables-restore` step of file-based `rules.reload` |
+| `firewall` | Enforced on every backend command (the command and its children are stopped at the deadline; exit 124) |
 | `user`     | Ignored; system commands run with no deadline                                  |
 | `secret`   | Enforced on `local` and `vault` (keystore lock, keyring calls, Vault requests, RSA generation; exit 124); refused on `env` |
 | `cert`     | Ignored (local work only)                                                      |
@@ -96,8 +96,8 @@ resh firewall://.rules.add proto=tcp dport=443 dry_run=true
 ## 5. Output and Exit Codes
 
 * Output is a single JSON object per invocation (or text where a handle offers `format=text` / `format_output=text`). Field names are handle-specific; there is no shared envelope. See each handle's document and `--help` for real output.
-* Exit status is 0 on success. On failure it is the handle's code: always 1 for `user` and `firewall`; 1, 2 or 124 for `secret` (1 failed, 2 invalid usage, 124 timeout; see [secret.md](secret.md)); 1-7 for `cert`, depending on the verb (see [cert.md](cert.md)).
-* Where errors go: `user` writes error JSON to stderr; `cert` and `firewall` write it to stdout, and resh also prints `Error: <reason>` on stderr. `secret` prints `Error: [secret.<code>] <message>` on stderr and a JSON object with `"error": {"code", "message"}` on stdout.
+* Exit status is 0 on success. On failure it is the handle's code: always 1 for `user`; 1, 2 or 124 for `firewall` (1 failed, 2 invalid usage, 124 timeout; see [firewall.md](firewall.md)) and `secret` (1 failed, 2 invalid usage, 124 timeout; see [secret.md](secret.md)); 1-7 for `cert`, depending on the verb (see [cert.md](cert.md)).
+* Where errors go: `user` writes error JSON to stderr; `cert` writes it to stdout, and resh also prints `Error: <reason>` on stderr. `firewall` and `secret` print `Error: [<handle>.<code>] <message>` on stderr and a JSON object with `"error": {"code", "message"}` on stdout.
 * Query verbs report absence as data, not failure: `user exists` and `secret get` for a missing name exit 0 with `exists: false`.
 
 ---
@@ -109,7 +109,7 @@ resh firewall://.rules.add proto=tcp dport=443 dry_run=true
 * **`secret get` prints the value** unless `redact=true`; `secret rotate` prints it only with `expose_value=true`.
 * **No encrypted private keys** in `cert`; `key_passphrase` is rejected. CMS signatures are not implemented. `chain.info` does not build chains; use `verify`.
 * **`user add`:** `create_home` and `password_hash` are ignored; `primary_group` is not validated.
-* **firewall:** nftables `status` ignores `table inet`; no backups for ufw/firewalld.
+* **firewall:** no backups for ufw/firewalld; firewalld rules are added to the runtime configuration only.
 
 ---
 

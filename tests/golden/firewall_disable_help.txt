@@ -1,0 +1,64 @@
+Handle: firewall
+Verb: disable
+Definition: Disables the firewall backend, stopping ufw or firewalld or flushing
+  iptables or nftables rules unless a rules file is given by path.
+
+Usage:
+  resh firewall://.disable [path=<file>]
+    [backend=auto|iptables|nftables|ufw|firewalld]
+    [family=any|ipv4|ipv6]
+    [source_format=auto|backend_native|normalized_json]
+    [dry_run=true|false] [validate_only=true|false]
+    [backup_before_apply=true|false]
+    [fail_if_already_disabled=true|false] [timeout_ms=<ms>]
+    [format_output=json|text]
+
+Example:
+  resh --json-pretty firewall://.disable backend=ufw dry_run=true
+
+Example Output:
+  {
+    "actions": [
+      "ufw --force disable"
+    ],
+    "backend": "ufw",
+    "current_state": {
+      "active": true,
+      "available": true,
+      "enabled": true
+    },
+    "error": null,
+    "ok": true,
+    "previous_state": {
+      "active": true,
+      "available": true,
+      "enabled": true
+    },
+    "query": {
+      "backend": "ufw",
+      "backup_before_apply": true,
+      "dry_run": true,
+      "fail_if_already_disabled": false,
+      "family": "any",
+      "format_output": "json",
+      "path": null,
+      "source_format": "auto",
+      "timeout_ms": 10000,
+      "validate_only": false
+    },
+    "result": {
+      "already_disabled": false,
+      "backup_path": null,
+      "changed": false
+    },
+    "timestamp_unix_ms": 1792166145850,
+    "warnings": [
+      "backup_before_apply is not supported for ufw; no backup was taken",
+      "Dry run: no firewall changes applied."
+    ]
+  }
+
+  Shown for a host with ufw active, with --json-pretty. firewalld runs
+  systemctl stop. Without path, iptables (both families for family=any) is
+  opened and flushed and nftables is flushed, after a backup; with path that
+  file is loaded instead.

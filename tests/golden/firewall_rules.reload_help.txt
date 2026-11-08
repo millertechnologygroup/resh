@@ -1,0 +1,57 @@
+Handle: firewall
+Verb: rules.reload
+Definition: Reloads rules through the backend's own reload command for ufw or
+  firewalld, or applies the saved rules file given by path.
+
+Usage:
+  resh firewall://.rules.reload [path=<file>]
+    [backend=auto|iptables|nftables|ufw|firewalld]
+    [family=any|ipv4|ipv6]
+    [source_format=auto|backend_native|normalized_json]
+    [dry_run=true|false] [validate_only=true|false]
+    [backup_before_apply=true|false] [timeout_ms=<ms>]
+    [format_output=json|text]
+
+Example:
+  resh --json-pretty firewall://.rules.reload backend=ufw dry_run=true
+
+Example Output:
+  {
+    "actions": [
+      "ufw reload"
+    ],
+    "backend": "ufw",
+    "error": null,
+    "family": "any",
+    "mode": "backend_reload",
+    "ok": true,
+    "query": {
+      "backend": "ufw",
+      "backup_before_apply": true,
+      "dry_run": true,
+      "family": "any",
+      "format_output": "json",
+      "path": null,
+      "source_format": "auto",
+      "timeout_ms": 10000,
+      "validate_only": false
+    },
+    "result": {
+      "backup_path": null,
+      "changed": false
+    },
+    "source": {
+      "path": null,
+      "source_format": null
+    },
+    "timestamp_unix_ms": 1792166145850,
+    "warnings": [
+      "backup_before_apply is not supported for ufw; no backup was taken",
+      "Dry run: ufw reload not executed."
+    ]
+  }
+
+  Shown for a ufw host with --json-pretty. iptables and nftables need path
+  (firewall.path_required); a native iptables file needs family=ipv4 or ipv6.
+  validate_only runs iptables-restore --test, nft -c -f, or firewall-cmd
+  --check-config.

@@ -1,0 +1,38 @@
+Handle: firewall
+
+Description:
+  The firewall handle lists, adds, and deletes firewall rules, saves and reloads
+  rule sets, and reports, enables, or disables the host firewall. It drives the
+  iptables, nftables, ufw, and firewalld command-line tools, detecting an
+  available backend automatically unless backend is given. The URL has no
+  target, so every stage takes the form firewall://.<verb> followed by key=value
+  arguments.
+
+Available Verbs:
+  status         Reports whether firewall backends are available, active, and
+                 enabled, with their default policy and rule counts, as a JSON
+                 object.
+  rules.list     Lists the rules of one backend as JSON, optionally filtered by
+                 table, chain, direction, action, protocol, port, address,
+                 interface, or comment text.
+  rules.add      Adds a rule to the selected backend, for IPv4 and IPv6 alike
+                 when family=any is given without an address, skipping any rule
+                 that already exists unless idempotent=false is given.
+  rules.delete   Deletes the rule given by rule_id or every rule that matches
+                 the given filters, or only reports them and the backend
+                 commands when dry_run=true is given.
+  rules.save     Saves a snapshot of the current rules to the file given by
+                 path, as normalized JSON, backend-native data, or both.
+  rules.reload   Reloads rules through the backend's own reload command for ufw
+                 or firewalld, or applies the saved rules file given by path.
+  enable         Enables the firewall backend, starting ufw or firewalld or
+                 loading the rules file given by path for iptables or nftables.
+  disable        Disables the firewall backend, stopping ufw or firewalld or
+                 flushing iptables or nftables rules unless a rules file is
+                 given by path.
+
+Usage:
+  resh firewall://.<verb>[(key=value)]
+
+For help with a specific verb:
+  resh firewall <verb> --help
