@@ -13,8 +13,13 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   `"error": {"code", "message"}` in JSON results. Exit codes are 0 success,
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
-  `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Every handle now uses this format.
+  `resh.unknown_handle` and `<handle>.invalid_target`. A word that is not
+  `key=value`, a misspelled or malformed `dry_run`, or `dry_run=true` on a
+  verb without a dry-run mode is refused with the code the handle uses for
+  an argument the verb does not take. `https://` stages use the `http.`
+  codes everywhere. An unknown verb is exit 2 `<handle>.unknown_verb` on
+  every handle. `tests/conventions.rs` checks these rules for every handle
+  and verb. Every handle now uses this format.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
 - Stage output is streamed as it is written (`--json-pretty` still buffers).
@@ -51,7 +56,8 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1.9.7: RSA-only known_hosts files work (rsa-sha2-256/512). `commit amend` works, `push`
   reports server rejections, a fast-forward `merge` updates the working
   tree, `pull` no longer overwrites local changes, `sync` handles a detached
-  HEAD and bare repositories.
+  HEAD and bare repositories. `merge` on a repository with no commits is an
+  error instead of a panic.
 
 ### secret
 
@@ -75,6 +81,8 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   (sensitive; off by default).
 - vault `rm` soft-deletes the latest version (recoverable with Vault's
   undelete); `destroy=true` deletes every version and the metadata.
+- A vault-only option (`mount`, `field`, `ca_file`, `destroy`) on a local or
+  env target is refused with a message naming the scope it applies to.
 - `?help` and `?help=<verb>` in a stage URL show help (all handles).
 
 ### cache
@@ -159,7 +167,9 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   `mq.timeout`). Without `wait`, an empty queue is exit 1 `mq.empty`.
 - Delivery is at-least-once: a message claimed by a `get` whose process has
   since exited (checked by PID and start time) is moved back to the head of
-  the queue by the next `get` (and by `len`/`peek` when the lock is free). A
+  the queue by the next `get` (and by `len`/`peek` when the lock is free).
+  While another process holds the lock, `len` counts such a message and
+  `peek` shows it (`peek` used to report an empty queue). A
   consumer killed after printing a message but before deleting its in-flight
   copy gets that message delivered again.
 
@@ -554,6 +564,13 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   timeouts, copy preserve_times and rename atomic implemented, renames that
   never lose an existing destination, recursive chown that never follows
   links, find skips hidden directories and uses shell-style globs.
+
+### snapshot
+
+- No `/tmp` fallback: without a state directory every verb fails
+  (`snapshot.write_failed` for create, `snapshot.read_failed` otherwise,
+  exit 1). config likewise no longer falls back to `./.config` in the
+  working directory.
 
 ### fs
 
