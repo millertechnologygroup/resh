@@ -69,7 +69,6 @@ dashmap = "6"
 log = "0.4"
 git2 = { version = "0.21", features = ["ssh", "https"] }
 x509-parser = "0.16"
-cron = "0.12"
 bcrypt = "0.15"
 der = "0.7"
 pem = "3.0"

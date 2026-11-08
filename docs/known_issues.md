@@ -14,9 +14,8 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (cron,
-  firewall, user, pkg, system, cert, backup, plugin) still print their own
-  formats until they are.
+  `<handle>.invalid_argument`. Handles not yet aligned (firewall, user, pkg, system, cert, backup,
+  plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
 - Stage output is streamed as it is written (`--json-pretty` still buffers).
@@ -251,6 +250,28 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   D-Bus) cannot be cancelled at the deadline (exit 124, outcome unknown);
   OpenRC is tested only with fake tools.
 
+### cron
+
+- Every verb refuses unknown arguments, empty values, control characters and
+  invalid values with exit 2 (`cron.<verb>_invalid_argument`) before reading
+  anything; `disable` checks `scope`, `users` and `unit_scope` like `rm` and
+  `enable`; options of the backend that does not run are refused.
+- Errors are `[cron.<code>]` with exits 0/1/2/124 (usage errors were 1).
+  Booleans take the shared spellings. Every verb takes `timeout_ms`
+  (default 60000); a hung `crontab` or `systemctl` is stopped (exit 124).
+- Schedules follow cron's rules (weekdays 0-7, the day-of-month/weekday OR
+  rule, `@midnight`); next runs for numeric weekdays were a day early. The
+  systemd translation keeps each schedule's meaning (`* * * * *` ran every
+  second, `@weekly` on Monday, hour ranges gave invalid expressions).
+- `list` no longer shows commented sentences as disabled jobs;
+  `match_comment` matches the comment line above a job; `include_raw`
+  returns each source's text.
+- `rm`, `enable` and `disable`: every selector given must match (AND);
+  disabled timers no longer loaded by systemd are found; failed writes and
+  systemctl calls are errors, not warnings. `add` never replaces a crontab
+  it could not read, and non-root `add` works on cronie. The `cron` crate is
+  no longer used.
+
 ### http and https
 
 - 4xx/5xx statuses exit 1 (`http.status_error`) on every verb; `timeout_ms`
@@ -363,8 +384,8 @@ tests drive each verb through the handle (`option_tests` in `cronh.rs` and
   for a package known only from `/var/lib/dpkg/status`. apt lockfiles from
   earlier releases report every package as a repository mismatch; take a new
   snapshot.
-- **Exit codes:** cron time-zone usage errors and pkg `snapshot inline` exit
-  2; other cron/pkg errors exit 1 until aligned with 0/1/2/124 (batch 4).
+- **Exit codes:** pkg `snapshot inline` exits 2; other pkg errors exit 1
+  until aligned with 0/1/2/124 (batch 4). cron is aligned (below).
 
 ## v1.0.6-beta security release (2026-11-03)
 
@@ -980,13 +1001,6 @@ typed structs:
 
 ### Processes
 
-- **cron.**
-  - `match_comment` counts as a selector but is never used for crontab
-    matching (`cronh.rs:4939-4962, 5396-5419`).
-  - `rm` and `enable` pass bare `/etc/cron.d` filenames (`:4359, 4536`).
-  - `add` reports `/var/spool/cron/crontabs/<user>` while the other verbs
-    report `/var/spool/cron/<user>` (`:3991, 5483`).
-  - `list` ignores all arguments (`:1280-1300`).
 
 ### Automation
 
@@ -1046,7 +1060,6 @@ disagree with the code in many places, including wrong argument names,
 wrong defaults and non-working URL forms. Examples:
 
 - **user:** the examples use the `user://alice` host form.
-- **cron:** `rm` documents `user=`; the code reads `users=`.
 - **pkg:** the examples omit `manager`.
 - **plugin:** the examples use `plugin://aws.enable()`.
 
