@@ -280,6 +280,16 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   systemctl calls are errors, not warnings. `add` never replaces a crontab
   it could not read, and non-root `add` works on cronie. The `cron` crate is
   no longer used.
+- `add backend=auto` follows the options given: cron-only options (`scope`,
+  `user`, `cron_file`) select cron, systemd-only options (`unit_name`,
+  `unit_scope`, `persistent`, `accuracy_sec`, `random_delay_sec`,
+  `service_user`, `service_working_dir`, `env`, `env_<KEY>`) select
+  systemd, and both kinds together are refused (exit 2). With neither,
+  systemd is used when `systemctl` runs, as before.
+- The systemd backend supports `@reboot` (`OnBootSec=0`; the timer is
+  enabled but not started, so the job runs once at each boot) and schedules
+  restricting both the day of month and the weekday (two `OnCalendar=`
+  lines, which systemd ORs as cron does).
 
 ### http and https
 
