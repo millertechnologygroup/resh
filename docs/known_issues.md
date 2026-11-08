@@ -379,11 +379,17 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   enforced on generate, csr.create, sign and renew (default 300 s; at the
   deadline nothing is written) and refused elsewhere.
 - Encrypted private keys work: PKCS#8 `ENCRYPTED PRIVATE KEY` (PBES2 with
-  PBKDF2 and AES-CBC) is read and written. `key_kdf=argon2id` is refused.
-  Legacy `Proc-Type: 4,ENCRYPTED` keys are refused with a conversion hint.
+  PBKDF2 and AES-CBC) is read and written with `key_passphrase`,
+  `signer_key_passphrase`, `existing_key_passphrase` and
+  `new_key_passphrase`. Each passphrase can be given as `<name>_env=<VAR>` or
+  `<name>_stdin=true` (one stdin passphrase per call); the plain `<name>=`
+  form still works but warns on stderr every time. `key_kdf` accepts only
+  `pbkdf2`. Legacy `Proc-Type: 4,ENCRYPTED` keys are refused with a
+  conversion hint.
 - `verify` validates the chain with rustls-webpki and accepts `ca_file=`;
-  `chain.info` builds every path and reports `trusted` only when webpki
-  validates it.
+  `disallow_weak_signatures` was removed (SHA-1/MD5 are always rejected; the
+  option is refused). `chain.info` builds every path and reports `trusted`
+  only when webpki validates it.
 - `csr.create` writes key usage and extended key usage into the CSR and
   writes PKCS#1/SEC1 keys correctly (SEC1 with the named curve).
 - `info` fingerprints are now digests of the whole certificate (they were
