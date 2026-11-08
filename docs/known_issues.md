@@ -14,7 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (firewall, user, pkg, system, cert, backup,
+  `<handle>.invalid_argument`. Handles not yet aligned (user, pkg, system, cert, backup,
   plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
@@ -290,6 +290,30 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   enabled but not started, so the job runs once at each boot) and schedules
   restricting both the day of month and the weekday (two `OnCalendar=`
   lines, which systemd ORs as cron does).
+
+### firewall
+
+- Every verb refuses unknown arguments and invalid values (exit 2,
+  `firewall.invalid_argument`) and exits 0/1/2/124 with `firewall.*` codes.
+  Input-validation refusals (invalid port, protocol, CIDR, field,
+  unsupported option) now exit 2 instead of 1; the v1.0.6-beta refusals
+  themselves are unchanged. Several codes were renamed or merged (see
+  `firewall.md`); new: `permission_denied`, `tool_not_found`,
+  `chain_not_found`, `invalid_snapshot`, `already_enabled`,
+  `already_disabled`, `timeout`, `unknown_verb`.
+- `status` honors `family` and `include_rules_summary`, counts nftables
+  `inet` rules and reads policies correctly. `enable`/`disable` honor
+  `source_format` and really validate with `validate_only`; dry runs read
+  the real state; firewalld `enable` runs `systemctl enable` and `start`.
+- `rules.reload` runs iptables-restore under the deadline, applies snapshots
+  per family (gzip too), replaces the nft ruleset and keeps temporary files
+  out of /tmp. `rules.save` writes 0600 (never through a symlink) and saves
+  both iptables families.
+- `rules.add` on nftables uses the live chain hooked on the direction (inet
+  first); `log_prefix` works with `action=log`; `dnat`/`snat` are refused.
+- `backend=auto` prefers a running firewalld and an active ufw over
+  nftables; failed listings are errors, not empty lists.
+- Not tested: iptables-legacy (the test host kernel has no legacy tables).
 
 ### http and https
 
@@ -775,9 +799,8 @@ These were found during the fixes, or are Medium items that were not fixed:
   rule's line number within its chain, so a different rule, or no rule, is
   deleted. The fallback at `:7366` uses the index within the filtered list,
   which is also wrong.
-- **Also:** `rule_id` and `match_mode` are echoed back in `query` but never
-  used for matching (`find_matching_rules`, `:7294-7356`). `zone` is used only
-  by firewalld (`:7494`).
+- **Also:** `rule_id` and `match_mode` are used for matching (fixed;
+  `zone` applies to firewalld only).
 - **Exposure:** `rules.*` verbs were unreachable from the CLI until the
   scheme-aware dotted-verb fix in `src/core/parse.rs`. This bug is now live.
   Gate `rules.delete` behind `dry_run`, or fix it, before release.
@@ -1049,10 +1072,6 @@ typed structs:
   - P-521 and secp256k1 keys are accepted but fail to generate (`:2966`).
   - `mode=csr` writes the CSR only if `output` contains `"write_csr":true`.
   - `DEBUG` `eprintln!` lines are left in key generation (`:3150`).
-- **firewall.**
-  - The iptables status `details` text is inverted (`firewallh.rs:8312`).
-  - The old help shows `rules.list(backend=all)`, which `rules.list` rejects
-    (`:74, 2163`).
 - **git.**
   - `known_hosts_path` enforces strict SSH host-key checking on the URL
     libgit2 really connects to (after insteadOf/pushInsteadOf), steering the
