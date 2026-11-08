@@ -283,11 +283,18 @@ static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 
 impl ConfigHandle {
     pub fn from_url(u: &Url) -> Result<Self> {
-        // XDG_CONFIG_HOME, else ~/.config.
-        let config_dir = dirs::config_dir().unwrap_or_else(|| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config")
-        });
-        Ok(Self::with_config_dir(u, &config_dir))
+        // XDG_CONFIG_HOME, else ~/.config. Never a directory relative to
+        // the working directory: values may be secrets.
+        match dirs::config_dir() {
+            Some(config_dir) => Ok(Self::with_config_dir(u, &config_dir)),
+            // Help needs no store.
+            None if Self::should_show_help(u) => {
+                Ok(Self::with_config_dir(u, Path::new("/nonexistent")))
+            }
+            None => anyhow::bail!(
+                "no configuration directory: set XDG_CONFIG_HOME or HOME; nothing was done"
+            ),
+        }
     }
 
     /// Builds the handle for `u` with values stored under
