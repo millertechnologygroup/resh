@@ -487,6 +487,20 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   refuses while the plugin runs unless `force=true`. `available.list` uses a
   catalog built into resh; `available.search` filters by the query;
   `available.info` checks compatibility against the real resh version.
+- Registry artifacts must be signed (Ed25519 over
+  `resh-plugin-v1:<id>:<version>:<sha256>`) by a trusted publisher key: the
+  built-in official key (not set in this release), keys added with
+  `plugin://keys.add` (stored in `$XDG_CONFIG_HOME/resh/plugin-trusted-keys.json`),
+  or `trust_key=` for one call. Unsigned or untrusted artifacts are refused
+  before download (`plugin.signature_required` / `plugin.signature_invalid`,
+  exit 1) unless `allow_unsigned=true`, which warns. New verbs `keys.add`,
+  `keys.list`, `keys.delete`.
+- install and update keep one previous version; `plugin://<id>.rollback`
+  switches back to it; `installed.list` reports `previous_version`; `remove`
+  deletes both. `progress=true` on install and update streams JSON progress
+  lines before the result.
+- Open: no official publisher key is built in yet; until it is set, users
+  must trust registry keys with `plugin://keys.add` or `trust_key=`.
 
 ### http and https
 
