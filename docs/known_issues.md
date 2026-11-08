@@ -245,10 +245,19 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
 - Without a reachable system bus, every verb uses `systemctl
   --no-ask-password`. OpenRC refuses `mask`/`unmask`, `stop force=true` and
   `logs since/until/level` (exit 2, `svc.unsupported`).
-- Remaining limits: for `Type=simple` units systemd reports a start job done
-  as soon as the process is forked; a job queued through `systemctl` (no
-  D-Bus) cannot be cancelled at the deadline (exit 124, outcome unknown);
-  OpenRC is tested only with fake tools.
+- `start` and `restart` also check that the unit keeps running for
+  `settle_ms` (default 1000) after its job is done; a unit that died, waits
+  in `auto-restart` or did not start (failed condition) exits 1 with
+  `svc.not_active`.
+- `enable` and `mask` no longer replace conflicting links by default (as
+  `systemctl`); `force=true` does. A conflict exits 1 with
+  `svc.link_conflict`.
+- Names ending in a systemd unit type (`.socket`, `.timer`, `.path`,
+  `.target`, `.mount`, ...) are used as given; only bare names get
+  `.service`. Verbs that do not apply to a type are refused with exit 2.
+- Remaining limits: a job queued through `systemctl` (no D-Bus) cannot be
+  cancelled at the deadline (exit 124, outcome unknown); OpenRC is tested
+  only with fake tools.
 
 ### cron
 
