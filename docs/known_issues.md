@@ -14,8 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (plugin) still print their own formats until
-  they are.
+  `<handle>.invalid_argument`. Every handle now uses this format.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
 - Stage output is streamed as it is written (`--json-pretty` still buffers).
@@ -465,6 +464,30 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   their environment; `password=` warns on stderr; `keep_*` must be at least
   1.
 
+### plugin
+
+- Every verb refuses unknown arguments and invalid values (exit 2,
+  `plugin.invalid_argument`) and exits 0/1/2/124 with `[plugin.<code>]`
+  errors; JSON errors are `{"code", "message"}`.
+- `install` and `update`: `timeout_ms` is a deadline for the whole verb
+  (exit 124); a new version is staged and activated in one rename, so a
+  failure or timeout never leaves a half-installed plugin and keeps the old
+  version. The registry SHA-256 is required and checked before unpacking.
+  Registry, index and artifact URLs must be https:// (`ca_file=` adds a
+  private CA). Versions are ordered as semantic versions (1.10.0 is newer
+  than 1.9.0). Artifacts are limited to 512 MiB, 100,000 entries and 2 GiB
+  unpacked; archive entries with `..`, absolute paths or links are refused.
+- `remove` deletes only the plugin's store directory and its own data
+  directories; it no longer deletes the binary path recorded in
+  metadata.json.
+- Plugin verbs refuse directories that are symbolic links, belong to another
+  user or are writable by others (`plugin.unsafe_path`), so running them as
+  root with another user's HOME/XDG_* is refused.
+- `enable`/`disable` and `installed.list` use the same state file; `disable`
+  refuses while the plugin runs unless `force=true`. `available.list` uses a
+  catalog built into resh; `available.search` filters by the query;
+  `available.info` checks compatibility against the real resh version.
+
 ### http and https
 
 - 4xx/5xx statuses exit 1 (`http.status_error`) on every verb; `timeout_ms`
@@ -801,14 +824,9 @@ This section supersedes the test counts and "Still open" list in the
   - Archive extraction checks paths but not against a concurrent process
     changing the destination tree; never extract as root into a directory
     other users can write.
-  - Do not run plugin verbs as root with another user's `HOME`/`XDG_*`
-    (for example `sudo -E`): `remove` and `remove purge=true` then act on a
-    store that user controls and can be made to delete files outside it.
   - Existing tar or rsync repository directories are used as they are:
     resh does not check their owner or mode. Use a directory only you can
     write.
-  - Plugin enabled state is written and read from different files, so
-    `installed.list` reports enabled plugins as disabled.
 
 ## Status (2026-10-16, historical)
 
@@ -1009,6 +1027,9 @@ Unreleased `secret` section. The description below is kept for reference.
 ## High
 
 ### H1. `plugin install` and `plugin update` panic on `todo!()`
+
+**Status: fixed (Unreleased).** install and update are fully implemented; see
+the Unreleased `plugin` section.
 
 - **Where:** `src/handles/pluginh/plugin/engine.rs:121, 124`.
 - **When:** resolve and plan succeed with an Install or Update decision.
