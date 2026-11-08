@@ -14,7 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (proc, svc, cron,
+  `<handle>.invalid_argument`. Handles not yet aligned (svc, cron,
   firewall, user, pkg, system, cert, backup, plugin) still print their own
   formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
@@ -204,6 +204,22 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   cuts the first line, lines over 1 MiB are cut with a warning, paths are
   percent-decoded, a FIFO target is refused, `log://svc/<service>` works and
   service names are validated (no shell, no leading `-`).
+
+### proc
+
+- Every verb refuses unknown arguments, `timeout_ms` and (except
+  `limits.set`) `dry_run` (exit 2, `proc.invalid_argument`) and exits 0/1/2
+  with `[proc.<code>]` errors and a JSON `error` object. Breaking: "process
+  not found" and permission errors exit 1 (`proc.not_found`,
+  `proc.permission_denied`; were 3 and 4); an invalid PID exits 2
+  (`proc.invalid_target`); `setPriority nice=` outside -20..19 is refused
+  (was clamped); `nice.inc`/`nice.dec` take `delta=0..39`; signal numbers
+  must be 0..SIGRTMAX; USR1/USR2 are 10/12.
+- `limits.set` changes the target process with `prlimit` (the URL PID or
+  `pid=`), checks every value before changing anything, has a real dry run,
+  and reports `changed`, `error` or `skipped` per resource.
+- `io.peek` no longer falls back to /tmp, refuses FIFOs and directories
+  without blocking, and sets `truncated` correctly.
 
 ### http and https
 
@@ -523,7 +539,7 @@ This section supersedes the test counts and "Still open" list in the
   handle's page under `docs/`):
   - Unsupported by design in this release: encrypted ZIP creation, backup
     `schedule` installation, pkg restore version pinning/rollback, cert
-    encrypted keys, `proc limits.set` on other processes. (dns `zone.update`
+    encrypted keys. (dns `zone.update`
     and cert CMS signatures were added after v1.0.6-beta.)
   - SMTP profile passwords are kept in the OS keyring (Secret Service /
     Keychain); the profile file holds only a reference. Without a keyring,
@@ -537,7 +553,7 @@ This section supersedes the test counts and "Still open" list in the
     The plaintext store of earlier releases is still read, with a warning,
     and moved to the keyring on the next write. The macOS Keychain path is
     not tested.
-  - No dry-run mode for svc, proc, file writes (except `file replace`),
+  - No dry-run mode for svc, proc (except `limits.set`), file writes (except `file replace`),
     cache/db writes, mq, mail send and backup restore; for
     these `dry_run=true` is refused before anything runs; git enforces
     `timeout_ms` on every verb (exit 124; network verbs default to 600 s); `file` enforces `timeout_ms` on every verb whose work can be
@@ -954,12 +970,8 @@ typed structs:
     report `/var/spool/cron/<user>` (`:3991, 5483`).
   - `list` ignores all arguments (`:1280-1300`).
 - **proc.**
-  - `limits.set` changes the resh process's own limits; `pid` is only
-    echoed back (`proch.rs:2077-2085`).
-  - The signal-name labels are wrong: 17 and 19 both map to STOP, 30/31 to
-    USR1/USR2, and 10/12 map to UNKNOWN (`:2245-2259`). The signal number
-    actually sent is correct.
-  - `io.peek` reads log files that nothing writes (`:1783-1847`).
+  - `io.peek` reads log files in the resh state directory that nothing in
+    resh writes.
 
 ### Automation
 
@@ -1020,7 +1032,6 @@ wrong defaults and non-working URL forms. Examples:
 
 - **user:** the examples use the `user://alice` host form.
 - **cron:** `rm` documents `user=`; the code reads `users=`.
-- **proc:** USR1 and USR2 are documented as 30 and 31.
 - **pkg:** the examples omit `manager`.
 - **plugin:** the examples use `plugin://aws.enable()`.
 

@@ -176,7 +176,7 @@ Each handle's page under [docs/](docs/) lists its registered verbs, arguments, r
   (see [archive.md](docs/Filesystem_Storage/archive.md))
 
 ### Process & Service Management ✅
-- ✅ `proc://` - Signals and nice values for a process (signal, nice.get/set, setPriority; `limits.set` only affects the resh process itself)
+- ✅ `proc://` - Signals and nice values for a process and resource limits (signal, nice.get/set, setPriority, limits.set via prlimit)
 - ✅ `svc://` - Service management (systemd and OpenRC; systemd has not yet been verified on a live host)
 - ✅ `cron://` - Scheduled jobs as crontab entries or systemd timers (list, add, enable, disable, rm)
 
