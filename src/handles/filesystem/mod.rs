@@ -1,6 +1,5 @@
 pub mod archiveh;
 mod fileh;
-mod fs_atomic;
 pub mod fsh;
 pub mod snapshot;
 pub(crate) mod tar_limit;

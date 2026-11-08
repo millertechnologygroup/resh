@@ -319,7 +319,7 @@ fn setup_as(user: &str, version: Option<&str>) -> (CronHandle, MockHost) {
         ..State::default()
     })));
     let provider = SystemCronProvider::with_host(user.into(), Box::new(host.clone()));
-    (CronHandle::new("local".into(), Box::new(provider)), host)
+    (CronHandle::new(Box::new(provider)), host)
 }
 
 fn setup(version: Option<&str>) -> (CronHandle, MockHost) {
@@ -3731,7 +3731,7 @@ fn provider_errors_fail_through_call_and_dry_run_is_passed_on() {
                 continue;
             }
             let rec = Recording::default();
-            let h = CronHandle::new("t".into(), Box::new(rec.clone()));
+            let h = CronHandle::new(Box::new(rec.clone()));
             let mut args = minimal_args(verb);
             if let Some(v) = value {
                 args.push(("dry_run", v));

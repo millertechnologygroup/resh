@@ -42,7 +42,6 @@ fn preprocess_url_escapes(url: &str) -> String {
 pub type Args = HashMap<String, String>;
 
 pub struct IoStreams<'a> {
-    #[allow(dead_code)]
     pub stdin: &'a mut dyn Read,
     pub stdout: &'a mut dyn Write,
     pub stderr: &'a mut dyn Write,
@@ -63,7 +62,6 @@ impl<'a> IoStreams<'a> {
 }
 
 pub trait Handle: Send + Sync {
-    #[allow(dead_code)]
     fn verbs(&self) -> &'static [&'static str];
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status>;
 

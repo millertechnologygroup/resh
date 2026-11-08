@@ -1113,24 +1113,6 @@ pub struct MergeConfig {
     pub timeout_ms: Option<u64>,
 }
 
-/// Merge result structure
-#[derive(Debug, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct MergeResult {
-    pub backend: String,
-    pub alias: String,
-    pub path: String,
-    pub action: String,
-    pub source: String,
-    pub target: String,
-    pub mode: String,   // "fast_forward" | "normal" | "squash" | "up_to_date"
-    pub status: String, // "merged" | "fast_forward" | "squashed" | "up_to_date"
-    pub ff_only: bool,
-    pub no_ff: bool,
-    pub squash: bool,
-    pub commit: Option<CommitInfo>,
-}
-
 /// Rebase operation type
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]

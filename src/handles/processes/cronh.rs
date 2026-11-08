@@ -785,8 +785,6 @@ impl Drop for DeadlineGuard {
 
 #[derive(Debug)]
 pub struct CronHandle {
-    #[allow(dead_code)]
-    alias: String,
     provider: Box<dyn CronProvider + Send + Sync>,
 }
 
@@ -802,14 +800,14 @@ const SELECTORS: &[&str] = &[
 ];
 
 impl CronHandle {
-    pub fn new(alias: String, provider: Box<dyn CronProvider>) -> Self {
-        Self { alias, provider }
+    pub fn new(provider: Box<dyn CronProvider>) -> Self {
+        Self { provider }
     }
 
-    pub fn from_url(url: &Url) -> Result<Self> {
-        let alias = url.host_str().unwrap_or("default").to_string();
-        let provider = Box::new(SystemCronProvider::new());
-        Ok(Self::new(alias, provider))
+    /// The target's label is only a label (cron.md): every target acts on
+    /// the local host.
+    pub fn from_url(_url: &Url) -> Result<Self> {
+        Ok(Self::new(Box::new(SystemCronProvider::new())))
     }
 
     fn list_verb(&self, options: &CronListOptions) -> Result<String> {

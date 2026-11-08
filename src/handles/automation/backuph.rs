@@ -3849,10 +3849,7 @@ impl BackupHandle {
         use crate::handles::processes::cronh::CronHandle;
         #[cfg(test)]
         if let Some(p) = &self.cron_provider {
-            return Ok(CronHandle::new(
-                label.to_string(),
-                Box::new(SharedCronProvider(p.clone())),
-            ));
+            return Ok(CronHandle::new(Box::new(SharedCronProvider(p.clone()))));
         }
         let url = Url::parse(&format!("cron://{label}")).map_err(|e| {
             Fail::invalid("profile", format!("profile cannot name a cron job: {e}"))
