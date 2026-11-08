@@ -1,0 +1,51 @@
+Handle: system
+Verb: info
+Definition: Gathers host information for selected scopes, such as os, kernel,
+  cpu, memory, and load, into one report; a scope that cannot be read is marked
+  available false.
+
+Usage:
+  resh system://.info [scopes=<list>] [fields=<list>]
+    [sample_duration_ms=<n>] [sample_min_ms=<n>] [per_cpu=true|false]
+    [max_mounts=<n>] [max_process_classes=<n>] [include_raw=true|false]
+    [include_paths=true|false] [timeout_ms=<n>] [format=json|text]
+    [input=<json>]
+    scopes: os, kernel, cpu, memory, load, disk, process, pressure,
+      cgroup, virtualization (default os,kernel,cpu,memory,load)
+    fields: <scope> or <scope>.<key> entries; only these are reported
+    defaults: sample_duration_ms=0 (no CPU sampling; per_cpu needs it),
+      sample_min_ms=50, per_cpu=false, max_mounts=32,
+      max_process_classes=5, include_raw=false, include_paths=false,
+      timeout_ms=30000, format=json
+
+Example:
+  resh --json-pretty system://.info scopes=kernel,load
+
+Example Output:
+  {
+    "kernel": {
+      "available": true,
+      "boot_time_unix": 1782329358,
+      "machine": "x86_64",
+      "release": "6.8.0-45-generic",
+      "uptime_seconds": 9836564.18,
+      "version": "#45-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug 30 12:02:04 UTC 2024"
+    },
+    "load": {
+      "available": true,
+      "load_15m": 0.95,
+      "load_1m": 0.33,
+      "load_5m": 0.65,
+      "runnable_processes": 1,
+      "total_processes": 412
+    },
+    "ok": true,
+    "scopes": [
+      "kernel",
+      "load"
+    ],
+    "timestamp_unix_ms": 1792165922676,
+    "warnings": []
+  }
+
+  Shown with --json-pretty.

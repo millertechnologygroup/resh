@@ -1,0 +1,77 @@
+Handle: system
+Verb: disk
+Definition: Reports capacity, inode usage, and I/O counters for mounted
+  filesystems, skipping pseudo filesystems such as proc and tmpfs by default.
+
+Usage:
+  resh system://.disk [mount_points=<list>] [devices=<list>]
+    [fs_types=<list>] [include_virtual=true|false] [max_mounts=<n>]
+    [include_io=true|false] [include_fs_types=true|false]
+    [include_human=true|false] [include_raw=true|false]
+    [include_paths=true|false] [timeout_ms=<n>] [format=json|text]
+    [input=<json>]
+    mount_points, devices: each must be mounted (else exit 1)
+    defaults: include_virtual=false, max_mounts=64, include_io,
+      include_fs_types and include_human true; include_raw and
+      include_paths false; timeout_ms=30000; format=json
+
+Example:
+  resh --json-pretty system://.disk mount_points=/
+
+Example Output:
+  {
+    "human": {
+      "summaries": [
+        "/: 468.3 GiB total, 143.3 GiB used (30.6%)"
+      ]
+    },
+    "io": {
+      "available": true,
+      "devices": [
+        {
+          "ios_in_progress": 0,
+          "maj_min": "259:0",
+          "name": "nvme0n1",
+          "read_bytes": 281699979264,
+          "reads_completed": 5053657,
+          "sectors_read": 550195272,
+          "sectors_written": 2991165130,
+          "time_in_io_ms": 38465574,
+          "time_reading_ms": 1850688,
+          "time_writing_ms": 143221834,
+          "weighted_time_in_io_ms": 150129491,
+          "write_bytes": 1531476546560,
+          "writes_completed": 38571125
+        }
+      ]
+    },
+    "mounts": [
+      {
+        "avail_bytes": 323418742784,
+        "device": "/dev/nvme0n1p2",
+        "free_bytes": 348985356288,
+        "free_pct": 69.41,
+        "fs_type": "ext4",
+        "human_summary": "/: 468.3 GiB total, 143.3 GiB used (30.6%)",
+        "inodes_free": 30212143,
+        "inodes_total": 31227904,
+        "inodes_used": 1015761,
+        "inodes_used_pct": 3.25,
+        "io_device": "nvme0n1",
+        "mount_point": "/",
+        "tags": [
+          "rootfs"
+        ],
+        "total_bytes": 502819409920,
+        "used_bytes": 153834053632,
+        "used_pct": 30.59,
+        "virtual_fs": false
+      }
+    ],
+    "mounts_truncated": false,
+    "ok": true,
+    "timestamp_unix_ms": 1792165919116,
+    "warnings": []
+  }
+
+  Shown with --json-pretty.

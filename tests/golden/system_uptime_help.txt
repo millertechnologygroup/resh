@@ -1,0 +1,29 @@
+Handle: system
+Verb: uptime
+Definition: Reports system uptime, boot time, and idle time read from
+  /proc/uptime and /proc/stat.
+
+Usage:
+  resh system://.uptime [include_idle=true|false]
+    [include_boot_time=true|false] [include_human=true|false]
+    [include_raw=true|false] [include_paths=true|false]
+    [format=json|text] [input=<json>]
+    defaults: include_idle, include_boot_time and include_human true;
+      include_raw and include_paths false; format=json
+
+Example:
+  resh --json-pretty system://.uptime
+
+Example Output:
+  {
+    "boot_time_unix": 1782329358,
+    "idle_seconds": 312700310.44,
+    "idle_seconds_per_cpu": 39087538.805,
+    "ok": true,
+    "timestamp_unix_ms": 1792165902862,
+    "uptime_human": "113d 20h 22m 24s",
+    "uptime_seconds": 9836544.36,
+    "warnings": []
+  }
+
+  Shown with --json-pretty.

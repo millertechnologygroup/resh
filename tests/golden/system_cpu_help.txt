@@ -1,0 +1,61 @@
+Handle: system
+Verb: cpu
+Definition: Samples /proc/stat twice, sample_duration_ms apart, and reports
+  utilization percentages for that interval, with topology, frequency, and
+  cgroup CPU limits.
+
+Usage:
+  resh system://.cpu [sample_duration_ms=<n>] [sample_min_ms=<n>]
+    [per_cpu=true|false] [include_topology=true|false]
+    [include_frequency=true|false] [include_cgroup=true|false]
+    [include_human=true|false] [include_raw=true|false]
+    [include_paths=true|false] [format=json|text] [input=<json>]
+    defaults: sample_duration_ms=250 (0 uses sample_min_ms; at most
+      60000), sample_min_ms=50, per_cpu, include_topology,
+      include_frequency, include_cgroup and include_human true;
+      include_raw and include_paths false; format=json
+
+Example:
+  resh --json-pretty system://.cpu per_cpu=false
+
+Example Output:
+  {
+    "cgroup": {
+      "available": true,
+      "cpu_period_us": 100000,
+      "unified": true,
+      "usage_seconds": 5408.12,
+      "usage_system_seconds": 1204.33,
+      "usage_user_seconds": 4203.79
+    },
+    "human": {
+      "per_cpu_hotspots": [],
+      "status": "idle",
+      "status_reason": "Overall CPU utilization is 2.2%, system is idle."
+    },
+    "ok": true,
+    "sample_duration_ms": 250,
+    "system": {
+      "available": true,
+      "frequency_current_hz": 3364628000,
+      "frequency_max_hz": 4800000000,
+      "guest_nice_pct": 0.0,
+      "guest_pct": 0.0,
+      "idle_pct": 97.75,
+      "iowait_pct": 0.0,
+      "irq_pct": 0.0,
+      "logical_count": 8,
+      "nice_pct": 0.0,
+      "physical_count": 4,
+      "socket_count": 1,
+      "softirq_pct": 0.125,
+      "steal_pct": 0.0,
+      "system_pct": 0.5,
+      "user_pct": 1.625,
+      "utilization_pct": 2.25
+    },
+    "timestamp_unix_ms": 1792165918857,
+    "warnings": []
+  }
+
+  Shown with --json-pretty.

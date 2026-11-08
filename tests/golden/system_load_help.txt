@@ -1,0 +1,39 @@
+Handle: system
+Verb: load
+Definition: Reports the 1, 5, and 15 minute load averages, their values per
+  online CPU, and the runnable and total task counts from /proc/loadavg.
+
+Usage:
+  resh system://.load [normalize_per_cpu=true|false]
+    [include_queue=true|false] [include_human=true|false]
+    [include_raw=true|false] [include_paths=true|false]
+    [min_cpu_count=<n>] [format=json|text] [input=<json>]
+    defaults: normalize_per_cpu, include_queue and include_human true;
+      include_raw and include_paths false; min_cpu_count=1 (the
+      smallest divisor for per-CPU values); format=json
+
+Example:
+  resh --json-pretty system://.load
+
+Example Output:
+  {
+    "cpu_count_logical": 8,
+    "human": {
+      "load_vs_cpu_ratio": 0.04875,
+      "status": "idle",
+      "status_reason": "1m load per CPU is very low (< 0.1)"
+    },
+    "load_15m": 0.97,
+    "load_15m_per_cpu": 0.12125,
+    "load_1m": 0.39,
+    "load_1m_per_cpu": 0.04875,
+    "load_5m": 0.67,
+    "load_5m_per_cpu": 0.08375,
+    "ok": true,
+    "runnable_processes": 1,
+    "timestamp_unix_ms": 1792165915507,
+    "total_processes": 412,
+    "warnings": []
+  }
+
+  Shown with --json-pretty.

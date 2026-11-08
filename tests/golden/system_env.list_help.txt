@@ -1,0 +1,56 @@
+Handle: system
+Verb: env.list
+Definition: Lists the environment variables of the resh process or of another
+  process by PID, masking sensitive values by default.
+
+Usage:
+  resh system://.env.list [pid=<n>] [names=<list>]
+    [prefix_filters=<list>] [regex_filters=<list>]
+    [include_values=true|false] [include_sensitive=true|false]
+    [truncate_length=<n>] [max_vars=<n>] [sort_by=name|length|none]
+    [sort_order=asc|desc] [include_raw=true|false]
+    [include_paths=true|false] [format=json|text] [input=<json>]
+    defaults: pid is resh itself, include_values=true,
+      include_sensitive=false, truncate_length=512 (0 = no limit),
+      max_vars=1024, sort_by=name, sort_order=asc, include_raw and
+      include_paths false, format=json
+
+Example:
+  resh --json-pretty system://.env.list names=HOME,SHELL
+
+Example Output:
+  {
+    "env_count_masked": 0,
+    "env_count_returned": 2,
+    "env_count_total": 31,
+    "env_count_truncated": 0,
+    "human": {
+      "summary": "2 of 31 environment variables listed (0 masked, 0 truncated)"
+    },
+    "ok": true,
+    "pid": 48211,
+    "source": "process",
+    "timestamp_unix_ms": 1792165919120,
+    "truncated_vars": false,
+    "variables": [
+      {
+        "masked": false,
+        "name": "HOME",
+        "source": "process",
+        "truncated": false,
+        "value": "/home/alice",
+        "value_length": 11
+      },
+      {
+        "masked": false,
+        "name": "SHELL",
+        "source": "process",
+        "truncated": false,
+        "value": "/bin/bash",
+        "value_length": 9
+      }
+    ],
+    "warnings": []
+  }
+
+  Shown with --json-pretty.

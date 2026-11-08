@@ -1,0 +1,36 @@
+Handle: system
+
+Description:
+  The system handle reports information about the local Linux host, such as CPU,
+  memory, disk, load, uptime, and environment variables, read from the /proc and
+  /sys filesystems and system calls, and changes nothing; every command takes
+  the form system://.<verb>, since the stage URL has no target. Options are
+  key=value arguments, keys of one JSON object in the input argument, or both
+  (an unknown option or a bad value is refused with exit 2), and each verb
+  prints JSON, or text with format=text.
+
+Available Verbs:
+  info       Gathers host information for selected scopes, such as os, kernel,
+             cpu, memory, and load, into one report; a scope that cannot be read
+             is marked available false.
+  uptime     Reports system uptime, boot time, and idle time read from
+             /proc/uptime and /proc/stat.
+  load       Reports the 1, 5, and 15 minute load averages, their values per
+             online CPU, and the runnable and total task counts from
+             /proc/loadavg.
+  memory     Reports RAM, swap, hugepage, and cgroup memory usage in bytes, with
+             each section and the human-readable summaries selectable by option.
+  cpu        Samples /proc/stat twice, sample_duration_ms apart, and reports
+             utilization percentages for that interval, with topology,
+             frequency, and cgroup CPU limits.
+  disk       Reports capacity, inode usage, and I/O counters for mounted
+             filesystems, skipping pseudo filesystems such as proc and tmpfs by
+             default.
+  env.list   Lists the environment variables of the resh process or of another
+             process by PID, masking sensitive values by default.
+
+Usage:
+  resh system://.<verb> [<option>=<value> ...] [input=<json>]
+
+For help with a specific verb:
+  resh system <verb> --help

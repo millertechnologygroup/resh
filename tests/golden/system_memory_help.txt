@@ -1,0 +1,54 @@
+Handle: system
+Verb: memory
+Definition: Reports RAM, swap, hugepage, and cgroup memory usage in bytes, with
+  each section and the human-readable summaries selectable by option.
+
+Usage:
+  resh system://.memory [include_swap=true|false]
+    [include_cgroup=true|false] [include_hugepages=true|false]
+    [include_human=true|false] [include_raw=true|false]
+    [include_paths=true|false] [format=json|text] [input=<json>]
+    defaults: include_swap, include_cgroup, include_hugepages and
+      include_human true; include_raw and include_paths false;
+      format=json
+
+Example:
+  resh --json-pretty system://.memory include_hugepages=false
+
+Example Output:
+  {
+    "cgroup": {
+      "available": true,
+      "memory_limit_bytes": 536870912,
+      "memory_usage_bytes": 31457280,
+      "memory_used_pct": 5.859375,
+      "swap_limit_bytes": 0,
+      "swap_usage_bytes": 0,
+      "unified": true
+    },
+    "human": {
+      "cgroup_summary": "0.5 GiB limit, 0.0 GiB used (5.9%)",
+      "system_summary": "15.5 GiB total, 4.2 GiB used (27.1%), no swap"
+    },
+    "ok": true,
+    "system": {
+      "available": true,
+      "buffers_bytes": 412090368,
+      "cached_bytes": 6442450944,
+      "mem_available_bytes": 12171116544,
+      "mem_free_bytes": 5368709120,
+      "mem_total_bytes": 16691884032,
+      "mem_used_bytes": 4520767488,
+      "mem_used_pct": 27.0836,
+      "shmem_bytes": 268435456,
+      "sreclaimable_bytes": 536870912,
+      "swap_free_bytes": 0,
+      "swap_total_bytes": 0,
+      "swap_used_bytes": 0,
+      "swap_used_pct": 0.0
+    },
+    "timestamp_unix_ms": 1792165915513,
+    "warnings": []
+  }
+
+  Shown for a container started with --memory 512m, with --json-pretty.
