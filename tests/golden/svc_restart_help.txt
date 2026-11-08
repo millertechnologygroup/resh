@@ -1,9 +1,10 @@
 Handle: svc
 Verb: restart
-Definition: Stops and then starts a service, waiting for the job to finish.
+Definition: Stops and starts a service, waiting for the job and checking it
+  runs.
 
 Usage:
-  resh svc://<service-name>.restart [timeout_ms=<ms>]
+  resh svc://<service-name>.restart [timeout_ms=<ms>] [settle_ms=<ms>]
 
 Example:
   resh svc://nginx.restart

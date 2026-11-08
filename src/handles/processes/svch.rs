@@ -40,7 +40,8 @@ static SVC_HELP: HandleHelp = HandleHelp {
     description: "The svc handle inspects and controls system services through the host's \
         service manager, supporting systemd and OpenRC. It covers service state queries, \
         lifecycle control, boot-time configuration, and log access. Each command names \
-        one service in the stage URL, such as svc://nginx.",
+        one service in the stage URL, such as svc://nginx; on systemd a name ending in a \
+        unit type, such as svc://docker.socket, names that unit and other names get .service.",
     usage: "resh svc://<service-name>.<verb>[(key=value,...)]",
     verbs: &[
         VerbHelp {
@@ -93,9 +94,9 @@ default runlevel. A service that does not exist is an error (exit 1)."#,
         },
         VerbHelp {
             name: "start",
-            definition: "Starts a service and waits for the start job to finish.",
+            definition: "Starts a service, waits for the start job and checks that it runs.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.start [timeout_ms=<ms>]",
+                usage: "resh svc://<service-name>.start [timeout_ms=<ms>] [settle_ms=<ms>]",
                 example: "resh svc://nginx.start",
                 example_output: Some(
                     r#"{
@@ -109,7 +110,9 @@ default runlevel. A service that does not exist is an error (exit 1)."#,
 }
 
 Shown for a systemd host with --json-pretty. A job that fails exits 1;
-at timeout_ms (default 120000) the job is cancelled and resh exits 124."#,
+so does a unit that is not running settle_ms (default 1000) after its
+job finished (svc.not_active). At timeout_ms (default 120000) the job is
+cancelled and resh exits 124."#,
                 ),
             }),
         },
@@ -141,9 +144,9 @@ for timeout_ms (default 120000)."#,
         },
         VerbHelp {
             name: "restart",
-            definition: "Stops and then starts a service, waiting for the job to finish.",
+            definition: "Stops and starts a service, waiting for the job and checking it runs.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.restart [timeout_ms=<ms>]",
+                usage: "resh svc://<service-name>.restart [timeout_ms=<ms>] [settle_ms=<ms>]",
                 example: "resh svc://nginx.restart",
                 example_output: Some(
                     r#"{
@@ -174,7 +177,7 @@ service name without the .service suffix."#,
             name: "enable",
             definition: "Configures a service to start automatically at boot.",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.enable [timeout_ms=<ms>]",
+                usage: "resh svc://<service-name>.enable [timeout_ms=<ms>] [force=true|false]",
                 example: "resh svc://nginx.enable",
                 example_output: None,
             }),
@@ -192,7 +195,7 @@ service name without the .service suffix."#,
             name: "mask",
             definition: "Blocks a service from being started at all (systemd only).",
             detail: Some(VerbDetail {
-                usage: "resh svc://<service-name>.mask [timeout_ms=<ms>]",
+                usage: "resh svc://<service-name>.mask [timeout_ms=<ms>] [force=true|false]",
                 example: "resh svc://nginx.mask",
                 example_output: None,
             }),
@@ -296,6 +299,8 @@ const VERBS: &[&str] = &[
 pub(crate) fn verb_args(verb: &str) -> &'static [&'static str] {
     match verb {
         "stop" => &["timeout_ms", "timeout", "force"],
+        "start" | "restart" => &["timeout_ms", "settle_ms"],
+        "enable" | "mask" => &["timeout_ms", "force"],
         "wait" => &["state", "timeout_ms", "timeout"],
         "logs" => &[
             "lines",
@@ -324,6 +329,8 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "svc.permission_denied",
     "svc.masked",
     "svc.job_failed",
+    "svc.not_active",
+    "svc.link_conflict",
     "svc.partial_failure",
     "svc.no_backend",
     "svc.backend_unavailable",
@@ -346,6 +353,8 @@ pub(crate) fn default_timeout_ms(verb: &str) -> u64 {
 }
 const MAX_TIMEOUT_MS: u64 = 7 * 24 * 3600 * 1000;
 const DEFAULT_LINES: u64 = 200;
+/// How long a started unit must stay running after its job succeeded.
+const DEFAULT_SETTLE_MS: u64 = 1000;
 const MAX_LINES: u64 = 1_000_000;
 const MAX_COUNT: u64 = 1000;
 const MAX_NAME_BYTES: usize = 256;
@@ -524,11 +533,11 @@ enum Route {
 pub(crate) enum Op {
     Status,
     IsEnabled,
-    Start,
+    Start { settle: Duration },
     Stop { force: bool },
-    Restart,
+    Restart { settle: Duration },
     Reload,
-    Files(FileOp),
+    Files(FileOp, bool),
     Wait { active: bool, state: String },
     Logs(LogOpts),
     Scale { count: u32 },
@@ -642,13 +651,20 @@ pub(crate) fn parse_args(verb: &str, args: &Args) -> Result<(Op, Option<u64>), F
     let op = match verb {
         "status" => Op::Status,
         "is-enabled" => Op::IsEnabled,
-        "start" => Op::Start,
-        "restart" => Op::Restart,
+        "start" | "restart" => {
+            let ms = u64_arg(args, "settle_ms", 0, MAX_TIMEOUT_MS)?.unwrap_or(DEFAULT_SETTLE_MS);
+            let settle = Duration::from_millis(ms);
+            if verb == "start" {
+                Op::Start { settle }
+            } else {
+                Op::Restart { settle }
+            }
+        }
         "reload" => Op::Reload,
-        "enable" => Op::Files(FileOp::Enable),
-        "disable" => Op::Files(FileOp::Disable),
-        "mask" => Op::Files(FileOp::Mask),
-        "unmask" => Op::Files(FileOp::Unmask),
+        "enable" => Op::Files(FileOp::Enable, bool_arg(args, "force")?),
+        "disable" => Op::Files(FileOp::Disable, false),
+        "mask" => Op::Files(FileOp::Mask, bool_arg(args, "force")?),
+        "unmask" => Op::Files(FileOp::Unmask, false),
         "stop" => Op::Stop {
             force: bool_arg(args, "force")?,
         },
@@ -723,6 +739,54 @@ pub(crate) fn parse_args(verb: &str, args: &Args) -> Result<(Op, Option<u64>), F
         op,
         Some(timeout.unwrap_or_else(|| default_timeout_ms(verb))),
     ))
+}
+
+/// systemd unit types a name may end in; any other name gets `.service`.
+pub(crate) const UNIT_TYPES: &[&str] = &[
+    "service",
+    "socket",
+    "timer",
+    "path",
+    "target",
+    "mount",
+    "automount",
+    "swap",
+    "slice",
+    "scope",
+    "device",
+];
+
+/// The unit type `name` ends in (`.socket` gives `socket`), if any.
+pub(crate) fn unit_type(name: &str) -> Option<&'static str> {
+    let (_, suffix) = name.rsplit_once('.')?;
+    UNIT_TYPES.iter().copied().find(|t| *t == suffix)
+}
+
+/// Refuses (exit 2, `svc.unsupported`) a verb that does not apply to the
+/// unit's type in systemd:
+/// - devices come from the kernel and scopes are created at run time, so
+///   neither can be started, enabled or masked (a scope can be stopped);
+/// - only services and mounts have a reload operation;
+/// - only services can be scaled.
+pub(crate) fn check_unit_type(verb: &str, unit: &str) -> Result<(), Fail> {
+    let ty = unit_type(unit).unwrap_or("service");
+    let refused = match verb {
+        "start" | "restart" | "enable" | "disable" | "mask" | "unmask" => {
+            matches!(ty, "device" | "scope")
+        }
+        "stop" => ty == "device",
+        "reload" => !matches!(ty, "service" | "mount"),
+        "scale" => ty != "service",
+        _ => false,
+    };
+    if refused {
+        return Err(Fail::new(
+            exit::USAGE,
+            "svc.unsupported",
+            format!("{verb} does not apply to .{ty} units; nothing was done"),
+        ));
+    }
+    Ok(())
 }
 
 fn unknown_verb(verb: &str) -> Fail {
@@ -801,7 +865,7 @@ impl SvcHandle {
     }
 
     fn unit_name(&self) -> String {
-        if self.name.ends_with(".service") {
+        if unit_type(&self.name).is_some() {
             self.name.clone()
         } else {
             format!("{}.service", self.name)
@@ -861,11 +925,11 @@ impl SvcHandle {
         match op {
             Op::Status => systemd::status(bus, c),
             Op::IsEnabled => systemd::is_enabled(bus, c),
-            Op::Start => systemd::start(bus, c, "start"),
-            Op::Restart => systemd::start(bus, c, "restart"),
+            Op::Start { settle } => systemd::start(bus, c, "start", *settle),
+            Op::Restart { settle } => systemd::start(bus, c, "restart", *settle),
             Op::Stop { force } => systemd::stop(bus, c, *force),
             Op::Reload => systemd::reload(bus, c),
-            Op::Files(f) => systemd::unit_files(bus, c, *f, warn),
+            Op::Files(f, force) => systemd::unit_files(bus, c, *f, *force, warn),
             Op::Wait { active, state } => systemd::wait(bus, c, *active, state),
             Op::Scale { count } => systemd::scale(bus, c, *count),
             Op::Logs(_) => Reply::ok_empty(),
@@ -886,14 +950,15 @@ impl SvcHandle {
         match op {
             Op::Status => openrc::status(t, c),
             Op::IsEnabled => openrc::is_enabled(t, c),
-            Op::Start => openrc::start(t, c, "start"),
-            Op::Restart => openrc::start(t, c, "restart"),
+            Op::Start { .. } => openrc::start(t, c, "start"),
+            Op::Restart { .. } => openrc::start(t, c, "restart"),
             Op::Stop { force: true } => unsupported("stop force=true"),
             Op::Stop { force: false } => openrc::stop(t, c),
             Op::Reload => openrc::reload(t, c),
-            Op::Files(FileOp::Enable) => openrc::enable(t, c, true),
-            Op::Files(FileOp::Disable) => openrc::enable(t, c, false),
-            Op::Files(f) => unsupported(f.verb()),
+            Op::Files(f, true) => unsupported(&format!("{} force=true", f.verb())),
+            Op::Files(FileOp::Enable, _) => openrc::enable(t, c, true),
+            Op::Files(FileOp::Disable, _) => openrc::enable(t, c, false),
+            Op::Files(f, _) => unsupported(f.verb()),
             Op::Wait { active, state } => openrc::wait(t, c, *active, state),
             Op::Scale { .. } if systemd::template_base(&c.unit).is_some() => {
                 unsupported("scaling a template unit")
@@ -932,6 +997,11 @@ impl SvcHandle {
             Err(f) => return report(io, None, f),
         };
         let (backend, route) = Self::detect_backend();
+        if backend == Backend::Systemd
+            && let Err(f) = check_unit_type(verb, &self.unit_name())
+        {
+            return report(io, None, f);
+        }
         let tools = Tools::from_env();
         self.execute(backend, route, &tools, op, timeout_ms, io)
     }
@@ -1004,14 +1074,14 @@ impl SvcHandle {
         };
         let mut v = json!({"name": name, "backend": backend.label()});
         match op {
-            Op::Start => v["action"] = json!("start"),
-            Op::Restart => v["action"] = json!("restart"),
+            Op::Start { .. } => v["action"] = json!("start"),
+            Op::Restart { .. } => v["action"] = json!("restart"),
             Op::Stop { .. } => v["action"] = json!("stop"),
             Op::Scale { count } => v["desired_count"] = json!(count),
             _ => {}
         }
         match op {
-            Op::Files(_) | Op::Reload | Op::Logs(_) => Value::Null,
+            Op::Files(..) | Op::Reload | Op::Logs(_) => Value::Null,
             _ => v,
         }
     }

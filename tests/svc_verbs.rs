@@ -45,6 +45,8 @@ fn accepted(verb: &str) -> Vec<&'static str> {
             "timeout_ms",
         ],
         "scale" => vec!["count", "timeout_ms"],
+        "start" | "restart" => vec!["timeout_ms", "settle_ms"],
+        "enable" | "mask" => vec!["timeout_ms", "force"],
         _ => vec!["timeout_ms"],
     };
     v.sort_unstable();
@@ -115,6 +117,7 @@ case "$*" in
     case "$last" in
       nosuch*) printf 'LoadState=not-found\nActiveState=inactive\nSubState=dead\n' ;;
       down*) printf 'LoadState=loaded\nActiveState=inactive\nSubState=dead\nDescription=Down\n' ;;
+      crash*) printf 'LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=exit-code\nType=simple\n' ;;
       *) printf 'LoadState=loaded\nActiveState=active\nSubState=running\nDescription=Web test\nExecMainPID=4242\nExecMainStatus=0\n' ;;
     esac ;;
   *is-enabled*)
@@ -135,6 +138,8 @@ case "$*" in
   *enable*|*disable*|*mask*)
     case "$last" in
       nosuch*) echo "Failed to change unit: Unit file $last does not exist." >&2; exit 1 ;;
+      conflict*)
+        case "$*" in *--force*) ;; *) echo "Failed to enable unit: File /etc/systemd/system/$last already exists." >&2; exit 1 ;; esac ;;
       noinst*) echo "The unit files have no installation config (WantedBy=, RequiredBy=, ...)." >&2 ;;
       *) echo "Created symlink /etc/systemd/system/x.wants/$last -> /usr/lib/systemd/system/$last." >&2 ;;
     esac ;;
@@ -528,12 +533,29 @@ fn unit_file_verbs_on_systemd() {
     }
     let log = env.log("systemctl");
     for l in [
-        "enable --force -- web.service",
+        "enable -- web.service",
         "disable -- web.service",
-        "mask --force -- web.service",
+        "mask -- web.service",
         "unmask -- web.service",
     ] {
         assert!(log.contains(l), "{l}\n{log}");
+    }
+    for verb in ["enable", "mask"] {
+        let r = env
+            .run("systemctl", &[&format!("svc://conflict.{verb}")])
+            .fails(1, "svc.link_conflict");
+        assert!(r.err.contains("force=true"), "{}", r.err);
+        env.run(
+            "systemctl",
+            &[&format!("svc://conflict.{verb}"), "force=true"],
+        )
+        .ok();
+        assert!(
+            env.log("systemctl")
+                .contains(&format!("{verb} --force -- conflict.service"))
+        );
+        env.run("openrc", &[&format!("svc://web.{verb}"), "force=true"])
+            .fails(2, "svc.unsupported");
     }
     let r = env.run("systemctl", &["svc://noinst.enable"]).ok();
     assert!(
@@ -600,7 +622,7 @@ fn logs_on_systemd() {
     assert_eq!(r.out.lines().count(), 2, "{}", r.out);
     assert_eq!(
         env.log("journalctl").trim(),
-        "--unit=web.service --no-pager --output=short-iso --lines=2 --since=-1h \
+        "--unit=web.service --lines=2 --no-pager --output=short-iso --since=-1h \
          --until=now --priority=err --reverse"
     );
     assert_eq!(env.run("systemctl", &["svc://empty.logs"]).ok().out, "");
@@ -784,4 +806,33 @@ fn host_status_of_a_missing_unit_is_not_found() {
     };
     let r = r.fails(1, "svc.not_found");
     assert_eq!(r.json()["backend"], "systemd");
+}
+
+#[test]
+fn start_requires_a_running_unit_and_unit_types_are_checked() {
+    let env = Env::new();
+    let r = env
+        .run("systemctl", &["svc://crash.start", "settle_ms=0"])
+        .fails(1, "svc.not_active");
+    let v = r.json();
+    assert_eq!(v["active_state"], "failed");
+    assert_eq!(v["unit_result"], "exit-code");
+    let v = env
+        .run("systemctl", &["svc://web.socket.start", "settle_ms=0"])
+        .ok()
+        .json();
+    assert_eq!(v["name"], "web.socket");
+    assert!(env.log("systemctl").contains("start -- web.socket"));
+    let before = env.log("systemctl");
+    for (stage, extra) in [
+        ("svc://web.socket.reload", None),
+        ("svc://web.timer.scale", Some("count=1")),
+        ("svc://sda.device.start", None),
+        ("svc://s1.scope.enable", None),
+    ] {
+        let mut a = vec![stage];
+        a.extend(extra);
+        env.run("systemctl", &a).fails(2, "svc.unsupported");
+    }
+    assert_eq!(env.log("systemctl"), before, "nothing ran");
 }

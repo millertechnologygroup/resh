@@ -1,5 +1,6 @@
 pub mod envelope;
 pub mod help;
+pub mod journal;
 pub mod lenient;
 pub mod parse;
 pub mod process;

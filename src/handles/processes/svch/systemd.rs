@@ -48,6 +48,15 @@ pub(crate) fn bus_fail(e: BusError, unit: &str) -> Fail {
                 e.msg
             ),
         ),
+        BusErrKind::Conflict => Fail::new(
+            exit::FAILED,
+            "svc.link_conflict",
+            format!(
+                "a file or link for {unit} is in the way (force=true replaces conflicting \
+                 symlinks; a real file must be removed by hand): {}",
+                e.msg
+            ),
+        ),
         BusErrKind::Masked => Fail::new(
             exit::FAILED,
             "svc.masked",
@@ -250,7 +259,54 @@ pub(crate) fn is_enabled(bus: &dyn Bus, c: &Ctx) -> Reply {
 }
 
 /// start and restart.
-pub(crate) fn start(bus: &dyn Bus, c: &Ctx, action: &'static str) -> Reply {
+/// Time between state checks while a started unit settles.
+const SETTLE_POLL: Duration = Duration::from_millis(100);
+
+/// Whether a unit whose start job succeeded is running as it should:
+/// `active` or `reloading`; `activating`, except in `auto-restart` (it
+/// exited and waits to be restarted); or, for a oneshot service without
+/// `RemainAfterExit`, `inactive` after a successful run.
+pub(crate) fn running_ok(i: &UnitInfo) -> bool {
+    match i.active_state.as_str() {
+        "active" | "reloading" => true,
+        "activating" => i.sub_state != "auto-restart",
+        "inactive" => {
+            i.service_type == "oneshot"
+                && !i.remain_after_exit
+                && (i.result.is_empty() || i.result == "success")
+        }
+        _ => false,
+    }
+}
+
+/// Watches `unit` for `settle` (bounded by the deadline) after a start
+/// job succeeded: (true, last state) when it stayed running, otherwise
+/// (false, the first state that was not, or `None` when it could not be
+/// read).
+fn settle(
+    bus: &dyn Bus,
+    unit: &str,
+    settle: Duration,
+    deadline: Instant,
+) -> (bool, Option<UnitInfo>) {
+    let end = (Instant::now() + settle).min(deadline);
+    let mut last = None;
+    loop {
+        if let Ok(i) = bus.unit(unit) {
+            if !running_ok(&i) {
+                return (false, Some(i));
+            }
+            last = Some(i);
+        }
+        let now = Instant::now();
+        if now >= end {
+            return (last.is_some(), last);
+        }
+        std::thread::sleep(SETTLE_POLL.min(end - now));
+    }
+}
+
+pub(crate) fn start(bus: &dyn Bus, c: &Ctx, action: &'static str, settle_for: Duration) -> Reply {
     let method = if action == "restart" {
         "RestartUnit"
     } else {
@@ -268,11 +324,48 @@ pub(crate) fn start(bus: &dyn Bus, c: &Ctx, action: &'static str) -> Reply {
         }
     };
     job_fields(&mut obj, &end);
-    state_fields(bus, &c.unit, &mut obj);
     if end.succeeded() {
-        obj["result"] = json!("success");
-        Reply::ok(obj)
+        match settle(bus, &c.unit, settle_for, c.deadline) {
+            (true, Some(i)) => {
+                obj["active_state"] = json!(i.active_state);
+                obj["sub_state"] = json!(i.sub_state);
+                obj["result"] = json!("success");
+                Reply::ok(obj)
+            }
+            (_, info) => {
+                obj["result"] = json!("not_active");
+                let state = match &info {
+                    Some(i) => {
+                        obj["active_state"] = json!(i.active_state);
+                        obj["sub_state"] = json!(i.sub_state);
+                        obj["unit_result"] = json!(i.result);
+                        format!(
+                            "{}/{} (result '{}')",
+                            i.active_state,
+                            i.sub_state,
+                            if i.result.is_empty() {
+                                "n/a"
+                            } else {
+                                &i.result
+                            }
+                        )
+                    }
+                    None => "unknown (its state could not be read)".to_string(),
+                };
+                let f = Fail::new(
+                    exit::FAILED,
+                    "svc.not_active",
+                    format!(
+                        "the {action} job for {} finished, but the unit is {state}; \
+                         see svc://<service>.status and .logs",
+                        c.unit
+                    ),
+                );
+                Reply::failed(Some(obj), f)
+            }
+        }
     } else {
+        state_fields(bus, &c.unit, &mut obj);
         obj["result"] = json!(if matches!(end, JobEnd::TimedOut { .. }) {
             "timeout"
         } else {
@@ -344,8 +437,14 @@ pub(crate) fn reload(bus: &dyn Bus, c: &Ctx) -> Reply {
 }
 
 /// enable, disable, mask and unmask. Warnings go to `warn`.
-pub(crate) fn unit_files(bus: &dyn Bus, c: &Ctx, op: FileOp, warn: &mut Vec<String>) -> Reply {
-    let changes = match bus.unit_files(op, &c.unit) {
+pub(crate) fn unit_files(
+    bus: &dyn Bus,
+    c: &Ctx,
+    op: FileOp,
+    force: bool,
+    warn: &mut Vec<String>,
+) -> Reply {
+    let changes = match bus.unit_files(op, &c.unit, force) {
         Ok(ch) => ch,
         Err(e) => {
             let mut f = bus_fail(e, &c.unit);

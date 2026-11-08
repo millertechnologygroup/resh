@@ -111,6 +111,55 @@ Description=No install section
 Type=exec
 ExecStart=/bin/sleep infinity
 EOF
+cat > resh-crash.service <<'EOF'
+[Unit]
+Description=Forks fine, dies right after
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'sleep 0.3; exit 3'
+EOF
+cat > resh-loop.service <<'EOF'
+[Unit]
+Description=Crash loop
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'exit 1'
+Restart=always
+RestartSec=5
+EOF
+cat > resh-sock.socket <<'EOF'
+[Unit]
+Description=Test socket
+[Socket]
+ListenStream=/run/resh-sock.sock
+[Install]
+WantedBy=sockets.target
+EOF
+cat > resh-sock.service <<'EOF'
+[Unit]
+Description=Service behind the test socket
+[Service]
+Type=exec
+ExecStart=/bin/sleep infinity
+EOF
+cat > resh-alias.service <<'EOF'
+[Unit]
+Description=Unit with an alias
+[Service]
+Type=exec
+ExecStart=/bin/sleep infinity
+[Install]
+Alias=resh-web.service
+EOF
+cat > resh-tick.timer <<'EOF'
+[Unit]
+Description=Test timer
+[Timer]
+OnActiveSec=1h
+Unit=resh-oneshot.service
+[Install]
+WantedBy=timers.target
+EOF
 systemctl daemon-reload
 "#;
 
@@ -630,4 +679,123 @@ fn unprivileged_callers_are_refused() {
     // Reading the state needs no privileges.
     let r = as_nobody("svc://nginx.status");
     assert_eq!(r.code, 0, "{}", r.err);
+}
+
+#[test]
+fn start_confirms_the_unit_keeps_running() {
+    let b = Machine::boot();
+    // Type=simple: the job is done at fork; the unit dies within settle_ms.
+    let r = b
+        .resh(&["svc://resh-crash.start"])
+        .fails(1, "svc.not_active");
+    let v = r.json();
+    assert_eq!(v["job_result"], "done");
+    assert_eq!(v["result"], "not_active");
+    assert_eq!(v["active_state"], "failed");
+    assert_eq!(v["unit_result"], "exit-code");
+    // With settle_ms=0 only the state right after the job is checked.
+    b.resh(&["svc://resh-crash.start", "settle_ms=0"]).ok();
+    // A crash loop waiting to restart is not running.
+    let r = b
+        .resh(&["svc://resh-loop.start"])
+        .fails(1, "svc.not_active");
+    assert_eq!(r.json()["sub_state"], "auto-restart");
+    b.resh(&["svc://resh-crash.restart"])
+        .fails(1, "svc.not_active");
+    // Through systemctl too.
+    b.resh_env(
+        &["RESH_TEST_SVC_BACKEND=systemctl"],
+        &["svc://resh-crash.start"],
+    )
+    .fails(1, "svc.not_active");
+    let v = b.resh(&["svc://nginx.start", "settle_ms=1500"]).ok().json();
+    assert_eq!(v["active_state"], "active");
+}
+
+#[test]
+fn sockets_and_timers() {
+    let b = Machine::boot();
+    let v = b.resh(&["svc://resh-sock.socket.start"]).ok().json();
+    assert_eq!(v["name"], "resh-sock.socket");
+    assert_eq!(v["active_state"], "active");
+    assert_eq!(v["sub_state"], "listening");
+    assert_eq!(b.active("resh-sock.socket"), "active");
+    let v = b.resh(&["svc://resh-sock.socket.status"]).ok().json();
+    assert_eq!(v["description"], "Test socket");
+    b.resh(&["svc://resh-sock.socket.wait"]).ok();
+    b.resh(&["svc://resh-sock.socket.reload"])
+        .fails(2, "svc.unsupported");
+    b.resh(&["svc://resh-sock.socket.scale", "count=1"])
+        .fails(2, "svc.unsupported");
+    b.resh(&["svc://resh-sock.socket.enable"]).ok();
+    assert_eq!(
+        b.resh(&["svc://resh-sock.socket.is-enabled"]).ok().json()["enabled"],
+        true
+    );
+    let v = b.resh(&["svc://resh-sock.socket.stop"]).ok().json();
+    assert_eq!(v["final_state"], "inactive");
+
+    let v = b.resh(&["svc://resh-tick.timer.start"]).ok().json();
+    assert_eq!(v["name"], "resh-tick.timer");
+    assert_eq!(v["sub_state"], "waiting");
+    b.resh(&["svc://resh-tick.timer.enable"]).ok();
+    assert!(
+        b.sh("test -L /etc/systemd/system/timers.target.wants/resh-tick.timer")
+            .code
+            == 0
+    );
+    b.resh(&["svc://resh-tick.timer.reload"])
+        .fails(2, "svc.unsupported");
+    b.resh(&["svc://resh-tick.timer.restart"]).ok();
+    b.resh(&["svc://resh-tick.timer.mask"]).ok();
+    b.resh(&["svc://resh-tick.timer.unmask"]).ok();
+    b.resh(&["svc://nosuch.timer.status"])
+        .fails(1, "svc.not_found");
+    // Types that cannot be started or reloaded are refused before anything.
+    b.resh(&["svc://dev-null.device.start"])
+        .fails(2, "svc.unsupported");
+    b.resh(&["svc://multi-user.target.reload"])
+        .fails(2, "svc.unsupported");
+    let v = b.resh(&["svc://multi-user.target.status"]).ok().json();
+    assert_eq!(v["active_state"], "active");
+}
+
+#[test]
+fn enable_and_mask_do_not_replace_links_without_force() {
+    let b = Machine::boot();
+    // A link in the way of enable: the alias name points elsewhere.
+    b.sh("ln -s /usr/lib/systemd/system/resh-oneshot.service /etc/systemd/system/resh-web.service");
+    let r = b
+        .resh(&["svc://resh-alias.enable"])
+        .fails(1, "svc.link_conflict");
+    assert!(r.err.contains("force=true"), "{}", r.err);
+    b.resh(&["svc://resh-alias.enable", "force=true"]).ok();
+    assert_eq!(
+        b.sh("readlink /etc/systemd/system/resh-web.service")
+            .out
+            .trim(),
+        "/usr/lib/systemd/system/resh-alias.service"
+    );
+    // A stale wants link is replaced without force, as systemctl does.
+    b.sh("mkdir -p /etc/systemd/system/multi-user.target.wants && \
+          ln -s /usr/lib/systemd/system/resh-oneshot.service \
+          /etc/systemd/system/multi-user.target.wants/nginx.service");
+    b.resh(&["svc://nginx.enable"]).ok();
+    // A link in the way of mask.
+    b.sh(
+        "ln -s /usr/lib/systemd/system/resh-oneshot.service /etc/systemd/system/resh-crash.service",
+    );
+    b.resh(&["svc://resh-crash.mask"])
+        .fails(1, "svc.link_conflict");
+    b.resh(&["svc://resh-crash.mask", "force=yes"]).ok();
+    assert_eq!(b.sh("systemctl is-enabled resh-crash").out.trim(), "masked");
+    // systemctl route: same rules.
+    let sc = ["RESH_TEST_SVC_BACKEND=systemctl"];
+    b.sh(
+        "ln -s /usr/lib/systemd/system/resh-oneshot.service /etc/systemd/system/resh-loop.service",
+    );
+    b.resh_env(&sc, &["svc://resh-loop.mask"])
+        .fails(1, "svc.link_conflict");
+    b.resh_env(&sc, &["svc://resh-loop.mask", "force=true"])
+        .ok();
 }

@@ -61,10 +61,19 @@ On systemd, resh talks to systemd over the system D-Bus. If the bus cannot be re
 
 ### Service names
 
-* A name without a suffix gets `.service` appended on systemd (`nginx` → `nginx.service`). A name already ending in `.service` is used as given. OpenRC uses the name as given.
+* On systemd, a name ending in a unit type (`.service`, `.socket`, `.timer`, `.path`, `.target`, `.mount`, `.automount`, `.swap`, `.slice`, `.scope`, `.device`) is used as given (`svc://docker.socket.status`); any other name gets `.service` appended (`nginx` → `nginx.service`, `net.eth0` → `net.eth0.service`). OpenRC uses the name as given.
 * Instance names work: `svc://getty@tty1.status` targets `getty@tty1.service`, and `svc://user@1000.status` targets `user@1000.service`.
 * Before any backend command runs, names are rejected (exit 2, `Error: [svc.invalid_target] invalid service name ...`) if they are empty or longer than 256 bytes, start with `-` or `.`, or contain any character other than ASCII letters, digits, `_`, `.`, `@`, `-` and `\` (so `:`, `/`, whitespace and control characters are refused).
-* Other unit types (`.socket`, `.timer`, ...) cannot be named: a name not ending in `.service` always gets `.service` appended.
+* Verbs that do not apply to a unit type are refused before anything runs (exit 2, `svc.unsupported`):
+
+  | Verb | Refused for |
+  | ---- | ----------- |
+  | `start`, `restart`, `enable`, `disable`, `mask`, `unmask` | `.device` (devices come from the kernel), `.scope` (created at run time) |
+  | `stop` | `.device` |
+  | `reload` | every type except `.service` and `.mount` (the only types with a reload operation) |
+  | `scale` | every type except `.service` |
+
+  `status`, `is-enabled`, `wait` and `logs` work for every type.
 
 ### Safety
 
@@ -97,13 +106,13 @@ Every verb takes `timeout_ms=<milliseconds>` (1 to 604800000). `stop` and `wait`
 | ---- | --------- | ------ |
 | `status` | `timeout_ms` | JSON state object |
 | `is-enabled` | `timeout_ms` | `{"backend","enabled","name","unit_file_state"}` |
-| `start` | `timeout_ms` | JSON result |
+| `start` | `timeout_ms`, `settle_ms` | JSON result |
 | `stop` | `timeout_ms` (or `timeout`), `force=true\|false` | JSON result |
-| `restart` | `timeout_ms` | JSON result |
+| `restart` | `timeout_ms`, `settle_ms` | JSON result |
 | `reload` | `timeout_ms` | nothing on success |
-| `enable` | `timeout_ms` | nothing on success |
+| `enable` | `timeout_ms`, `force=true\|false` | nothing on success |
 | `disable` | `timeout_ms` | nothing on success |
-| `mask` | `timeout_ms` (systemd only) | nothing on success |
+| `mask` | `timeout_ms`, `force=true\|false` (systemd only) | nothing on success |
 | `unmask` | `timeout_ms` (systemd only) | nothing on success |
 | `wait` | `state=active\|inactive\|running\|stopped`, `timeout_ms` (or `timeout`) | JSON result |
 | `logs` | `lines=<n>`, `since=<time>`, `until=<time>`, `level=<priority>`, `reverse=true\|false`, `follow=true\|false`, `timeout_ms` | plain log lines |
@@ -230,12 +239,19 @@ On systemd, `enabled` is true when the unit file state is `enabled`, `static` or
 
 On systemd, resh queues a `StartUnit`/`RestartUnit` job (mode `replace`) and **waits for the job to finish** (systemd's `JobRemoved` signal), so the result is the job's real outcome:
 
-* `job_result` `done` (or `skipped`): `"result": "success"`, exit 0. `active_state`/`sub_state` are read after the job; a oneshot service without `RemainAfterExit` is `inactive` again by then.
+* `job_result` `done` (or `skipped`), and the unit then runs (see below): `"result": "success"`, exit 0, with `active_state`/`sub_state`.
+* `job_result` `done`, but the unit does not run: `"result": "not_active"`, exit 1, `svc.not_active`, with `active_state`, `sub_state` and `unit_result` (systemd's `Result`, such as `exit-code`).
 * any other job result (`failed`, `dependency`, `timeout`, `canceled`, ...): `"result": "failed"`, exit 1, `svc.job_failed`.
 * the unit does not exist: `svc.not_found`; it is masked: `svc.masked`; not permitted: `svc.permission_denied` (all exit 1, nothing queued).
 * `timeout_ms` passes first: the job is cancelled, `"result": "timeout"`, `job_canceled` true or false, exit 124 (`svc.timeout`).
 
-What "done" means depends on the unit type: for `Type=simple` systemd considers the service started as soon as its process is forked, so a service that crashes a moment later still reports success (as `systemctl start` does). Use `Type=notify`, `forking` or `exec` units, or follow with `status`, when that matters.
+A done job does not prove the unit runs: for `Type=simple` systemd considers a service started as soon as its process is forked, and a unit whose start condition (`Condition...=`) failed is done without running. So after a done job resh watches the unit for `settle_ms` (default 1000; 0 checks once; never past `timeout_ms`) and requires it to stay running the whole time. Running means:
+
+* `active` or `reloading`;
+* `activating`, except with sub-state `auto-restart` (the process exited and systemd waits to restart it);
+* for a oneshot service without `RemainAfterExit`: `inactive` with result `success` (it ran and finished).
+
+Anything else (`failed`, `inactive`, `deactivating`, `activating`/`auto-restart`) is `svc.not_active`.
 
 Without D-Bus, resh runs `systemctl start|restart` (which waits for the job too); `job_canceled` is then always false at the deadline. On OpenRC it runs `rc-service <name> start|restart`, which returns once the service is started; the result has `state` instead of `active_state` and reports the name without the `.service` suffix.
 
@@ -265,7 +281,8 @@ Without D-Bus, resh runs `systemctl start|restart` (which waits for the job too)
 
 ### reload, enable, disable, mask, unmask
 
-* systemd: `reload` queues a `ReloadUnit` job and waits for its result like `start` (a unit without `ExecReload` is refused by systemd: `svc.failed`). `enable`, `disable`, `mask` and `unmask` call `EnableUnitFiles` (with force), `DisableUnitFiles`, `MaskUnitFiles` (with force) and `UnmaskUnitFiles`, then reload systemd's configuration as `systemctl` does. Without D-Bus they run `systemctl enable|disable|mask|unmask`.
+* systemd: `reload` queues a `ReloadUnit` job and waits for its result like `start` (a unit without `ExecReload` is refused by systemd: `svc.failed`). `enable`, `disable`, `mask` and `unmask` call `EnableUnitFiles`, `DisableUnitFiles`, `MaskUnitFiles` and `UnmaskUnitFiles`, then reload systemd's configuration as `systemctl` does. Without D-Bus they run `systemctl enable|disable|mask|unmask`.
+* Like `systemctl`, `enable` and `mask` do not replace a link that belongs to something else: for example an `Alias=` name, or the `/etc/systemd/system/<unit>` path `mask` writes, that is already a symlink to another unit is `svc.link_conflict` (exit 1). (A stale link in a `.wants`/`.requires` directory is replaced without force, as `systemctl enable` does.) `force=true` replaces conflicting symlinks (`systemctl --force`); a real unit file in the way (for example `mask` of a unit defined in `/etc/systemd/system`) still fails and must be removed by hand. On OpenRC `force=true` is refused (exit 2, `svc.unsupported`).
 * `enable` of a unit without an `[Install]` section succeeds but changes nothing; a warning on stderr says so.
 * OpenRC: `reload` runs `rc-service <name> reload`; `enable`/`disable` run `rc-update add|del <name> default` (a service that does not exist is `svc.not_found`); `mask` and `unmask` are refused (exit 2, `svc.unsupported`).
 * Success prints nothing. Failure prints `Error: [svc.<code>] <reason>` on stderr.
@@ -290,7 +307,7 @@ Without D-Bus, resh runs `systemctl start|restart` (which waits for the job too)
 
 ### logs
 
-* systemd: runs `journalctl --unit=<unit> --no-pager --output=short-iso --lines=<lines>`, adding `--since=<time>`, `--until=<time>`, `--priority=<level>`, `--reverse` and `--follow`. Each value is passed as one argument. `lines` is 1 to 1000000 (default 200). `level` is one of `debug`, `info`, `warning`, `err`/`error`, `crit`/`critical`; `since`/`until` take any journalctl time (`"2026-10-16 09:00"`, `-1h`, `yesterday`) and must not be empty. Invalid values are refused (exit 2).
+* systemd: runs `journalctl --unit=<unit> --lines=<lines> --no-pager --output=short-iso`, adding `--since=<time>`, `--until=<time>`, `--priority=<level>`, `--reverse` and `--follow`. Each value is passed as one argument. `lines` is 1 to 1000000 (default 200). `level` is one of `debug`, `info`, `warning`, `err`/`error`, `crit`/`critical`; `since`/`until` take any journalctl time (`"2026-10-16 09:00"`, `-1h`, `yesterday`) and must not be empty. Invalid values are refused (exit 2).
 * A failing journalctl is `svc.logs_failed` (exit 1, with its message); a missing journalctl is `svc.tool_not_found`; a journal the caller may not read is `svc.permission_denied`.
 * OpenRC: prints the last `lines` lines of the first file found among `/var/log/<name>.log`, `/var/log/<name>/<name>.log` and `/var/log/<name>/current`, using `tail` (`tail -F` with `follow=true`). `since`, `until` and `level` are refused on OpenRC (exit 2, `svc.unsupported`). If none of the files exists, resh exits 1 with `svc.no_logs`, naming the checked paths.
 * `reverse=true` cannot be combined with `follow=true` (exit 2).
@@ -334,11 +351,13 @@ Errors are printed as `Error: [<code>] <message>` on stderr; verbs that print a 
 | `svc.invalid_argument` | 2 | Unknown argument, invalid value, `dry_run=true`, both `timeout` and `timeout_ms`, missing `count`. |
 | `svc.invalid_target` | 2 | Invalid service name, or a URL that cannot be parsed. |
 | `svc.unknown_verb` | 2 | The verb does not exist (with a suggestion). |
-| `svc.unsupported` | 2 | The backend cannot do this: `mask`/`unmask`, `stop force=true`, template `scale`, or `logs` `since`/`until`/`level` on OpenRC. |
+| `svc.unsupported` | 2 | The verb does not apply to the unit type (see Service names), or the backend cannot do it: `mask`/`unmask`, `force=true`, template `scale`, or `logs` `since`/`until`/`level` on OpenRC. |
 | `svc.not_found` | 1 | The unit or service does not exist. |
 | `svc.permission_denied` | 1 | Not permitted (root or a polkit rule is needed), or the journal cannot be read. |
 | `svc.masked` | 1 | The unit is masked, so it cannot be started. |
 | `svc.job_failed` | 1 | A systemd job finished with a result other than `done`/`skipped`; the result is in the message and in `job_result`. |
+| `svc.not_active` | 1 | `start`/`restart`: the job was done, but the unit did not stay running for `settle_ms`. |
+| `svc.link_conflict` | 1 | `enable`/`mask`: an existing file or link is in the way (`force=true` replaces conflicting symlinks). |
 | `svc.partial_failure` | 1 | `scale` of a template: some instance jobs failed (see `errors`). |
 | `svc.no_backend` | 1 | Neither systemd nor OpenRC was detected. |
 | `svc.backend_unavailable` | 1 | systemd was detected but neither D-Bus nor `systemctl` could reach it. |
@@ -464,7 +483,7 @@ resh svc://app.logs lines=50
 ## 8. Technical Foundation
 
 * Implemented in Rust in `src/handles/processes/svch.rs`.
-* systemd access uses the `zbus` D-Bus client against `org.freedesktop.systemd1` (`LoadUnit`, `StartUnit`, `StopUnit`, `RestartUnit`, `ReloadUnit`, the `*UnitFiles` calls, `Reload`, `ListUnits`, the `JobRemoved` signal and `Job.Cancel`); without the bus it runs `systemctl --no-ask-password`, and `logs` runs `journalctl`.
+* systemd access uses the `zbus` D-Bus client against `org.freedesktop.systemd1` (`LoadUnit`, `StartUnit`, `StopUnit`, `RestartUnit`, `ReloadUnit`, the `*UnitFiles` calls, `Reload`, `ListUnits`, the `JobRemoved` signal and `Job.Cancel`); without the bus it runs `systemctl --no-ask-password`, and `logs` runs `journalctl` through the journal helper shared with `log://svc/<service>` (`src/core/journal.rs`).
 * OpenRC access runs `rc-service`, `rc-update` and `tail`, directly (no shell).
 * Each `resh` invocation is a separate process; nothing is kept between calls.
 * Every argument is checked before anything runs (see Safety).

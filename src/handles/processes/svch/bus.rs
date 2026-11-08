@@ -34,6 +34,8 @@ pub(crate) enum BusErrKind {
     Denied,
     /// The unit is masked.
     Masked,
+    /// A unit-file change conflicts with an existing file or link.
+    Conflict,
     /// The deadline passed before the service manager answered.
     Timeout,
     /// Any other refusal or failure.
@@ -67,6 +69,11 @@ pub(crate) struct UnitInfo {
     pub active_enter_us: u64,
     pub active_exit_us: u64,
     pub inactive_enter_us: u64,
+    /// The unit's `Result` (`success`, `exit-code`, ...); services only.
+    pub result: String,
+    /// The service `Type` (`simple`, `oneshot`, ...); services only.
+    pub service_type: String,
+    pub remain_after_exit: bool,
 }
 
 /// A finished job: its object path and systemd's result (`done`, `failed`,
@@ -128,7 +135,8 @@ pub(crate) trait Bus {
         mode: &'static str,
     ) -> Result<String, BusError>;
     fn cancel_job(&self, job: &str) -> Result<(), BusError>;
-    fn unit_files(&self, op: FileOp, unit: &str) -> Result<FileChanges, BusError>;
+    /// `force` replaces conflicting links (enable and mask only).
+    fn unit_files(&self, op: FileOp, unit: &str, force: bool) -> Result<FileChanges, BusError>;
     /// Makes the service manager re-read unit files after a change.
     fn daemon_reload(&self) -> Result<(), BusError>;
     /// Loaded units as (name, active state).
@@ -175,6 +183,7 @@ pub(crate) fn classify(name: &str, desc: &str) -> BusError {
             BusErrKind::Denied
         }
         "UnitMasked" => BusErrKind::Masked,
+        "UnitExists" | "EEXIST" => BusErrKind::Conflict,
         "ServiceUnknown" | "NameHasNoOwner" | "NoServer" | "Disconnected" => {
             BusErrKind::Unavailable
         }
@@ -278,6 +287,9 @@ impl Bus for ZbusBus {
             if let Ok(s) = get_all(&conn, path.as_str(), "org.freedesktop.systemd1.Service") {
                 info.pid = prop(&s, "ExecMainPID").unwrap_or(0);
                 info.exit_status = prop(&s, "ExecMainStatus").unwrap_or(0);
+                info.result = prop(&s, "Result").unwrap_or_default();
+                info.service_type = prop(&s, "Type").unwrap_or_default();
+                info.remain_after_exit = prop(&s, "RemainAfterExit").unwrap_or(false);
             }
             Ok(info)
         })
@@ -346,14 +358,14 @@ impl Bus for ZbusBus {
         })
     }
 
-    fn unit_files(&self, op: FileOp, unit: &str) -> Result<FileChanges, BusError> {
+    fn unit_files(&self, op: FileOp, unit: &str, force: bool) -> Result<FileChanges, BusError> {
         let files = vec![unit.to_string()];
         self.run("the unit-file change", move |conn| {
             let mgr = manager(&conn)?;
             let r = match op {
                 FileOp::Enable => {
                     let (install, changes): (bool, Vec<(String, String, String)>) = mgr
-                        .call("EnableUnitFiles", &(files, false, true))
+                        .call("EnableUnitFiles", &(files, false, force))
                         .map_err(map_zbus)?;
                     FileChanges {
                         carries_install_info: Some(install),
@@ -369,7 +381,7 @@ impl Bus for ZbusBus {
                 FileOp::Mask => FileChanges {
                     carries_install_info: None,
                     changes: mgr
-                        .call("MaskUnitFiles", &(files, false, true))
+                        .call("MaskUnitFiles", &(files, false, force))
                         .map_err(map_zbus)?,
                 },
                 FileOp::Unmask => FileChanges {
@@ -450,6 +462,8 @@ pub(crate) fn classify_systemctl(stderr: &str) -> BusErrKind {
         BusErrKind::Denied
     } else if s.contains("is masked") {
         BusErrKind::Masked
+    } else if s.contains("already exists") || s.contains("file exists") {
+        BusErrKind::Conflict
     } else if s.contains("failed to connect to bus") || s.contains("system has not been booted") {
         BusErrKind::Unavailable
     } else {
@@ -535,6 +549,9 @@ pub(crate) fn parse_show(stdout: &str) -> UnitInfo {
             "Description" => info.description = v.to_string(),
             "ExecMainPID" => info.pid = v.parse().unwrap_or(0),
             "ExecMainStatus" => info.exit_status = v.parse().unwrap_or(0),
+            "Result" => info.result = v.to_string(),
+            "Type" => info.service_type = v.to_string(),
+            "RemainAfterExit" => info.remain_after_exit = v == "yes",
             _ => {}
         }
     }
@@ -545,7 +562,8 @@ impl Bus for SystemctlBus {
     fn unit(&self, unit: &str) -> Result<UnitInfo, BusError> {
         let out = self.checked(&[
             "show",
-            "--property=LoadState,ActiveState,SubState,Description,ExecMainPID,ExecMainStatus",
+            "--property=LoadState,ActiveState,SubState,Description,ExecMainPID,ExecMainStatus,\
+             Result,Type,RemainAfterExit",
             "--",
             unit,
         ])?;
@@ -640,9 +658,9 @@ impl Bus for SystemctlBus {
         ))
     }
 
-    fn unit_files(&self, op: FileOp, unit: &str) -> Result<FileChanges, BusError> {
+    fn unit_files(&self, op: FileOp, unit: &str, force: bool) -> Result<FileChanges, BusError> {
         let mut args = vec![op.verb()];
-        if matches!(op, FileOp::Enable | FileOp::Mask) {
+        if force && matches!(op, FileOp::Enable | FileOp::Mask) {
             args.push("--force");
         }
         args.extend(["--", unit]);

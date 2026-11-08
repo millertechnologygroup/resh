@@ -1,9 +1,9 @@
 Handle: svc
 Verb: start
-Definition: Starts a service and waits for the start job to finish.
+Definition: Starts a service, waits for the start job and checks that it runs.
 
 Usage:
-  resh svc://<service-name>.start [timeout_ms=<ms>]
+  resh svc://<service-name>.start [timeout_ms=<ms>] [settle_ms=<ms>]
 
 Example:
   resh svc://nginx.start
@@ -20,4 +20,6 @@ Example Output:
   }
 
   Shown for a systemd host with --json-pretty. A job that fails exits 1;
-  at timeout_ms (default 120000) the job is cancelled and resh exits 124.
+  so does a unit that is not running settle_ms (default 1000) after its
+  job finished (svc.not_active). At timeout_ms (default 120000) the job is
+  cancelled and resh exits 124.

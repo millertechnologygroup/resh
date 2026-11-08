@@ -31,6 +31,8 @@ fn args(pairs: &[(&str, &str)]) -> Args {
 #[derive(Clone)]
 enum JobPlan {
     Finish(&'static str),
+    /// The job is done, but the unit then shows this state/sub-state/result.
+    DoneThen(&'static str, &'static str, &'static str),
     Hang,
     Refuse(BusErrKind),
 }
@@ -166,6 +168,18 @@ impl Bus for Mock {
         match plan {
             JobPlan::Refuse(k) => return Err(Mock::err(k)),
             JobPlan::Hang => {}
+            JobPlan::DoneThen(state, sub, result) => {
+                let mut units = self.units.borrow_mut();
+                let e = units.entry(unit.to_string()).or_default();
+                e.load_state = "loaded".into();
+                e.active_state = state.into();
+                e.sub_state = sub.into();
+                e.result = result.into();
+                self.queue.borrow_mut().push_back(JobRemoved {
+                    path: path.clone(),
+                    result: "done".into(),
+                });
+            }
             JobPlan::Finish(r) => {
                 if r == "done" {
                     let state = match method {
@@ -179,7 +193,9 @@ impl Bus for Mock {
                         ..UnitInfo::default()
                     });
                     e.active_state = state.into();
-                } else if let Some(u) = self.units.borrow_mut().get_mut(unit) {
+                } else if r != "skipped"
+                    && let Some(u) = self.units.borrow_mut().get_mut(unit)
+                {
                     u.active_state = "failed".into();
                 }
                 self.queue.borrow_mut().push_back(JobRemoved {
@@ -203,10 +219,12 @@ impl Bus for Mock {
         }
         Ok(())
     }
-    fn unit_files(&self, op: FileOp, unit: &str) -> Result<FileChanges, BusError> {
-        self.calls
-            .borrow_mut()
-            .push(format!("files {} {unit}", op.verb()));
+    fn unit_files(&self, op: FileOp, unit: &str, force: bool) -> Result<FileChanges, BusError> {
+        self.calls.borrow_mut().push(format!(
+            "files {} {unit}{}",
+            op.verb(),
+            if force { " force" } else { "" }
+        ));
         if let Some(k) = self.files_err {
             return Err(Mock::err(k));
         }
@@ -547,9 +565,9 @@ fn arguments_are_checked_strictly() {
         logs::journal_args("x.service", &o),
         [
             "--unit=x.service",
+            "--lines=5",
             "--no-pager",
             "--output=short-iso",
-            "--lines=5",
             "--since=-1h",
             "--until=now",
             "--priority=err",
@@ -708,7 +726,11 @@ fn start_waits_for_the_job_and_reports_its_result() {
         on_mock("x", "start", &[], &m).fails(1, "svc.job_failed");
     }
     // skipped counts as success, as in systemctl.
-    let m = Mock::new().plan("StartUnit", "x.service", JobPlan::Finish("skipped"));
+    let m = Mock::new().with_unit("x.service", "active").plan(
+        "StartUnit",
+        "x.service",
+        JobPlan::Finish("skipped"),
+    );
     on_mock("x", "start", &[], &m).ok();
 
     // Refused before a job exists.
@@ -1159,11 +1181,11 @@ fn systemctl_route_maps_results() {
         BusErrKind::NotFound
     );
     assert!(b.cancel_job("systemctl-job-1").is_err());
-    let ch = b.unit_files(FileOp::Enable, "x.service").unwrap();
+    let ch = b.unit_files(FileOp::Enable, "x.service", true).unwrap();
     assert_eq!(ch.carries_install_info, Some(true));
     assert_eq!(ch.changes.len(), 1);
     assert_eq!(
-        b.unit_files(FileOp::Enable, "nosuch.service")
+        b.unit_files(FileOp::Enable, "nosuch.service", false)
             .unwrap_err()
             .kind,
         BusErrKind::NotFound
@@ -1214,4 +1236,165 @@ fn openrc_pid_and_missing_detection() {
         " * rc-service: service `nosuch' does not exist"
     ));
     assert!(!openrc::service_missing(" * status: stopped"));
+}
+
+#[test]
+fn start_checks_the_unit_runs_after_its_job() {
+    // A job that is done while the unit already died (Type=simple crash).
+    for (state, sub) in [
+        ("failed", "failed"),
+        ("inactive", "dead"),
+        ("activating", "auto-restart"),
+        ("deactivating", "stop-sigterm"),
+    ] {
+        let m = Mock::new().plan(
+            "StartUnit",
+            "crash.service",
+            JobPlan::DoneThen(state, sub, "exit-code"),
+        );
+        let o = on_mock("crash", "start", &[("settle_ms", "0")], &m).fails(1, "svc.not_active");
+        let v = o.json();
+        assert_eq!(v["result"], "not_active");
+        assert_eq!(v["job_result"], "done");
+        assert_eq!(v["active_state"], state);
+        assert_eq!(v["sub_state"], sub);
+        assert_eq!(v["unit_result"], "exit-code");
+        assert!(o.err.contains("exit-code"), "{}", o.err);
+    }
+    let m = Mock::new().plan(
+        "RestartUnit",
+        "crash.service",
+        JobPlan::DoneThen("failed", "failed", "signal"),
+    );
+    on_mock("crash", "restart", &[], &m).fails(1, "svc.not_active");
+    // Running states: active, reloading, activating (still starting).
+    for (state, sub) in [
+        ("active", "running"),
+        ("reloading", "reload"),
+        ("activating", "start"),
+    ] {
+        let m = Mock::new().plan(
+            "StartUnit",
+            "x.service",
+            JobPlan::DoneThen(state, sub, "success"),
+        );
+        let v = on_mock("x", "start", &[("settle_ms", "50")], &m)
+            .ok()
+            .json();
+        assert_eq!(v["result"], "success");
+        assert_eq!(v["active_state"], state);
+    }
+    // A oneshot without RemainAfterExit is inactive after a good run.
+    let mut i = UnitInfo {
+        load_state: "loaded".into(),
+        active_state: "inactive".into(),
+        sub_state: "dead".into(),
+        result: "success".into(),
+        service_type: "oneshot".into(),
+        ..UnitInfo::default()
+    };
+    assert!(systemd::running_ok(&i));
+    i.remain_after_exit = true;
+    assert!(!systemd::running_ok(&i));
+    i.remain_after_exit = false;
+    i.result = "exit-code".into();
+    assert!(!systemd::running_ok(&i));
+    i.service_type = "simple".into();
+    i.result = "success".into();
+    assert!(!systemd::running_ok(&i));
+
+    // The settle window lasts settle_ms, bounded by the deadline.
+    let m = Mock::new();
+    let t = Instant::now();
+    on_mock("x", "start", &[("settle_ms", "300")], &m).ok();
+    assert!(t.elapsed() >= Duration::from_millis(300));
+    let t = Instant::now();
+    on_mock(
+        "x",
+        "start",
+        &[("settle_ms", "5000"), ("timeout_ms", "200")],
+        &m,
+    )
+    .ok();
+    assert!(t.elapsed() < Duration::from_secs(2));
+    assert!(parse_args("start", &args(&[("settle_ms", "x")])).is_err());
+    assert_eq!(
+        parse_args("restart", &Args::new()).unwrap().0,
+        Op::Restart {
+            settle: Duration::from_millis(1000)
+        }
+    );
+}
+
+#[test]
+fn enable_and_mask_force_only_on_request() {
+    for verb in ["enable", "mask"] {
+        let m = Mock::new();
+        on_mock("web", verb, &[], &m).ok();
+        assert_eq!(m.calls()[0], format!("files {verb} web.service"));
+        let m = Mock::new();
+        on_mock("web", verb, &[("force", "true")], &m).ok();
+        assert_eq!(m.calls()[0], format!("files {verb} web.service force"));
+        let mut m = Mock::new();
+        m.files_err = Some(BusErrKind::Conflict);
+        let o = on_mock("web", verb, &[], &m).fails(1, "svc.link_conflict");
+        assert!(o.err.contains("force=true"), "{}", o.err);
+    }
+    for verb in ["disable", "unmask"] {
+        let e = parse_args(verb, &args(&[("force", "true")])).unwrap_err();
+        assert_eq!(e.code, "svc.invalid_argument");
+    }
+    assert!(parse_args("enable", &args(&[("force", "x")])).is_err());
+    assert_eq!(
+        classify("org.freedesktop.systemd1.UnitExists", "File exists").kind,
+        BusErrKind::Conflict
+    );
+    assert_eq!(
+        classify_systemctl("Failed to enable unit: File /etc/x already exists."),
+        BusErrKind::Conflict
+    );
+}
+
+#[test]
+fn unit_types_are_kept_and_checked() {
+    for (stage, unit) in [
+        ("svc://docker.socket.status", "docker.socket"),
+        ("svc://fstrim.timer.start", "fstrim.timer"),
+        ("svc://multi-user.target.status", "multi-user.target"),
+        ("svc://home.mount.reload", "home.mount"),
+        ("svc://user.slice.status", "user.slice"),
+        ("svc://net.eth0.status", "net.eth0.service"),
+        ("svc://a.b.status", "a.b.service"),
+    ] {
+        assert_eq!(handle_of(stage).unit_name(), unit, "{stage}");
+    }
+    for (verb, unit) in [
+        ("start", "dev-sda.device"),
+        ("restart", "session-1.scope"),
+        ("stop", "dev-sda.device"),
+        ("enable", "session-1.scope"),
+        ("mask", "dev-sda.device"),
+        ("reload", "docker.socket"),
+        ("reload", "fstrim.timer"),
+        ("reload", "multi-user.target"),
+        ("scale", "docker.socket"),
+        ("scale", "fstrim.timer"),
+    ] {
+        let e = check_unit_type(verb, unit).unwrap_err();
+        assert_eq!((e.exit, e.code), (2, "svc.unsupported"), "{verb} {unit}");
+    }
+    for (verb, unit) in [
+        ("start", "docker.socket"),
+        ("stop", "session-1.scope"),
+        ("reload", "home.mount"),
+        ("reload", "x.service"),
+        ("scale", "w@.service"),
+        ("status", "dev-sda.device"),
+        ("wait", "session-1.scope"),
+        ("logs", "docker.socket"),
+        ("is-enabled", "fstrim.timer"),
+        ("enable", "fstrim.timer"),
+    ] {
+        assert!(check_unit_type(verb, unit).is_ok(), "{verb} {unit}");
+    }
 }

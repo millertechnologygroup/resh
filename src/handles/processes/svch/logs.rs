@@ -1,25 +1,21 @@
 //! `svc://<service>.logs`: the journal through `journalctl` on systemd, the
 //! service's log file through `tail` on OpenRC. Tools run directly (no
-//! shell), each value in its own `--name=value` argument. Without follow the
+//! shell), each value in its own `--name=value` argument (see
+//! `core::journal`, shared with `log://svc/<service>`). Without follow the
 //! tool runs under the deadline (exit 124 past it); with follow its lines are
 //! streamed as they arrive and `timeout_ms`, when given, is how long to
 //! follow: reaching it ends the command normally.
 
 use super::{Ctx, Fail, Tools};
+use crate::core::journal::{self as cj, End, Event, Flow, NO_ENTRIES, Query, denied};
 use crate::core::process;
 use crate::core::registry::IoStreams;
 use crate::core::status::exit;
 use std::ffi::OsStr;
-use std::io::{self, BufRead, BufReader};
-use std::os::unix::process::CommandExt;
+use std::io;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::process::Command;
 use std::time::{Duration, Instant};
-
-/// The line journalctl prints when nothing matched; it is not a log line.
-const NO_ENTRIES: &str = "-- No entries --";
-const RECV_WAIT: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LogOpts {
@@ -33,35 +29,23 @@ pub(crate) struct LogOpts {
     pub follow_for: Option<Duration>,
 }
 
-/// journalctl arguments for `unit`.
-pub(crate) fn journal_args(unit: &str, o: &LogOpts) -> Vec<String> {
-    let mut v = vec![
-        format!("--unit={unit}"),
-        "--no-pager".to_string(),
-        "--output=short-iso".to_string(),
-        format!("--lines={}", o.lines),
-    ];
-    if let Some(s) = &o.since {
-        v.push(format!("--since={s}"));
+fn query<'a>(unit: &'a str, o: &'a LogOpts) -> Query<'a> {
+    Query {
+        unit,
+        lines: o.lines,
+        output: "short-iso",
+        since: o.since.as_deref(),
+        until: o.until.as_deref(),
+        priority: o.level,
+        reverse: o.reverse,
+        follow: o.follow,
     }
-    if let Some(u) = &o.until {
-        v.push(format!("--until={u}"));
-    }
-    if let Some(p) = o.level {
-        v.push(format!("--priority={p}"));
-    }
-    if o.reverse {
-        v.push("--reverse".to_string());
-    }
-    if o.follow {
-        v.push("--follow".to_string());
-    }
-    v
 }
 
-/// True when journalctl says it could not read the journal asked for.
-fn denied(stderr: &str) -> bool {
-    stderr.contains("not seeing messages from other") || stderr.contains("insufficient permissions")
+/// journalctl arguments for `unit`.
+#[cfg(test)]
+pub(crate) fn journal_args(unit: &str, o: &LogOpts) -> Vec<String> {
+    query(unit, o).args()
 }
 
 fn access_denied(unit: &str, stderr: &str) -> Fail {
@@ -98,10 +82,7 @@ pub(crate) fn journal(
     o: &LogOpts,
     io: &mut IoStreams,
 ) -> anyhow::Result<Option<Fail>> {
-    let mut cmd = Command::new(&t.journalctl);
-    cmd.args(journal_args(&c.unit, o))
-        .env("SYSTEMD_COLORS", "0")
-        .env("SYSTEMD_PAGER", "");
+    let mut cmd = query(&c.unit, o).command(&t.journalctl);
     if o.follow {
         return follow(cmd, "journalctl", &c.unit, o.follow_for, io);
     }
@@ -211,136 +192,76 @@ pub(crate) fn openrc(
     Ok(None)
 }
 
-enum Msg {
-    Line(String),
-    OutEnd,
-    Err(String),
-}
-
-/// Stops the tool and everything it started. False when something outlived
-/// SIGKILL.
-fn stop(child: &mut std::process::Child, tool: &str) -> bool {
-    let stopped = process::stop_tree(tool, child.id() as libc::pid_t);
-    // Reading changes nothing: not an unknown outcome for main to report.
-    let _ = process::take_lost();
-    let _ = child.try_wait();
-    stopped != process::Stopped::StillRunning
+/// Writes the complete lines in `buf`, keeping a partial last line.
+fn flush_lines(buf: &mut Vec<u8>, io: &mut IoStreams) -> io::Result<()> {
+    while let Some(i) = buf.iter().position(|b| *b == b'\n') {
+        let line: Vec<u8> = buf.drain(..=i).collect();
+        let text = String::from_utf8_lossy(&line[..i]);
+        let text = text.trim_end_matches('\r');
+        if text != NO_ENTRIES {
+            writeln!(io.stdout, "{text}")?;
+        }
+    }
+    io.stdout.flush()
 }
 
 /// Streams the lines of `cmd` until it exits or `run_for` has passed.
 fn follow(
-    mut cmd: Command,
+    cmd: Command,
     tool: &str,
     unit: &str,
     run_for: Option<Duration>,
     io: &mut IoStreams,
 ) -> anyhow::Result<Option<Fail>> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
     let deadline = run_for.map(|d| Instant::now() + d);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    process::contain(&mut cmd);
-    // SAFETY: prctl takes plain integers and is async-signal-safe. If resh
-    // dies (Ctrl-C), the tool is told to stop instead of running on.
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-            Ok(())
-        });
-    }
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Ok(Some(Fail::new(
-                exit::FAILED,
-                "svc.tool_not_found",
-                format!("{} was not found", cmd.get_program().to_string_lossy()),
-            )));
+    let mut buf = Vec::new();
+    let mut denied_line = None;
+    let mut reader_gone = false;
+    let end = cj::follow(cmd, tool, deadline, |ev| match ev {
+        Event::Out(chunk) => {
+            buf.extend_from_slice(chunk);
+            if flush_lines(&mut buf, io).is_err() {
+                // The reader went away: stop quietly.
+                reader_gone = true;
+                return Ok(Flow::Stop);
+            }
+            Ok(Flow::Continue)
         }
-        Err(e) => {
-            return Ok(Some(Fail::new(
-                exit::FAILED,
-                "svc.logs_failed",
-                format!("cannot run {tool}: {e}"),
-            )));
+        Event::Err(line) if denied(line) => {
+            denied_line = Some(line.to_string());
+            Ok(Flow::Stop)
         }
-    };
-    let (tx, rx) = mpsc::channel::<Msg>();
-    if let Some(out) = child.stdout.take() {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            let mut r = BufReader::new(out);
-            let mut buf = Vec::new();
-            while matches!(r.read_until(b'\n', &mut buf), Ok(n) if n > 0) {
-                let line = String::from_utf8_lossy(&buf)
-                    .trim_end_matches(['\n', '\r'])
-                    .to_string();
-                buf.clear();
-                if tx.send(Msg::Line(line)).is_err() {
-                    return;
-                }
-            }
-            let _ = tx.send(Msg::OutEnd);
-        });
-    } else {
-        let _ = tx.send(Msg::OutEnd);
+        Event::Err(_) => Ok(Flow::Continue),
+    })?;
+    if let Some(line) = denied_line {
+        return Ok(Some(access_denied(unit, &line)));
     }
-    if let Some(err) = child.stderr.take() {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            let r = BufReader::new(err);
-            for line in r.lines().map_while(Result::ok) {
-                if tx.send(Msg::Err(line)).is_err() {
-                    return;
-                }
-            }
-        });
+    if reader_gone {
+        return Ok(None);
     }
-    drop(tx);
-    let mut stderr = String::new();
-    loop {
-        let wait = deadline.map_or(RECV_WAIT, |d| {
-            RECV_WAIT.min(d.saturating_duration_since(Instant::now()))
-        });
-        match rx.recv_timeout(wait) {
-            Ok(Msg::Line(l)) => {
-                if l != NO_ENTRIES {
-                    let written = writeln!(io.stdout, "{l}").and_then(|_| io.stdout.flush());
-                    if written.is_err() {
-                        // The reader went away: stop quietly.
-                        let _ = stop(&mut child, tool);
-                        return Ok(None);
-                    }
-                }
-            }
-            Ok(Msg::Err(line)) => {
-                if denied(&line) {
-                    let _ = stop(&mut child, tool);
-                    return Ok(Some(access_denied(unit, &line)));
-                }
-                stderr.push_str(&line);
-                stderr.push('\n');
-            }
-            Ok(Msg::OutEnd) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let status = child.wait()?;
-                if status.success() {
-                    return Ok(None);
-                }
-                return Ok(Some(tool_failed(tool, status.code(), &stderr)));
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
-        if deadline.is_some_and(|d| Instant::now() >= d) {
-            if stop(&mut child, tool) {
-                return Ok(None);
-            }
-            return Ok(Some(Fail::new(
-                exit::TIMEOUT,
-                "svc.timeout",
-                format!(
-                    "timeout_ms passed and {tool} could not be stopped; it may still be running"
-                ),
-            )));
-        }
+    if !buf.is_empty() {
+        buf.push(b'\n');
+        let _ = flush_lines(&mut buf, io);
     }
+    Ok(match end {
+        End::SpawnFailed(e) if e.kind() == io::ErrorKind::NotFound => Some(Fail::new(
+            exit::FAILED,
+            "svc.tool_not_found",
+            format!("{program} was not found"),
+        )),
+        End::SpawnFailed(e) => Some(Fail::new(
+            exit::FAILED,
+            "svc.logs_failed",
+            format!("cannot run {tool}: {e}"),
+        )),
+        End::Exited(status, _) if status.success() => None,
+        End::Exited(status, stderr) => Some(tool_failed(tool, status.code(), &stderr)),
+        End::Deadline { stopped: true } | End::Stopped => None,
+        End::Deadline { stopped: false } => Some(Fail::new(
+            exit::TIMEOUT,
+            "svc.timeout",
+            format!("timeout_ms passed and {tool} could not be stopped; it may still be running"),
+        )),
+    })
 }
