@@ -14,7 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (pkg, backup, plugin) still print their own formats until they are.
+  `<handle>.invalid_argument`. Handles not yet aligned (backup, plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
 - Stage output is streamed as it is written (`--json-pretty` still buffers).
@@ -387,6 +387,28 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
 - No cert output is written through a symlink; certificates, CSRs and
   signatures are 0644, keys 0600.
 
+### pkg
+
+- Every verb reads only `input=<json>`; any other argument, an unknown JSON
+  key (also in package entries), a wrong type or an invalid value is refused
+  with exit 2 (`pkg.invalid_argument`). Options a manager cannot honor are
+  refused (`pkg.unsupported_option`) instead of being ignored. Exit codes are
+  0/1/2/124 with `pkg.*` codes.
+- `timeout_ms` stops the package manager and everything it started and
+  exits 124; `pkg.md` 3.3 lists what each manager may leave behind.
+- restore `mode: exact` installs, upgrades and downgrades to the locked
+  versions and fails a package left at another version (pacman only to what
+  its repositories carry; brew refuses); `best_effort` falls back with a
+  warning. Versions are ordered by each manager's own algorithm.
+  `extra_args` and `env` reach every restore command.
+- snapshot `format: yaml` produced JSON and text lockfiles could not be
+  restored; both round-trip now. `exclude_patterns` are shell globs.
+- apt: package upgrades no longer install packages that were not installed
+  (`--only-upgrade`); config-files packages are no longer listed as
+  installed. dnf 5 is supported.
+- Tested end to end in Docker against apt (Debian 13, Ubuntu 24.04), dnf
+  (Fedora 42), yum (Rocky 9), pacman (Arch) and apk (Alpine).
+
 ### http and https
 
 - 4xx/5xx statuses exit 1 (`http.status_error`) on every verb; `timeout_ms`
@@ -499,8 +521,8 @@ tests drive each verb through the handle (`option_tests` in `cronh.rs` and
   for a package known only from `/var/lib/dpkg/status`. apt lockfiles from
   earlier releases report every package as a repository mismatch; take a new
   snapshot.
-- **Exit codes:** pkg `snapshot inline` exits 2; other pkg errors exit 1
-  until aligned with 0/1/2/124 (batch 4). cron is aligned (below).
+- **Exit codes:** pkg is aligned: every error is `Error: [pkg.<code>] ...`
+  with exit 0/1/2/124; codes are listed in `pkg.md` 3.6.
 
 ## v1.0.6-beta security release (2026-11-03)
 
@@ -692,7 +714,7 @@ This section supersedes the test counts and "Still open" list in the
 - **Significant limitations that remain** (each is documented in its
   handle's page under `docs/`):
   - Unsupported by design in this release: encrypted ZIP creation, backup
-    `schedule` installation, pkg restore version pinning/rollback, cert
+    `schedule` installation, cert
     encrypted keys. (dns `zone.update`
     and cert CMS signatures were added after v1.0.6-beta.)
   - SMTP profile passwords are kept in the OS keyring (Secret Service /
@@ -711,11 +733,7 @@ This section supersedes the test counts and "Still open" list in the
     cache/db writes, mq, mail send and backup restore; for
     these `dry_run=true` is refused before anything runs; git enforces
     `timeout_ms` on every verb (exit 124; network verbs default to 600 s); `file` enforces `timeout_ms` on every verb whose work can be
-    long (exit 124) and refuses it on instant verbs; pkg timeouts stop
-    waiting but do not kill the child process: it either keeps running and
-    finishes after the timeout is reported, or is killed by `SIGPIPE`
-    part-way through when it next writes output. Check package-manager state
-    after a timeout.
+    long (exit 124) and refuses it on instant verbs.
   - Option-injection hardening (`--` separators) for backup argv, cron job
     fields and ssh `command_args` is in v1.0.4-beta (see the section
     above); in v1.0.3-beta and earlier, never pass untrusted input in
@@ -1064,6 +1082,9 @@ typed structs:
 
 ### H10. `pkg restore` with a text lockfile can never succeed
 
+- **Fixed:** a text lockfile restores with the manager it records
+  (`# manager: <name>`) or the requested/detected one.
+
 - **Where:** `src/handles/system/pkgh.rs:8416` hard-codes the lockfile's
   manager as `"auto"`.
 - **Impact:** `resolve_restore_manager` (`:8472-8503`) then fails either way:
@@ -1148,7 +1169,7 @@ typed structs:
   uptime) describe the whole host inside a container; a `statvfs` hung past
   `timeout_ms` leaves a worker thread behind.
 - **pkg.** Every verb needs `manager` in `input`, but the `PKG_HELP_TEXT`
-  examples omit it.
+  examples omit it. Fixed: every example sets manager (tested).
 
 ---
 
@@ -1160,7 +1181,8 @@ The per-handle `*_HELP_TEXT` constants (shown by forms like `svc://--help`)
 disagree with the code in many places, including wrong argument names,
 wrong defaults and non-working URL forms. Examples:
 
-- **pkg:** the examples omit `manager`.
+- **pkg:** the examples omit `manager`. Fixed: every example sets manager
+  (tested).
 - **plugin:** the examples use `plugin://aws.enable()`.
 
 The new `Handle::help()` metadata follows the code. Consider removing the old
