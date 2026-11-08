@@ -369,7 +369,8 @@ fn user_add_refuses_option_shaped_primary_group_before_running() {
             cmd.arg("dry_run=true");
         }
         let r = run(&mut cmd);
-        assert_eq!(r.code, 1, "{}", r.stderr);
+        // Invalid usage: exit 2 (project-wide exit codes), nothing run.
+        assert_eq!(r.code, 2, "{}", r.stderr);
         assert!(r.stderr.contains("user.group_name_invalid"), "{}", r.stderr);
         assert!(r.stderr.contains("primary_group"), "{}", r.stderr);
         assert!(f.programs_called().is_empty(), "{:?}", f.programs_called());

@@ -1,0 +1,34 @@
+Handle: user
+
+Description:
+  The user handle creates, deletes, and inspects local user accounts, groups,
+  and group memberships, and changes passwords and account lock state. The
+  default system backend reads the user database with getpwnam, getgrnam, and
+  getgrouplist and makes changes by running useradd, groupadd, usermod, userdel,
+  groupdel, gpasswd, or chpasswd (passwords are hashed by resh and passed to
+  chpasswd -e on standard input), which needs root, while dry_run=true only
+  lists those commands as planned_commands and backend=mock uses an empty
+  in-memory store. Name a user as user://alice, a group as user://group/admins,
+  or a member as user://membership/alice (the three-slash forms such as
+  user:///alice also work), or pass username=, group_name=, or member=.
+
+Available Verbs:
+  exists   Reports whether a user account exists, looked up by username, and
+           checks that its UID matches when uid is also given.
+  groups   Lists the groups a user belongs to, marking each as primary,
+           supplementary, or a system group.
+  add      Creates a user, a group, or a user's group memberships according to
+           mode, which defaults to user.
+  delete   Removes a user, a group, or a user's group memberships according to
+           mode, which defaults to user.
+  passwd   Sets a user's password from a plaintext password (given inline, in an
+           environment variable, or on standard input), hashed with hash_scheme
+           or the backend default, or from a precomputed new_password_hash.
+  lock     Locks a user account so its password can no longer be used to log in.
+  unlock   Unlocks a previously locked user account.
+
+Usage:
+  resh user://<name>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh user <verb> --help

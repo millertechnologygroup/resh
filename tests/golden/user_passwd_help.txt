@@ -1,0 +1,49 @@
+Handle: user
+Verb: passwd
+Definition: Sets a user's password from a plaintext password (given inline, in
+  an environment variable, or on standard input), hashed with hash_scheme or the
+  backend default, or from a precomputed new_password_hash.
+
+Usage:
+  resh user://<user>.passwd new_password_plain=<pw>|
+    new_password_env=<VAR>|new_password_stdin=true|
+    new_password_hash=<hash> [username=<name>]
+    [hash_scheme=backend_default|sha512_crypt|bcrypt|argon2id]
+    [require_old_password=true|false] [old_password_plain=<pw>]
+    [old_password_env=<VAR>] [ignore_if_missing=true|false]
+    [dry_run=true|false] [backend=system|mock] [format=json|text]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty user://alice.passwd new_password_env=NEW_PW dry_run=true
+
+Example Output:
+  {
+    "backend": "system",
+    "dry_run": true,
+    "ok": true,
+    "password": {
+      "changed": false,
+      "old_password_verified": false,
+      "scheme": "sha512_crypt",
+      "source": "env"
+    },
+    "planned_commands": [
+      "chpasswd -e <<< (redacted)"
+    ],
+    "user": {
+      "existed": true,
+      "missing": false,
+      "username": "alice"
+    },
+    "warnings": [
+      "Dry run: no password was actually changed."
+    ]
+  }
+
+  Shown for the system backend with --json-pretty, NEW_PW holding the
+  password. resh hashes it (backend_default is sha512_crypt) and passes
+  the hash to chpasswd -e on stdin (needs root); the system backend
+  rejects argon2id. new_password_plain= is visible in the process list.
+  require_old_password needs read access to /etc/shadow and checks
+  sha512_crypt, sha256_crypt, bcrypt and argon2 hashes, not yescrypt.

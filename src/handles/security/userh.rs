@@ -1,26 +1,37 @@
-use anyhow::{Result, bail};
-use libc;
-use ring::pbkdf2;
-use ring::rand::{SecureRandom, SystemRandom};
+//! `user://`: local accounts, groups and memberships.
+//!
+//! Every verb checks its arguments strictly before doing anything
+//! (`args`), then runs against a backend (`backend`): the system backend
+//! reads the account database through NSS and changes it with the
+//! shadow-utils tools under the verb's deadline (`exec`); new passwords are
+//! hashed here (`sha_crypt`, bcrypt, argon2) and handed to `chpasswd -e` on
+//! standard input, never on a command line.
+
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::ffi::CString;
 use std::fmt;
-#[cfg(not(test))]
-use std::io::Write;
+#[cfg(test)]
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use url::Url;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use bcrypt;
-use std::num::NonZeroU32;
-
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
-    status::Status,
+    status::{Status, exit},
+};
+
+mod args;
+mod backend;
+mod exec;
+mod sha_crypt;
+mod verbs;
+
+pub use backend::{
+    BackendOp, MockBackend, SystemBackend, SystemCommand, UserBackendProvider, hash_password,
+    hash_scheme_of, parse_passwd_status, shadow_field_is_locked, shadow_password_field,
+    system_commands, verify_password_hash,
 };
 
 /// Metadata for `resh user --help` and `resh user <verb> --help`.
@@ -29,11 +40,11 @@ static USER_HELP: HandleHelp = HandleHelp {
         and group memberships, and changes passwords and account lock state. The default \
         system backend reads the user database with getpwnam, getgrnam, and getgrouplist and \
         makes changes by running useradd, groupadd, usermod, userdel, groupdel, gpasswd, or \
-        chpasswd, which normally needs root, while dry_run=true only lists those commands as \
-        planned_commands and backend=mock uses an empty in-memory store. Name a user as \
-        user://alice, a group as user://group/admins, or a member as \
-        user://membership/alice (the three-slash forms such as user:///alice also work), or \
-        pass username=, group_name=, or member=.",
+        chpasswd (passwords are hashed by resh and passed to chpasswd -e on standard input), \
+        which needs root, while dry_run=true only lists those commands as planned_commands \
+        and backend=mock uses an empty in-memory store. Name a user as user://alice, a group \
+        as user://group/admins, or a member as user://membership/alice (the three-slash forms \
+        such as user:///alice also work), or pass username=, group_name=, or member=.",
     usage: "resh user://<name>.<verb>[(key=value,...)]",
     verbs: &[
         VerbHelp {
@@ -41,21 +52,21 @@ static USER_HELP: HandleHelp = HandleHelp {
             definition: "Reports whether a user account exists, looked up by username, and \
                 checks that its UID matches when uid is also given.",
             detail: Some(VerbDetail {
-                usage: "resh user://<username>.exists [uid=<n>] [backend=system|mock]\n  \
-                    [format=json|text]",
-                example: "resh --json-pretty user://alice.exists",
+                usage: "resh user://<username>.exists [username=<name>] [uid=<n>]\n  \
+                    [backend=system|mock] [format=json|text]",
+                example: "resh --json-pretty user://root.exists",
                 example_output: Some(
                     r#"{
   "backend": "system",
   "ok": true,
   "query": {
     "uid": null,
-    "username": "alice"
+    "username": "root"
   },
   "user": {
     "exists": true,
-    "uid": 1001,
-    "username": "alice"
+    "uid": 0,
+    "username": "root"
   }
 }
 
@@ -69,27 +80,21 @@ username and uid, plus a warnings array."#,
             definition: "Lists the groups a user belongs to, marking each as primary, \
                 supplementary, or a system group.",
             detail: Some(VerbDetail {
-                usage: "resh user://<username>.groups [include_primary=true|false]\n  \
-                    [include_supplementary=true|false] [include_system_groups=true|false]\n  \
-                    [min_gid_for_system=<n>] [group_name_filter=<group>]\n  \
-                    [ignore_if_missing=true|false] [backend=system|mock] [format=json|text]",
-                example: "resh --json-pretty user://alice.groups",
+                usage: "resh user://<username>.groups [username=<name>]\n  \
+                    [include_primary=true|false] [include_supplementary=true|false]\n  \
+                    [include_system_groups=true|false] [min_gid_for_system=<n>]\n  \
+                    [group_name_filter=<group>] [ignore_if_missing=true|false]\n  \
+                    [backend=system|mock] [format=json|text]",
+                example: "resh --json-pretty user://root.groups",
                 example_output: Some(
                     r#"{
   "backend": "system",
   "groups": [
     {
-      "gid": 1001,
-      "name": "alice",
+      "gid": 0,
+      "name": "root",
       "primary": true,
       "supplementary": false,
-      "system_group": false
-    },
-    {
-      "gid": 10,
-      "name": "wheel",
-      "primary": false,
-      "supplementary": true,
       "system_group": true
     }
   ],
@@ -97,8 +102,8 @@ username and uid, plus a warnings array."#,
   "user": {
     "existed": true,
     "missing": false,
-    "uid": 1001,
-    "username": "alice"
+    "uid": 0,
+    "username": "root"
   }
 }
 
@@ -112,12 +117,14 @@ listed first, then the supplementary groups from getgrouplist."#,
             definition: "Creates a user, a group, or a user's group memberships according to \
                 mode, which defaults to user.",
             detail: Some(VerbDetail {
-                usage: "resh user://<name>.add [mode=user|group|membership] [uid=<n>]\n  \
-                    [primary_group=<group>] [supplementary_groups=<g1,g2>] [home=<path>]\n  \
-                    [shell=<path>] [gecos=<text>] [gid=<n>] [group_name=<group>]\n  \
-                    [member=<user>] [groups=<g1,g2>] [ignore_if_exists=true|false]\n  \
-                    [force=true|false] [dry_run=true|false] [backend=system|mock]\n  \
-                    [format=json|text]",
+                usage: "resh user://<name>.add [mode=user|group|membership]\n  \
+                    [username=<name>] [uid=<n>] [primary_group=<group>]\n  \
+                    [supplementary_groups=<g1,g2>] [groups=<g1,g2>] [home=<path>]\n  \
+                    [create_home=true|false] [shell=<path>] [gecos=<text>]\n  \
+                    [password_hash=<hash>] [group_name=<group>] [gid=<n>]\n  \
+                    [member=<user>] [ignore_if_exists=true|false] [force=true|false]\n  \
+                    [dry_run=true|false] [backend=system|mock] [format=json|text]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty user://alice.add mode=user shell=/bin/zsh \
                     dry_run=true",
                 example_output: Some(
@@ -152,10 +159,10 @@ listed first, then the supplementary groups from getgrouplist."#,
 }
 
 Shown for mode=user with --json-pretty. Without dry_run the commands are
-run and need root. In mode=user, groups= is another name for
-supplementary_groups=; in mode=membership it lists the groups to join.
-mode=group reports a group object, and mode=membership reports member
-and memberships."#,
+run and need root; timeout_ms (default 60000) bounds them. In mode=user,
+groups= is another name for supplementary_groups=; in mode=membership it
+lists the groups to join. mode=group reports a group object, and
+mode=membership reports member and memberships."#,
                 ),
             }),
         },
@@ -165,12 +172,14 @@ and memberships."#,
                 mode, which defaults to user.",
             detail: Some(VerbDetail {
                 usage: "resh user://<name>.delete [mode=user|group|membership]\n  \
-                    [remove_home=true|false] [remove_mail=true|false]\n  \
+                    [username=<name>] [remove_home=true|false] [remove_mail=true|false]\n  \
                     [remove_from_all_groups=true|false] [protect_system_users=true|false]\n  \
                     [min_uid_for_delete=<n>] [group_name=<group>] [only_if_empty=true|false]\n  \
+                    [protect_system_groups=true|false] [min_gid_for_delete=<n>]\n  \
                     [member=<user>] [groups=<g1,g2>] [all_groups=true|false]\n  \
-                    [ignore_if_missing=true|false] [force=true|false] [dry_run=true|false]\n  \
-                    [<option>=<value> ...]",
+                    [ignore_if_missing=true|false] [force=true|false]\n  \
+                    [dry_run=true|false] [backend=system|mock] [format=json|text]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty user://alice.delete remove_home=true dry_run=true",
                 example_output: Some(
                     r#"{
@@ -180,6 +189,11 @@ and memberships."#,
     "path": "/home/alice",
     "removed": false,
     "was_present": true
+  },
+  "mail": {
+    "path": "/var/mail/alice",
+    "removed": false,
+    "was_present": false
   },
   "memberships": [
     {
@@ -192,7 +206,7 @@ and memberships."#,
   "mode": "user",
   "ok": true,
   "planned_commands": [
-    "userdel -r alice"
+    "userdel -r -- alice"
   ],
   "user": {
     "deleted": false,
@@ -204,22 +218,27 @@ and memberships."#,
 }
 
 Shown for mode=user on the system backend with --json-pretty. Without
-dry_run the commands are run and need root."#,
+dry_run the commands are run and need root; timeout_ms (default 60000)
+bounds them. userdel removes the account from every group."#,
                 ),
             }),
         },
         VerbHelp {
             name: "passwd",
-            definition: "Sets a user's password from new_password_plain, hashed with \
-                hash_scheme or the backend default, or from a precomputed new_password_hash.",
+            definition: "Sets a user's password from a plaintext password (given inline, \
+                in an environment variable, or on standard input), hashed with hash_scheme \
+                or the backend default, or from a precomputed new_password_hash.",
             detail: Some(VerbDetail {
-                usage: "resh user://<user>.passwd new_password_plain=<pw>|new_password_hash=<hash>\n  \
+                usage: "resh user://<user>.passwd new_password_plain=<pw>|\n  \
+                    new_password_env=<VAR>|new_password_stdin=true|\n  \
+                    new_password_hash=<hash> [username=<name>]\n  \
                     [hash_scheme=backend_default|sha512_crypt|bcrypt|argon2id]\n  \
-                    [require_old_password=true|false] [old_password_plain=<password>]\n  \
-                    [ignore_if_missing=true|false] [dry_run=true|false]\n  \
-                    [backend=system|mock] [format=json|text]",
+                    [require_old_password=true|false] [old_password_plain=<pw>]\n  \
+                    [old_password_env=<VAR>] [ignore_if_missing=true|false]\n  \
+                    [dry_run=true|false] [backend=system|mock] [format=json|text]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty user://alice.passwd \
-                    new_password_plain=S3cr3t dry_run=true",
+                    new_password_env=NEW_PW dry_run=true",
                 example_output: Some(
                     r#"{
   "backend": "system",
@@ -229,10 +248,10 @@ dry_run the commands are run and need root."#,
     "changed": false,
     "old_password_verified": false,
     "scheme": "sha512_crypt",
-    "source": "plain"
+    "source": "env"
   },
   "planned_commands": [
-    "chpasswd -c SHA512 <<< (redacted)"
+    "chpasswd -e <<< (redacted)"
   ],
   "user": {
     "existed": true,
@@ -244,10 +263,12 @@ dry_run the commands are run and need root."#,
   ]
 }
 
-Shown for the system backend with --json-pretty. The system backend
-passes the password to chpasswd on stdin (needs root) and rejects
-argon2id. require_old_password needs read access to /etc/shadow and can
-check only bcrypt and argon2 hashes; others give an unsupported error."#,
+Shown for the system backend with --json-pretty, NEW_PW holding the
+password. resh hashes it (backend_default is sha512_crypt) and passes
+the hash to chpasswd -e on stdin (needs root); the system backend
+rejects argon2id. new_password_plain= is visible in the process list.
+require_old_password needs read access to /etc/shadow and checks
+sha512_crypt, sha256_crypt, bcrypt and argon2 hashes, not yescrypt."#,
                 ),
             }),
         },
@@ -255,9 +276,11 @@ check only bcrypt and argon2 hashes; others give an unsupported error."#,
             name: "lock",
             definition: "Locks a user account so its password can no longer be used to log in.",
             detail: Some(VerbDetail {
-                usage: "resh user://<username>.lock [protect_system_users=true|false]\n  \
-                    [min_uid_for_lock=<n>] [force=true|false] [ignore_if_missing=true|false]\n  \
-                    [dry_run=true|false] [backend=system|mock] [format=json|text]",
+                usage: "resh user://<username>.lock [username=<name>]\n  \
+                    [protect_system_users=true|false] [min_uid_for_lock=<n>]\n  \
+                    [force=true|false] [ignore_if_missing=true|false]\n  \
+                    [dry_run=true|false] [backend=system|mock] [format=json|text]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty user://alice.lock",
                 example_output: Some(
                     r#"{
@@ -279,9 +302,9 @@ check only bcrypt and argon2 hashes; others give an unsupported error."#,
 }
 
 Shown for the system backend with --json-pretty, which runs usermod -L
-and needs root. The current state comes from /etc/shadow or passwd -S;
-if neither can be read the verb fails, except that a dry run reports
-was_locked null with a warning."#,
+and needs root, then checks the account is locked. The current state
+comes from /etc/shadow or passwd -S; if neither can be read the verb
+fails, except that a dry run reports was_locked null with a warning."#,
                 ),
             }),
         },
@@ -289,10 +312,11 @@ was_locked null with a warning."#,
             name: "unlock",
             definition: "Unlocks a previously locked user account.",
             detail: Some(VerbDetail {
-                usage: "resh user://<username>.unlock [protect_system_users=true|false]\n  \
-                    [min_uid_for_unlock=<n>] [force=true|false]\n  \
-                    [ignore_if_missing=true|false] [dry_run=true|false]\n  \
-                    [backend=system|mock] [format=json|text]",
+                usage: "resh user://<username>.unlock [username=<name>]\n  \
+                    [protect_system_users=true|false] [min_uid_for_unlock=<n>]\n  \
+                    [force=true|false] [ignore_if_missing=true|false]\n  \
+                    [dry_run=true|false] [backend=system|mock] [format=json|text]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty user://alice.unlock",
                 example_output: Some(
                     r#"{
@@ -314,34 +338,77 @@ was_locked null with a warning."#,
 }
 
 Shown for the system backend with --json-pretty, which runs usermod -U
-and needs root. An account that is already unlocked is left unchanged
-with a warning."#,
+and needs root, then checks the account is unlocked. An account that is
+already unlocked is left unchanged with a warning; one without a
+password cannot be unlocked."#,
                 ),
             }),
         },
     ],
 };
 
-/// User management error types
+/// User management errors. Each has a stable code (`user.<name>`) and an
+/// exit status from [`ERROR_CODES`].
 #[derive(Debug, Error)]
 pub enum UserError {
-    #[error("invalid mode: {0}")]
+    #[error("{0}")]
+    InvalidArgument(String),
+
+    #[error("{0}")]
+    InvalidTarget(String),
+
+    #[error("{0}")]
     InvalidMode(String),
 
-    #[error("invalid backend: {0}")]
-    InvalidBackend(String),
+    #[error("backend '{0}' is not supported (use system or mock)")]
+    BackendNotSupported(String),
 
-    #[error("username is required")]
+    #[error("a user name is required (user://<name> or username=)")]
     UsernameRequired,
 
-    #[error("group name is required")]
+    #[error("a group name is required (user://group/<name> or group_name=)")]
     GroupNameRequired,
 
-    #[error("member is required")]
+    #[error("a member is required (user://membership/<name> or member=)")]
     MemberRequired,
 
-    #[error("groups list is required")]
+    #[error("groups=<g1,g2> is required")]
     GroupsRequired,
+
+    #[error("give a user name (user://<name> or username=) or uid=")]
+    IdentityRequired,
+
+    #[error("invalid user name: {0}")]
+    UsernameInvalid(String),
+
+    #[error("invalid group name: {0}")]
+    GroupNameInvalid(String),
+
+    #[error("uid {0} is out of the allowed range (1000-65533, or 0-65533 with force=true)")]
+    UidOutOfRange(u32),
+
+    #[error("gid {0} is out of the allowed range (1000-65533, or 0-65533 with force=true)")]
+    GidOutOfRange(u32),
+
+    #[error("both a plaintext password and a password hash were given; give exactly one source")]
+    PasswordConflictingSources,
+
+    #[error(
+        "a new password is required (new_password_plain=, new_password_env=, \
+         new_password_stdin=true or new_password_hash=)"
+    )]
+    PasswordMissingNewPassword,
+
+    #[error("hash scheme '{0}' is not supported")]
+    HashSchemeUnsupported(String),
+
+    #[error("invalid password hash: {0}")]
+    HashParamsInvalid(String),
+
+    #[error(
+        "an old password (old_password_plain= or old_password_env=) is required when require_old_password=true"
+    )]
+    OldPasswordRequired,
 
     #[error("user '{0}' already exists")]
     UsernameConflict(String),
@@ -355,177 +422,185 @@ pub enum UserError {
     #[error("gid {0} is already in use")]
     GidConflict(u32),
 
-    #[error("invalid username: {0}")]
-    UsernameInvalid(String),
-
-    #[error("invalid group name: {0}")]
-    GroupNameInvalid(String),
-
-    #[error("uid {0} is out of allowed range")]
-    UidOutOfRange(u32),
-
-    #[error("gid {0} is out of allowed range")]
-    GidOutOfRange(u32),
-
-    #[error("primary group '{0}' not found")]
-    PrimaryGroupNotFound(String),
+    #[error("no free {0} from 1000 to 65533")]
+    NoFreeId(String),
 
     #[error("group '{0}' not found")]
     GroupNotFound(String),
 
-    #[error("membership already exists for user '{0}' in group '{1}'")]
+    #[error("user '{0}' is already a member of group '{1}'")]
     MembershipExists(String, String),
 
-    #[error("backend '{0}' not supported")]
-    BackendNotSupported(String),
-
-    #[error("backend operation failed: {0}")]
-    BackendOperationFailed(String),
-
-    #[error("io error: {0}")]
-    IoError(String),
-
-    #[error("internal error: {0}")]
-    InternalError(String),
-
-    // Delete-specific errors
     #[error("user '{0}' not found")]
     UserNotFound(String),
 
     #[error(
-        "refusing to delete system user '{0}' (uid={1}) because protect_system_users=true and force=false"
+        "refusing to {2} system user '{0}' (uid={1}) because protect_system_users=true and force=false"
     )]
-    SystemUserProtected(String, u32),
+    SystemUserProtected(String, u32, &'static str, u32),
 
     #[error(
         "refusing to delete system group '{0}' (gid={1}) because protect_system_groups=true and force=false"
     )]
-    SystemGroupProtected(String, u32),
+    SystemGroupProtected(String, u32, u32),
 
-    #[error("group '{0}' is not empty and only_if_empty=true")]
+    #[error("group '{0}' is not empty and only_if_empty=true (force=true overrides)")]
     GroupNotEmpty(String),
 
     #[error("user '{0}' is not a member of group '{1}'")]
     MembershipNotFound(String, String),
 
-    // Password-related errors
-    #[error("both plaintext password and password hash provided; only one is allowed")]
-    PasswordConflictingSources,
+    #[error(
+        "group '{1}' is the primary group of user '{0}'; it is not a membership that can be removed"
+    )]
+    PrimaryGroupMembership(String, String),
 
-    #[error("new password is required (either new_password_plain or new_password_hash)")]
-    PasswordMissingNewPassword,
+    #[error("old password verification is not supported for {0} hashes")]
+    OldPasswordVerificationUnsupported(String),
 
-    #[error("hash scheme '{0}' is not supported")]
-    HashSchemeUnsupported(String),
-
-    #[error("invalid hash parameters: {0}")]
-    HashParamsInvalid(String),
-
-    #[error("old password is required when require_old_password=true")]
-    OldPasswordRequired,
-
-    #[error("old password verification is not supported by this backend")]
-    OldPasswordVerificationUnsupported,
-
-    #[error("old password did not match stored credentials for user '{0}'")]
+    #[error("old password did not match the stored password of user '{0}'")]
     OldPasswordMismatch(String),
 
-    #[error("password backend operation failed: {0}")]
+    #[error("password change failed: {0}")]
     PasswordBackendFailure(String),
 
-    // Lock-related errors
-    #[error("user '{0}' is already locked")]
-    UserAlreadyLocked(String),
-
-    #[error(
-        "refusing to lock system user '{0}' (uid={1}) because protect_system_users=true and force=false"
-    )]
-    SystemUserLockProtected(String, u32),
-
-    #[error("lock backend operation failed: {0}")]
+    #[error("lock failed: {0}")]
     LockBackendFailure(String),
 
-    // Unlock-related errors
-    #[error("user '{0}' is already unlocked")]
-    UserAlreadyUnlocked(String),
-
-    #[error(
-        "refusing to unlock system user '{0}' (uid={1}) because protect_system_users=true and force=false"
-    )]
-    SystemUserUnlockProtected(String, u32),
-
-    #[error("unlock backend operation failed: {0}")]
+    #[error("unlock failed: {0}")]
     UnlockBackendFailure(String),
 
-    // Groups-related errors
-    #[error("groups backend operation failed: {0}")]
+    #[error("cannot list groups: {0}")]
     GroupsBackendFailure(String),
-
-    #[error("group filter is not supported by this backend")]
-    GroupFilterUnsupported,
-
-    // Exists-related errors
-    #[error("you must provide a username, uid, or a target that resolves to a username")]
-    IdentityRequired,
 
     #[error("user '{0}' exists with uid={1}, which does not match requested uid={2}")]
     ExistsMismatch(String, u32, u32),
 
     #[error("failed to query user in backend '{0}': {1}")]
     ExistsBackendFailure(String, String),
+
+    #[error("{0}")]
+    BackendOperationFailed(String),
+
+    #[error("{0}")]
+    PermissionDenied(String),
+
+    #[error("{0}")]
+    ToolNotFound(String),
+
+    #[error("{0}")]
+    Timeout(String),
+
+    #[error("{0}")]
+    PartialFailure(String),
 }
+
+/// Every error code the handle reports, with its exit status: 2 for invalid
+/// usage (nothing was looked up or changed), 1 for an operation that failed
+/// or was refused, 124 for a deadline that passed (outcome unknown).
+pub(crate) const ERROR_CODES: &[(&str, i32)] = &[
+    ("user.invalid_argument", exit::USAGE),
+    ("user.invalid_target", exit::USAGE),
+    ("user.invalid_mode", exit::USAGE),
+    ("user.backend_not_supported", exit::USAGE),
+    ("user.username_required", exit::USAGE),
+    ("user.group_name_required", exit::USAGE),
+    ("user.member_required", exit::USAGE),
+    ("user.groups_required", exit::USAGE),
+    ("user.identity_required", exit::USAGE),
+    ("user.username_invalid", exit::USAGE),
+    ("user.group_name_invalid", exit::USAGE),
+    ("user.uid_out_of_range", exit::USAGE),
+    ("user.gid_out_of_range", exit::USAGE),
+    ("user.passwd_conflicting_sources", exit::USAGE),
+    ("user.passwd_missing_new_password", exit::USAGE),
+    ("user.hash_scheme_unsupported", exit::USAGE),
+    ("user.hash_params_invalid", exit::USAGE),
+    ("user.old_password_required", exit::USAGE),
+    ("user.username_conflict", exit::FAILED),
+    ("user.group_conflict", exit::FAILED),
+    ("user.uid_conflict", exit::FAILED),
+    ("user.gid_conflict", exit::FAILED),
+    ("user.no_free_id", exit::FAILED),
+    ("user.group_not_found", exit::FAILED),
+    ("user.membership_exists", exit::FAILED),
+    ("user.not_found", exit::FAILED),
+    ("user.system_user_protected", exit::FAILED),
+    ("user.group_system_protected", exit::FAILED),
+    ("user.group_not_empty", exit::FAILED),
+    ("user.membership_not_found", exit::FAILED),
+    ("user.primary_group_membership", exit::FAILED),
+    ("user.old_password_verification_unsupported", exit::FAILED),
+    ("user.old_password_mismatch", exit::FAILED),
+    ("user.passwd_backend_failure", exit::FAILED),
+    ("user.lock_backend_failure", exit::FAILED),
+    ("user.unlock_backend_failure", exit::FAILED),
+    ("user.groups_backend_failure", exit::FAILED),
+    ("user.exists_mismatch", exit::FAILED),
+    ("user.exists_backend_failure", exit::FAILED),
+    ("user.backend_operation_failed", exit::FAILED),
+    ("user.permission_denied", exit::FAILED),
+    ("user.tool_not_found", exit::FAILED),
+    ("user.partial_failure", exit::FAILED),
+    // A handle error the dispatcher reports (such as stdout closed).
+    ("user.failed", exit::FAILED),
+    ("user.timeout", exit::TIMEOUT),
+];
 
 impl UserError {
     pub fn code(&self) -> String {
-        match self {
-            Self::InvalidMode(_) => "user.invalid_mode".to_string(),
-            Self::InvalidBackend(_) => "user.invalid_backend".to_string(),
-            Self::UsernameRequired => "user.username_required".to_string(),
-            Self::GroupNameRequired => "user.group_name_required".to_string(),
-            Self::MemberRequired => "user.member_required".to_string(),
-            Self::GroupsRequired => "user.groups_required".to_string(),
-            Self::UsernameConflict(_) => "user.username_conflict".to_string(),
-            Self::GroupConflict(_) => "user.group_conflict".to_string(),
-            Self::UidConflict(_) => "user.uid_conflict".to_string(),
-            Self::GidConflict(_) => "user.gid_conflict".to_string(),
-            Self::UsernameInvalid(_) => "user.username_invalid".to_string(),
-            Self::GroupNameInvalid(_) => "user.group_name_invalid".to_string(),
-            Self::UidOutOfRange(_) => "user.uid_out_of_range".to_string(),
-            Self::GidOutOfRange(_) => "user.gid_out_of_range".to_string(),
-            Self::PrimaryGroupNotFound(_) => "user.primary_group_not_found".to_string(),
-            Self::GroupNotFound(_) => "user.group_not_found".to_string(),
-            Self::MembershipExists(_, _) => "user.membership_exists".to_string(),
-            Self::BackendNotSupported(_) => "user.backend_not_supported".to_string(),
-            Self::BackendOperationFailed(_) => "user.backend_operation_failed".to_string(),
-            Self::IoError(_) => "user.io_error".to_string(),
-            Self::InternalError(_) => "user.internal_error".to_string(),
-            Self::UserNotFound(_) => "user.not_found".to_string(),
-            Self::SystemUserProtected(_, _) => "user.system_user_protected".to_string(),
-            Self::SystemGroupProtected(_, _) => "user.group_system_protected".to_string(),
-            Self::GroupNotEmpty(_) => "user.group_not_empty".to_string(),
-            Self::MembershipNotFound(_, _) => "user.membership_not_found".to_string(),
-            Self::PasswordConflictingSources => "user.passwd_conflicting_sources".to_string(),
-            Self::PasswordMissingNewPassword => "user.passwd_missing_new_password".to_string(),
-            Self::HashSchemeUnsupported(_) => "user.hash_scheme_unsupported".to_string(),
-            Self::HashParamsInvalid(_) => "user.hash_params_invalid".to_string(),
-            Self::OldPasswordRequired => "user.old_password_required".to_string(),
-            Self::OldPasswordVerificationUnsupported => {
-                "user.old_password_verification_unsupported".to_string()
-            }
-            Self::OldPasswordMismatch(_) => "user.old_password_mismatch".to_string(),
-            Self::PasswordBackendFailure(_) => "user.passwd_backend_failure".to_string(),
-            Self::UserAlreadyLocked(_) => "user.already_locked".to_string(),
-            Self::SystemUserLockProtected(_, _) => "user.system_user_protected".to_string(),
-            Self::LockBackendFailure(_) => "user.lock_backend_failure".to_string(),
-            Self::UserAlreadyUnlocked(_) => "user.already_unlocked".to_string(),
-            Self::SystemUserUnlockProtected(_, _) => "user.system_user_protected".to_string(),
-            Self::UnlockBackendFailure(_) => "user.unlock_backend_failure".to_string(),
-            Self::GroupsBackendFailure(_) => "user.groups_backend_failure".to_string(),
-            Self::GroupFilterUnsupported => "user.group_filter_unsupported".to_string(),
-            Self::IdentityRequired => "user.identity_required".to_string(),
-            Self::ExistsMismatch(_, _, _) => "user.exists_mismatch".to_string(),
-            Self::ExistsBackendFailure(_, _) => "user.exists_backend_failure".to_string(),
-        }
+        let c = match self {
+            Self::InvalidArgument(_) => "invalid_argument",
+            Self::InvalidTarget(_) => "invalid_target",
+            Self::InvalidMode(_) => "invalid_mode",
+            Self::BackendNotSupported(_) => "backend_not_supported",
+            Self::UsernameRequired => "username_required",
+            Self::GroupNameRequired => "group_name_required",
+            Self::MemberRequired => "member_required",
+            Self::GroupsRequired => "groups_required",
+            Self::IdentityRequired => "identity_required",
+            Self::UsernameInvalid(_) => "username_invalid",
+            Self::GroupNameInvalid(_) => "group_name_invalid",
+            Self::UidOutOfRange(_) => "uid_out_of_range",
+            Self::GidOutOfRange(_) => "gid_out_of_range",
+            Self::PasswordConflictingSources => "passwd_conflicting_sources",
+            Self::PasswordMissingNewPassword => "passwd_missing_new_password",
+            Self::HashSchemeUnsupported(_) => "hash_scheme_unsupported",
+            Self::HashParamsInvalid(_) => "hash_params_invalid",
+            Self::OldPasswordRequired => "old_password_required",
+            Self::UsernameConflict(_) => "username_conflict",
+            Self::GroupConflict(_) => "group_conflict",
+            Self::UidConflict(_) => "uid_conflict",
+            Self::GidConflict(_) => "gid_conflict",
+            Self::NoFreeId(_) => "no_free_id",
+            Self::GroupNotFound(_) => "group_not_found",
+            Self::MembershipExists(_, _) => "membership_exists",
+            Self::UserNotFound(_) => "not_found",
+            Self::SystemUserProtected(..) => "system_user_protected",
+            Self::SystemGroupProtected(..) => "group_system_protected",
+            Self::GroupNotEmpty(_) => "group_not_empty",
+            Self::MembershipNotFound(_, _) => "membership_not_found",
+            Self::PrimaryGroupMembership(_, _) => "primary_group_membership",
+            Self::OldPasswordVerificationUnsupported(_) => "old_password_verification_unsupported",
+            Self::OldPasswordMismatch(_) => "old_password_mismatch",
+            Self::PasswordBackendFailure(_) => "passwd_backend_failure",
+            Self::LockBackendFailure(_) => "lock_backend_failure",
+            Self::UnlockBackendFailure(_) => "unlock_backend_failure",
+            Self::GroupsBackendFailure(_) => "groups_backend_failure",
+            Self::ExistsMismatch(..) => "exists_mismatch",
+            Self::ExistsBackendFailure(_, _) => "exists_backend_failure",
+            Self::BackendOperationFailed(_) => "backend_operation_failed",
+            Self::PermissionDenied(_) => "permission_denied",
+            Self::ToolNotFound(_) => "tool_not_found",
+            Self::Timeout(_) => "timeout",
+            Self::PartialFailure(_) => "partial_failure",
+        };
+        format!("user.{c}")
+    }
+
+    /// The exit status for this error (0/1/2/124 convention).
+    pub fn exit_code(&self) -> i32 {
+        exit_for(&self.code())
     }
 
     pub fn to_json(&self) -> Value {
@@ -543,47 +618,31 @@ impl UserError {
         match self {
             Self::UsernameConflict(username) => json!({"username": username}),
             Self::GroupConflict(group_name) => json!({"group_name": group_name}),
-            Self::UidConflict(uid) => json!({"uid": uid}),
-            Self::GidConflict(gid) => json!({"gid": gid}),
-            Self::UsernameInvalid(username) => json!({"username": username}),
-            Self::GroupNameInvalid(group_name) => json!({"group_name": group_name}),
-            Self::UidOutOfRange(uid) => json!({"uid": uid}),
-            Self::GidOutOfRange(gid) => json!({"gid": gid}),
-            Self::PrimaryGroupNotFound(group_name) => json!({"group_name": group_name}),
-            Self::GroupNotFound(group_name) => json!({"group_name": group_name}),
-            Self::MembershipExists(username, group_name) => {
+            Self::UidConflict(uid) | Self::UidOutOfRange(uid) => json!({"uid": uid}),
+            Self::GidConflict(gid) | Self::GidOutOfRange(gid) => json!({"gid": gid}),
+            Self::GroupNotFound(group_name) | Self::GroupNotEmpty(group_name) => {
+                json!({"group_name": group_name})
+            }
+            Self::MembershipExists(username, group_name)
+            | Self::MembershipNotFound(username, group_name)
+            | Self::PrimaryGroupMembership(username, group_name) => {
                 json!({"username": username, "group_name": group_name})
             }
             Self::UserNotFound(username) => json!({"username": username}),
-            Self::SystemUserProtected(username, uid) => {
-                json!({"username": username, "uid": uid, "min_uid_for_delete": 1000})
+            Self::SystemUserProtected(username, uid, verb, min) => {
+                let key = format!("min_uid_for_{verb}");
+                let mut d = json!({"username": username, "uid": uid});
+                d[key] = json!(min);
+                d
             }
-            Self::SystemGroupProtected(group_name, gid) => {
-                json!({"group_name": group_name, "gid": gid, "min_gid_for_delete": 1000})
-            }
-            Self::GroupNotEmpty(group_name) => json!({"group_name": group_name}),
-            Self::MembershipNotFound(username, group_name) => {
-                json!({"username": username, "group_name": group_name})
+            Self::SystemGroupProtected(group_name, gid, min) => {
+                json!({"group_name": group_name, "gid": gid, "min_gid_for_delete": min})
             }
             Self::HashSchemeUnsupported(scheme) => json!({"hash_scheme": scheme}),
-            Self::HashParamsInvalid(msg) => json!({"message": msg}),
+            Self::OldPasswordVerificationUnsupported(scheme) => json!({"hash_scheme": scheme}),
             Self::OldPasswordMismatch(username) => {
                 json!({"username": username, "require_old_password": true})
             }
-            Self::PasswordBackendFailure(msg) => json!({"message": msg}),
-            Self::UserAlreadyLocked(username) => json!({"username": username}),
-            Self::SystemUserLockProtected(username, uid) => {
-                json!({"username": username, "uid": uid, "min_uid_for_lock": 1000})
-            }
-            Self::LockBackendFailure(msg) => json!({"message": msg}),
-            Self::UserAlreadyUnlocked(username) => json!({"username": username}),
-            Self::SystemUserUnlockProtected(username, uid) => {
-                json!({"username": username, "uid": uid, "min_uid_for_unlock": 1000})
-            }
-            Self::UnlockBackendFailure(msg) => json!({"message": msg}),
-            Self::GroupsBackendFailure(msg) => json!({"message": msg}),
-            Self::GroupFilterUnsupported => json!({}),
-            Self::IdentityRequired => json!({}),
             Self::ExistsMismatch(username, actual_uid, requested_uid) => json!({
                 "username": username,
                 "actual_uid": actual_uid,
@@ -596,6 +655,14 @@ impl UserError {
             _ => json!({}),
         }
     }
+}
+
+/// The exit status for error `code` (1 for a code not in the table).
+fn exit_for(code: &str) -> i32 {
+    ERROR_CODES
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map_or(exit::FAILED, |(_, e)| *e)
 }
 
 /// User add mode enumeration
@@ -721,6 +788,8 @@ pub struct UserAddOptions {
     pub ignore_if_exists: bool,
     pub force: bool,
     pub format: OutputFormat,
+    /// Deadline of every tool the verb runs, in milliseconds.
+    pub timeout_ms: u64,
 
     // User mode
     pub username: Option<String>,
@@ -751,6 +820,7 @@ impl Default for UserAddOptions {
             ignore_if_exists: true,
             force: false,
             format: OutputFormat::Json,
+            timeout_ms: args::DEFAULT_TIMEOUT_MS,
             username: None,
             uid: None,
             primary_group: None,
@@ -777,6 +847,8 @@ pub struct UserDeleteOptions {
     pub ignore_if_missing: bool,
     pub force: bool,
     pub format: OutputFormat,
+    /// Deadline of every tool the verb runs, in milliseconds.
+    pub timeout_ms: u64,
 
     // User mode
     pub username: Option<String>,
@@ -807,6 +879,7 @@ impl Default for UserDeleteOptions {
             ignore_if_missing: true,
             force: false,
             format: OutputFormat::Json,
+            timeout_ms: args::DEFAULT_TIMEOUT_MS,
             username: None,
             remove_home: false,
             remove_mail: false,
@@ -832,6 +905,8 @@ pub struct UserPasswdOptions {
     pub ignore_if_missing: bool,
     pub force: bool,
     pub format: OutputFormat,
+    /// Deadline of every tool the verb runs, in milliseconds.
+    pub timeout_ms: u64,
 
     pub username: Option<String>,
 
@@ -841,7 +916,10 @@ pub struct UserPasswdOptions {
 
     // Hashing options (for new_password_plain)
     pub hash_scheme: HashScheme,
-    pub hash_params: Option<String>,
+    /// True when hash_scheme= was given.
+    pub hash_scheme_given: bool,
+    /// Where the new password came from: plain, env, stdin or hash.
+    pub new_password_source: String,
 
     // Old password verification
     pub require_old_password: bool,
@@ -856,11 +934,13 @@ impl Default for UserPasswdOptions {
             ignore_if_missing: true,
             force: false,
             format: OutputFormat::Json,
+            timeout_ms: args::DEFAULT_TIMEOUT_MS,
             username: None,
             new_password_plain: None,
             new_password_hash: None,
             hash_scheme: HashScheme::BackendDefault,
-            hash_params: None,
+            hash_scheme_given: false,
+            new_password_source: "plain".to_string(),
             require_old_password: false,
             old_password_plain: None,
         }
@@ -875,6 +955,8 @@ pub struct UserLockOptions {
     pub ignore_if_missing: bool,
     pub force: bool,
     pub format: OutputFormat,
+    /// Deadline of every tool the verb runs, in milliseconds.
+    pub timeout_ms: u64,
 
     pub username: Option<String>,
 
@@ -891,6 +973,7 @@ impl Default for UserLockOptions {
             ignore_if_missing: true,
             force: false,
             format: OutputFormat::Json,
+            timeout_ms: args::DEFAULT_TIMEOUT_MS,
             username: None,
             protect_system_users: true,
             min_uid_for_lock: 1000,
@@ -961,6 +1044,10 @@ pub struct UserAddResponse {
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub memberships: Vec<MembershipInfo>,
+
+    /// Whether password_hash= was stored (only when it was given).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password_set: Option<bool>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -1125,6 +1212,8 @@ pub struct UserUnlockOptions {
     pub ignore_if_missing: bool,
     pub force: bool,
     pub format: OutputFormat,
+    /// Deadline of every tool the verb runs, in milliseconds.
+    pub timeout_ms: u64,
 
     pub username: Option<String>,
 
@@ -1170,6 +1259,7 @@ impl Default for UserUnlockOptions {
             ignore_if_missing: true,
             force: false,
             format: OutputFormat::Json,
+            timeout_ms: args::DEFAULT_TIMEOUT_MS,
             username: None,
             protect_system_users: true,
             min_uid_for_unlock: 1000,
@@ -1292,6 +1382,7 @@ pub struct UserRecord {
     pub primary_group: String,
     pub home: Option<String>,
     pub shell: Option<String>,
+    pub gecos: Option<String>,
 }
 
 /// Group record structure for backend queries
@@ -1324,9 +1415,12 @@ impl UserTarget {
             // user://group/admins -> path is "group/admins"
             // user://membership/alice -> path is "membership/alice"
             format!("{}/{}", hostname, path_part)
-        } else {
+        } else if path_part.is_empty() {
             // user://alice -> path is alice (hostname becomes the path)
             hostname.to_string()
+        } else {
+            // user://alice/extra is kept whole and refused as a target.
+            format!("{}/{}", hostname, path_part)
         };
 
         Ok(Self { path })
@@ -1357,1853 +1451,6 @@ impl UserTarget {
     }
 }
 
-/// User backend provider trait
-pub trait UserBackendProvider: Send + Sync {
-    /// Check if a user exists
-    fn user_exists(&self, username: &str) -> Result<bool>;
-
-    /// Check if a group exists
-    fn group_exists(&self, group_name: &str) -> Result<bool>;
-
-    /// Check if a user is a member of a group
-    fn membership_exists(&self, username: &str, group_name: &str) -> Result<bool>;
-
-    /// Get next available UID
-    fn next_uid(&self) -> Result<u32>;
-
-    /// Get next available GID
-    fn next_gid(&self) -> Result<u32>;
-
-    /// Create a user
-    fn create_user(&mut self, user_info: &UserInfo) -> Result<()>;
-
-    /// Create a group
-    fn create_group(&mut self, group_info: &GroupInfo) -> Result<()>;
-
-    /// Add a user to a group
-    fn add_membership(&mut self, username: &str, group_name: &str) -> Result<()>;
-
-    /// Validate username format
-    fn validate_username(&self, username: &str) -> Result<()>;
-
-    /// Validate group name format
-    fn validate_group_name(&self, group_name: &str) -> Result<()>;
-
-    /// Validate UID range
-    fn validate_uid(&self, uid: u32, force: bool) -> Result<()>;
-
-    /// Validate GID range
-    fn validate_gid(&self, gid: u32, force: bool) -> Result<()>;
-
-    /// Get default home path for user
-    fn default_home_path(&self, username: &str) -> String;
-
-    /// Get default shell
-    fn default_shell(&self) -> String;
-
-    // Delete operations
-    /// Lookup user record
-    fn lookup_user(&self, username: &str) -> Result<Option<UserRecord>>;
-
-    /// Lookup user record by UID
-    fn lookup_user_by_uid(&self, uid: u32) -> Result<Option<UserRecord>>;
-
-    /// Lookup group record
-    fn lookup_group(&self, group_name: &str) -> Result<Option<GroupRecord>>;
-
-    /// Delete a user
-    fn delete_user(&mut self, username: &str, remove_home: bool, remove_mail: bool) -> Result<()>;
-
-    /// Delete a group
-    fn delete_group(&mut self, group_name: &str) -> Result<()>;
-
-    /// Remove user from group
-    fn remove_user_from_group(&mut self, username: &str, group_name: &str) -> Result<()>;
-
-    /// List groups for user
-    fn list_groups_for_user(&self, username: &str) -> Result<Vec<String>>;
-
-    /// List groups for user with detailed information (for groups verb)
-    fn list_groups_for_user_detailed(&self, username: &str) -> Result<Vec<GroupRecord>>;
-
-    // Password operations
-    /// Verify a password against the stored hash for a user
-    fn verify_password(&self, username: &str, password_plain: &str) -> Result<bool>;
-
-    /// Set/change a user's password using a pre-computed hash
-    fn set_password_hash(&mut self, username: &str, password_hash: &str) -> Result<()>;
-
-    /// Set a password from plain text. The default hashes it with
-    /// `hash_password` and stores the hash; the system backend hands the
-    /// plain text to chpasswd so the system crypt() library hashes it.
-    fn set_password_plain(
-        &mut self,
-        username: &str,
-        password_plain: &str,
-        scheme: &HashScheme,
-        params: Option<&str>,
-    ) -> Result<()> {
-        let hash = self.hash_password(password_plain, scheme, params)?;
-        self.set_password_hash(username, &hash)
-    }
-
-    /// Human-readable commands this backend would run for `op`, reported by
-    /// dry runs. Backends that do not run commands return an empty list.
-    fn planned_commands(&self, _op: &BackendOp) -> Result<Vec<String>> {
-        Ok(Vec::new())
-    }
-
-    /// Generate a password hash using the specified scheme
-    fn hash_password(
-        &self,
-        password_plain: &str,
-        scheme: &HashScheme,
-        params: Option<&str>,
-    ) -> Result<String>;
-
-    /// Get the default hash scheme for this backend
-    fn default_hash_scheme(&self) -> HashScheme;
-
-    // Lock operations
-    /// Check if a user account is locked
-    fn is_locked(&self, username: &str) -> Result<bool>;
-
-    /// Lock a user account
-    fn lock_user(&mut self, username: &str) -> Result<()>;
-
-    /// Unlock a user account
-    fn unlock_user(&mut self, username: &str) -> Result<()>;
-}
-
-/// Password hashing utilities
-pub struct PasswordHasher;
-
-impl PasswordHasher {
-    /// Hash a password using the specified scheme
-    pub fn hash_password(
-        password: &str,
-        scheme: &HashScheme,
-        _params: Option<&str>,
-    ) -> Result<String> {
-        let rng = SystemRandom::new();
-
-        match scheme {
-            HashScheme::BackendDefault | HashScheme::Sha512Crypt => {
-                // Use PBKDF2 with SHA-512 as a substitute for SHA-512 crypt
-                let mut salt = [0u8; 16];
-                rng.fill(&mut salt).map_err(|e| {
-                    UserError::InternalError(format!("Failed to generate salt: {}", e))
-                })?;
-
-                let salt_b64 = BASE64.encode(&salt);
-                let iterations = NonZeroU32::new(100_000).unwrap(); // Strong default
-
-                let mut hash = [0u8; 64]; // SHA-512 output size
-                pbkdf2::derive(
-                    pbkdf2::PBKDF2_HMAC_SHA512,
-                    iterations,
-                    &salt,
-                    password.as_bytes(),
-                    &mut hash,
-                );
-
-                let hash_b64 = BASE64.encode(&hash);
-                Ok(format!(
-                    "$pbkdf2-sha512${}${}${}",
-                    iterations.get(),
-                    salt_b64,
-                    hash_b64
-                ))
-            }
-            HashScheme::Bcrypt => {
-                // For now, use PBKDF2 as a substitute for bcrypt; use a consistent iteration count
-                let mut salt = [0u8; 16];
-                rng.fill(&mut salt).map_err(|e| {
-                    UserError::InternalError(format!("Failed to generate salt: {}", e))
-                })?;
-
-                let salt_b64 = BASE64.encode(&salt);
-                // Use 4096 iterations for the PBKDF2 substitute to approximate bcrypt strength
-                let iterations = NonZeroU32::new(4096).unwrap();
-
-                let mut hash = [0u8; 32];
-                pbkdf2::derive(
-                    pbkdf2::PBKDF2_HMAC_SHA256,
-                    iterations,
-                    &salt,
-                    password.as_bytes(),
-                    &mut hash,
-                );
-
-                let hash_b64 = BASE64.encode(&hash);
-                Ok(format!(
-                    "$pbkdf2-bcrypt${}${}${}",
-                    iterations.get(),
-                    salt_b64,
-                    hash_b64
-                ))
-            }
-            HashScheme::Argon2id => {
-                // Use PBKDF2 as substitute for Argon2id
-                let mut salt = [0u8; 32];
-                rng.fill(&mut salt).map_err(|e| {
-                    UserError::InternalError(format!("Failed to generate salt: {}", e))
-                })?;
-
-                let salt_b64 = BASE64.encode(&salt);
-                let iterations = NonZeroU32::new(100_000).unwrap();
-
-                let mut hash = [0u8; 64];
-                pbkdf2::derive(
-                    pbkdf2::PBKDF2_HMAC_SHA512,
-                    iterations,
-                    &salt,
-                    password.as_bytes(),
-                    &mut hash,
-                );
-
-                let hash_b64 = BASE64.encode(&hash);
-                Ok(format!(
-                    "$pbkdf2-argon2${}${}${}",
-                    iterations.get(),
-                    salt_b64,
-                    hash_b64
-                ))
-            }
-        }
-    }
-
-    /// Verify a password against a stored hash
-    pub fn verify_password(password: &str, stored_hash: &str) -> Result<bool> {
-        // Handle empty inputs
-        if password.is_empty() || stored_hash.is_empty() {
-            return Ok(false);
-        }
-
-        // Check for different hash formats and delegate accordingly
-
-        // Handle our custom PBKDF2 format: $pbkdf2-algorithm$iterations$salt$hash
-        if stored_hash.starts_with("$pbkdf2-") {
-            return Self::verify_pbkdf2_password(password, stored_hash);
-        }
-
-        // Handle bcrypt format: $2a$/$2b$/$2y$ + rounds + salt + hash
-        if stored_hash.starts_with("$2a$")
-            || stored_hash.starts_with("$2b$")
-            || stored_hash.starts_with("$2y$")
-        {
-            return Self::verify_bcrypt_password(password, stored_hash);
-        }
-
-        // Handle SHA-512 crypt and other Unix formats
-        if stored_hash.starts_with("$6$")
-            || stored_hash.starts_with("$5$")
-            || stored_hash.starts_with("$1$")
-        {
-            return Self::verify_unix_password_hash(password, stored_hash);
-        }
-
-        // Handle Argon2 format: $argon2id$
-        if stored_hash.starts_with("$argon2") {
-            return Self::verify_argon2_password(password, stored_hash);
-        }
-
-        // Unknown format
-        Ok(false)
-    }
-
-    /// Verify a password against a PBKDF2 hash
-    fn verify_pbkdf2_password(password: &str, stored_hash: &str) -> Result<bool> {
-        // Parse the hash format: $pbkdf2-algorithm$iterations$salt$hash
-        let parts: Vec<&str> = stored_hash.split('$').collect();
-        if parts.len() < 5 {
-            return Ok(false); // Invalid format
-        }
-
-        let algorithm = parts[1];
-        let iterations_str = parts[2];
-        let salt_b64 = parts[3];
-        let expected_hash_b64 = parts[4];
-
-        let iterations = match iterations_str.parse::<u32>() {
-            Ok(n) => match NonZeroU32::new(n) {
-                Some(nz) => nz,
-                None => return Ok(false),
-            },
-            Err(_) => return Ok(false),
-        };
-
-        let salt = match BASE64.decode(salt_b64) {
-            Ok(s) => s,
-            Err(_) => return Ok(false),
-        };
-
-        let expected_hash = match BASE64.decode(expected_hash_b64) {
-            Ok(h) => h,
-            Err(_) => return Ok(false),
-        };
-
-        let pbkdf2_alg = match algorithm {
-            "pbkdf2-sha512" | "pbkdf2-argon2" => pbkdf2::PBKDF2_HMAC_SHA512,
-            "pbkdf2-bcrypt" => pbkdf2::PBKDF2_HMAC_SHA256,
-            _ => return Ok(false), // Unknown algorithm
-        };
-
-        match pbkdf2::verify(
-            pbkdf2_alg,
-            iterations,
-            &salt,
-            password.as_bytes(),
-            &expected_hash,
-        ) {
-            Ok(()) => Ok(true),
-            Err(_) => Ok(false),
-        }
-    }
-
-    /// Verify a password against a bcrypt hash
-    fn verify_bcrypt_password(password: &str, stored_hash: &str) -> Result<bool> {
-        // Use bcrypt crate for verification
-        match bcrypt::verify(password, stored_hash) {
-            Ok(valid) => Ok(valid),
-            Err(_) => Ok(false),
-        }
-    }
-
-    /// Verify a password against an Argon2 hash
-    fn verify_argon2_password(password: &str, stored_hash: &str) -> Result<bool> {
-        // Use argon2 crate for verification
-        use argon2::{Argon2, PasswordHash, PasswordVerifier};
-
-        match PasswordHash::new(stored_hash) {
-            Ok(parsed_hash) => {
-                match Argon2::default().verify_password(password.as_bytes(), &parsed_hash) {
-                    Ok(()) => Ok(true),
-                    Err(_) => Ok(false),
-                }
-            }
-            Err(_) => Ok(false),
-        }
-    }
-
-    /// Verify a password against a Unix-style password hash
-    /// This handles various Unix password hash formats like SHA-512 crypt, bcrypt, etc.
-    pub fn verify_unix_password_hash(password: &str, stored_hash: &str) -> Result<bool> {
-        // Handle various Unix password hash formats
-
-        if stored_hash.is_empty() || password.is_empty() {
-            return Ok(false);
-        }
-
-        // Check for locked account indicators
-        if stored_hash.starts_with('!') || stored_hash.starts_with('*') {
-            return Ok(false); // Account is locked
-        }
-
-        // Handle SHA-512 crypt format: $6$salt$hash
-        if stored_hash.starts_with("$6$") {
-            // This would use libc crypt() function in production:
-            // use std::ffi::CString;
-            // let c_password = CString::new(password).map_err(|_|
-            //     UserError::InternalError("Password contains null bytes".to_string()))?;
-            // let c_hash = CString::new(stored_hash).map_err(|_|
-            //     UserError::InternalError("Hash contains null bytes".to_string()))?;
-            //
-            // unsafe {
-            //     let result_ptr = libc::crypt(c_password.as_ptr(), c_hash.as_ptr());
-            //     if result_ptr.is_null() {
-            //         return Err(UserError::InternalError("crypt() failed".to_string()).into());
-            //     }
-            //
-            //     let computed_hash = std::ffi::CStr::from_ptr(result_ptr)
-            //         .to_string_lossy();
-            //     return Ok(computed_hash == stored_hash);
-            // }
-
-            // For now, return false for safety in development
-            return Ok(false);
-        }
-
-        // Handle bcrypt format: $2a$rounds$salt+hash
-        if stored_hash.starts_with("$2a$")
-            || stored_hash.starts_with("$2b$")
-            || stored_hash.starts_with("$2y$")
-        {
-            // This would use bcrypt verification in production
-            // For now, return false for safety in development
-            return Ok(false);
-        }
-
-        // Handle our custom PBKDF2 format
-        if stored_hash.starts_with("$pbkdf2-") {
-            return Self::verify_password(password, stored_hash);
-        }
-
-        // Unknown hash format
-        Ok(false)
-    }
-}
-
-/// One operation that changes the user database. Used to build the external
-/// command for the system backend, and to report planned commands in a dry
-/// run.
-#[derive(Debug, Clone, Copy)]
-pub enum BackendOp<'a> {
-    CreateUser(&'a UserInfo),
-    CreateGroup(&'a GroupInfo),
-    AddMembership {
-        username: &'a str,
-        group: &'a str,
-    },
-    DeleteUser {
-        username: &'a str,
-        remove_home: bool,
-        remove_mail: bool,
-    },
-    DeleteGroup(&'a str),
-    RemoveMembership {
-        username: &'a str,
-        group: &'a str,
-    },
-    SetPasswordHash {
-        username: &'a str,
-        hash: &'a str,
-    },
-    SetPasswordPlain {
-        username: &'a str,
-        password: &'a str,
-        scheme: &'a HashScheme,
-    },
-    Lock(&'a str),
-    Unlock(&'a str),
-}
-
-/// One external command run by the system backend.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SystemCommand {
-    /// Program and arguments. Never passed through a shell.
-    pub argv: Vec<String>,
-    /// Data written to the program's standard input. It can contain a
-    /// password, so it is never shown in output.
-    pub stdin: Option<String>,
-}
-
-impl SystemCommand {
-    fn new<S: AsRef<str>>(argv: &[S]) -> Self {
-        Self {
-            argv: argv.iter().map(|s| s.as_ref().to_string()).collect(),
-            stdin: None,
-        }
-    }
-
-    /// Shell-quoted form for display. Standard input content is redacted.
-    pub fn display(&self) -> String {
-        let mut s = self
-            .argv
-            .iter()
-            .map(|a| shell_quote(a))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if self.stdin.is_some() {
-            s.push_str(" <<< (redacted)");
-        }
-        s
-    }
-}
-
-fn shell_quote(s: &str) -> String {
-    if !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./=:,@%+".contains(c))
-    {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    }
-}
-
-/// Rejects values that would break the line-based `user:password` input
-/// format of chpasswd.
-fn check_chpasswd_field(what: &str, value: &str) -> Result<()> {
-    if value.contains('\n') || value.contains('\r') || value.contains('\0') {
-        return Err(UserError::HashParamsInvalid(format!(
-            "{} must not contain newline or NUL characters",
-            what
-        ))
-        .into());
-    }
-    Ok(())
-}
-
-/// Builds the external commands for `op` on the system backend. Pure: it
-/// runs nothing.
-pub fn system_commands(op: &BackendOp) -> Result<Vec<SystemCommand>> {
-    Ok(match *op {
-        BackendOp::CreateUser(info) => {
-            let mut argv: Vec<String> = vec![
-                "useradd".into(),
-                "-u".into(),
-                info.uid.to_string(),
-                "-g".into(),
-                info.primary_group.clone(),
-            ];
-            if let Some(home) = &info.home {
-                argv.push("-d".into());
-                argv.push(home.clone());
-                argv.push("-m".into());
-            }
-            if let Some(shell) = &info.shell {
-                argv.push("-s".into());
-                argv.push(shell.clone());
-            }
-            if let Some(gecos) = &info.gecos {
-                argv.push("-c".into());
-                argv.push(gecos.clone());
-            }
-            argv.push("--".into());
-            argv.push(info.username.clone());
-            vec![SystemCommand::new(&argv)]
-        }
-        BackendOp::CreateGroup(info) => {
-            vec![SystemCommand::new(&[
-                "groupadd",
-                "-g",
-                info.gid.to_string().as_str(),
-                "--",
-                info.name.as_str(),
-            ])]
-        }
-        BackendOp::AddMembership { username, group } => {
-            vec![SystemCommand::new(&[
-                "usermod", "-a", "-G", group, "--", username,
-            ])]
-        }
-        BackendOp::DeleteUser {
-            username,
-            remove_home,
-            remove_mail,
-        } => {
-            let mut cmds = Vec::new();
-            if remove_home {
-                // userdel -r removes the home directory and the mail spool.
-                cmds.push(SystemCommand::new(&["userdel", "-r", username]));
-            } else {
-                cmds.push(SystemCommand::new(&["userdel", username]));
-                if remove_mail {
-                    let spool = format!("/var/mail/{}", username);
-                    cmds.push(SystemCommand::new(&["rm", "-f", "--", spool.as_str()]));
-                }
-            }
-            cmds
-        }
-        BackendOp::DeleteGroup(group) => vec![SystemCommand::new(&["groupdel", group])],
-        BackendOp::RemoveMembership { username, group } => {
-            vec![SystemCommand::new(&["gpasswd", "-d", username, group])]
-        }
-        BackendOp::SetPasswordHash { username, hash } => {
-            check_chpasswd_field("password hash", hash)?;
-            if hash.contains(':') {
-                return Err(UserError::HashParamsInvalid(
-                    "password hash must not contain ':'".to_string(),
-                )
-                .into());
-            }
-            let mut cmd = SystemCommand::new(&["chpasswd", "-e"]);
-            cmd.stdin = Some(format!("{}:{}\n", username, hash));
-            vec![cmd]
-        }
-        BackendOp::SetPasswordPlain {
-            username,
-            password,
-            scheme,
-        } => {
-            check_chpasswd_field("password", password)?;
-            let method = match scheme {
-                HashScheme::BackendDefault | HashScheme::Sha512Crypt => "SHA512",
-                HashScheme::Bcrypt => "BCRYPT",
-                HashScheme::Argon2id => {
-                    return Err(UserError::HashSchemeUnsupported(
-                        "argon2id (not supported by the system backend)".to_string(),
-                    )
-                    .into());
-                }
-            };
-            let mut cmd = SystemCommand::new(&["chpasswd", "-c", method]);
-            cmd.stdin = Some(format!("{}:{}\n", username, password));
-            vec![cmd]
-        }
-        BackendOp::Lock(username) => vec![SystemCommand::new(&["usermod", "-L", username])],
-        BackendOp::Unlock(username) => vec![SystemCommand::new(&["usermod", "-U", username])],
-    })
-}
-
-/// Returns the password field of `username` from /etc/shadow contents.
-pub fn shadow_password_field(shadow: &str, username: &str) -> Option<String> {
-    shadow.lines().find_map(|line| {
-        let mut parts = line.splitn(3, ':');
-        let name = parts.next()?;
-        let pw = parts.next()?;
-        (name == username).then(|| pw.to_string())
-    })
-}
-
-/// True if a shadow password field marks the account as locked
-/// (`usermod -L` prefixes the hash with `!`; `*` disables password login).
-pub fn shadow_field_is_locked(field: &str) -> bool {
-    field.starts_with('!') || field.starts_with('*')
-}
-
-/// Parses `passwd -S <user>` output. The second field is `L`/`LK` for a
-/// locked password, `P`/`PS` for a usable one and `NP` for none.
-pub fn parse_passwd_status(output: &str, username: &str) -> Option<bool> {
-    let line = output
-        .lines()
-        .find(|l| l.split_whitespace().next() == Some(username))?;
-    match line.split_whitespace().nth(1)? {
-        "L" | "LK" => Some(true),
-        "P" | "PS" | "NP" => Some(false),
-        _ => None,
-    }
-}
-
-/// Runs one external command and fails with its stderr if it does not
-/// succeed.
-#[cfg(not(test))]
-fn execute_system_command(cmd: &SystemCommand) -> Result<()> {
-    use std::process::{Command, Stdio};
-    let (program, args) = cmd
-        .argv
-        .split_first()
-        .ok_or_else(|| UserError::InternalError("empty command".to_string()))?;
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(if cmd.stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| UserError::BackendOperationFailed(format!("cannot run {}: {}", program, e)))?;
-    if let Some(input) = &cmd.stdin {
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(input.as_bytes()).map_err(|e| {
-                UserError::BackendOperationFailed(format!("cannot write to {}: {}", program, e))
-            })?;
-        }
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|e| UserError::BackendOperationFailed(format!("{} failed: {}", program, e)))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(UserError::BackendOperationFailed(format!(
-            "{} exited with {}: {}",
-            cmd.display(),
-            output.status,
-            stderr.trim()
-        ))
-        .into());
-    }
-    Ok(())
-}
-
-/// Unit tests never run system commands. A test that reaches this point
-/// with a real (non-recording) system backend gets an error instead.
-#[cfg(test)]
-fn execute_system_command(cmd: &SystemCommand) -> Result<()> {
-    Err(UserError::BackendOperationFailed(format!(
-        "refusing to run '{}' from a unit test",
-        cmd.display()
-    ))
-    .into())
-}
-
-/// Runs `passwd -S <user>` (read-only) and returns its stdout.
-#[cfg(not(test))]
-fn query_passwd_status(username: &str) -> Result<String> {
-    let output = std::process::Command::new("passwd")
-        .args(["-S", username])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| UserError::BackendOperationFailed(format!("cannot run passwd -S: {}", e)))?;
-    if !output.status.success() {
-        return Err(UserError::BackendOperationFailed(format!(
-            "passwd -S {} failed: {}",
-            username,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
-        .into());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-#[cfg(test)]
-fn query_passwd_status(_username: &str) -> Result<String> {
-    Err(
-        UserError::BackendOperationFailed("passwd -S is not run from unit tests".to_string())
-            .into(),
-    )
-}
-
-/// How the system backend applies changes.
-#[derive(Debug, Clone)]
-enum SystemExec {
-    /// Run the commands.
-    Run,
-    /// Record the commands without running them (used by tests).
-    Record(Arc<Mutex<Vec<SystemCommand>>>),
-}
-
-/// System backend: reads the local user database with getpwnam/getgrnam and
-/// getgrouplist, and changes it with useradd, groupadd, usermod, userdel,
-/// groupdel, gpasswd and chpasswd.
-#[derive(Debug)]
-pub struct SystemBackend {
-    exec: SystemExec,
-    /// Path of the shadow file read by `is_locked` and `verify_password`.
-    shadow_path: std::path::PathBuf,
-}
-
-impl SystemBackend {
-    pub fn new() -> Self {
-        Self {
-            exec: SystemExec::Run,
-            shadow_path: "/etc/shadow".into(),
-        }
-    }
-
-    /// A backend that records the commands it would run instead of running
-    /// them. Lookups still read the real user database.
-    pub fn recording() -> (Self, Arc<Mutex<Vec<SystemCommand>>>) {
-        let log = Arc::new(Mutex::new(Vec::new()));
-        (
-            Self {
-                exec: SystemExec::Record(log.clone()),
-                shadow_path: "/etc/shadow".into(),
-            },
-            log,
-        )
-    }
-
-    /// Reads the shadow file from another path (used by tests).
-    pub fn with_shadow_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
-        self.shadow_path = path.into();
-        self
-    }
-
-    fn apply(&mut self, op: BackendOp) -> Result<()> {
-        for cmd in system_commands(&op)? {
-            match &self.exec {
-                SystemExec::Run => execute_system_command(&cmd)?,
-                SystemExec::Record(log) => log.lock().unwrap().push(cmd),
-            }
-        }
-        Ok(())
-    }
-
-    /// The account's shadow password field, or an error if the shadow file
-    /// cannot be read (it is normally readable only by root).
-    fn shadow_field(&self, username: &str) -> Result<Option<String>> {
-        let contents = std::fs::read_to_string(&self.shadow_path).map_err(|e| {
-            UserError::BackendOperationFailed(format!(
-                "cannot read {}: {}",
-                self.shadow_path.display(),
-                e
-            ))
-        })?;
-        Ok(shadow_password_field(&contents, username))
-    }
-
-    /// Supplementary and primary group IDs of a user, via getgrouplist.
-    fn group_ids_for_user(username: &str, primary_gid: u32) -> Result<Vec<u32>> {
-        let c_user = CString::new(username)
-            .map_err(|_| UserError::UsernameInvalid("username contains NUL".to_string()))?;
-        let gids = nix::unistd::getgrouplist(&c_user, nix::unistd::Gid::from_raw(primary_gid))
-            .map_err(|e| {
-                UserError::BackendOperationFailed(format!("getgrouplist failed: {}", e))
-            })?;
-        Ok(gids.into_iter().map(|g| g.as_raw()).collect())
-    }
-}
-
-impl UserBackendProvider for SystemBackend {
-    fn user_exists(&self, username: &str) -> Result<bool> {
-        // Use getpwnam system call to check if user exists
-        match CString::new(username) {
-            Ok(c_username) => unsafe {
-                let pwd_ptr = libc::getpwnam(c_username.as_ptr());
-                Ok(!pwd_ptr.is_null())
-            },
-            Err(_) => {
-                // Invalid username (contains null bytes)
-                Ok(false)
-            }
-        }
-    }
-
-    fn group_exists(&self, group_name: &str) -> Result<bool> {
-        // Use getgrnam system call to check if group exists
-        match CString::new(group_name) {
-            Ok(c_group_name) => unsafe {
-                let grp_ptr = libc::getgrnam(c_group_name.as_ptr());
-                Ok(!grp_ptr.is_null())
-            },
-            Err(_) => {
-                // Invalid group name (contains null bytes)
-                Ok(false)
-            }
-        }
-    }
-
-    fn membership_exists(&self, username: &str, group_name: &str) -> Result<bool> {
-        // First check if the group exists and get its member list
-        match CString::new(group_name) {
-            Ok(c_group_name) => {
-                unsafe {
-                    let grp_ptr = libc::getgrnam(c_group_name.as_ptr());
-                    if grp_ptr.is_null() {
-                        // Group doesn't exist
-                        return Ok(false);
-                    }
-
-                    let grp = *grp_ptr;
-
-                    // Check if username is in the group members list
-                    let mut member_ptr = grp.gr_mem;
-                    while !member_ptr.is_null() && !(*member_ptr).is_null() {
-                        let member = std::ffi::CStr::from_ptr(*member_ptr).to_string_lossy();
-                        if member == username {
-                            return Ok(true);
-                        }
-                        member_ptr = member_ptr.add(1);
-                    }
-
-                    // Also check if this group is the user's primary group
-                    match CString::new(username) {
-                        Ok(c_username) => {
-                            let pwd_ptr = libc::getpwnam(c_username.as_ptr());
-                            if !pwd_ptr.is_null() {
-                                let pwd = *pwd_ptr;
-                                if pwd.pw_gid == grp.gr_gid {
-                                    return Ok(true);
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            // Invalid username
-                            return Ok(false);
-                        }
-                    }
-
-                    Ok(false)
-                }
-            }
-            Err(_) => {
-                // Invalid group name (contains null bytes)
-                Ok(false)
-            }
-        }
-    }
-
-    fn next_uid(&self) -> Result<u32> {
-        // Find next available UID starting from 1000 (typical user UID range)
-        let start_uid = 1000;
-        let max_uid = 65533; // Avoid 65534 (nobody) and 65535 (-1)
-
-        for uid in start_uid..=max_uid {
-            // Check if this UID is already in use
-            let pwd_ptr = unsafe { libc::getpwuid(uid) };
-            if pwd_ptr.is_null() {
-                // UID is not in use, return it
-                return Ok(uid);
-            }
-        }
-
-        // If we get here, all UIDs in range are taken
-        Err(UserError::InternalError("No available UIDs in range 1000-65533".to_string()).into())
-    }
-
-    fn next_gid(&self) -> Result<u32> {
-        // Find next available GID starting from 1000 (typical group GID range)
-        let start_gid = 1000;
-        let max_gid = 65533; // Avoid 65534 (nogroup) and 65535 (-1)
-
-        for gid in start_gid..=max_gid {
-            // Check if this GID is already in use
-            let grp_ptr = unsafe { libc::getgrgid(gid) };
-            if grp_ptr.is_null() {
-                // GID is not in use, return it
-                return Ok(gid);
-            }
-        }
-
-        // If we get here, all GIDs in range are taken
-        Err(UserError::InternalError("No available GIDs in range 1000-65533".to_string()).into())
-    }
-
-    fn create_user(&mut self, user_info: &UserInfo) -> Result<()> {
-        if user_info.username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if self.user_exists(&user_info.username)? {
-            return Err(UserError::UsernameConflict(user_info.username.clone()).into());
-        }
-        self.apply(BackendOp::CreateUser(user_info))
-    }
-
-    fn create_group(&mut self, group_info: &GroupInfo) -> Result<()> {
-        if group_info.name.is_empty() {
-            return Err(
-                UserError::GroupNameInvalid("group name cannot be empty".to_string()).into(),
-            );
-        }
-        if self.group_exists(&group_info.name)? {
-            return Err(UserError::GroupConflict(group_info.name.clone()).into());
-        }
-        self.apply(BackendOp::CreateGroup(group_info))
-    }
-
-    fn add_membership(&mut self, username: &str, group_name: &str) -> Result<()> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if group_name.is_empty() {
-            return Err(
-                UserError::GroupNameInvalid("group name cannot be empty".to_string()).into(),
-            );
-        }
-        if !self.user_exists(username)? {
-            return Err(UserError::UserNotFound(username.to_string()).into());
-        }
-        if !self.group_exists(group_name)? {
-            return Err(UserError::GroupNotFound(group_name.to_string()).into());
-        }
-        if self.membership_exists(username, group_name)? {
-            return Err(
-                UserError::MembershipExists(username.to_string(), group_name.to_string()).into(),
-            );
-        }
-        self.apply(BackendOp::AddMembership {
-            username,
-            group: group_name,
-        })
-    }
-
-    fn validate_username(&self, username: &str) -> Result<()> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if username.len() > 32 {
-            return Err(UserError::UsernameInvalid("username too long".to_string()).into());
-        }
-        if !username
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
-            return Err(
-                UserError::UsernameInvalid("invalid characters in username".to_string()).into(),
-            );
-        }
-        if username.starts_with('-') {
-            return Err(
-                UserError::UsernameInvalid("username cannot start with dash".to_string()).into(),
-            );
-        }
-        Ok(())
-    }
-
-    fn validate_group_name(&self, group_name: &str) -> Result<()> {
-        if group_name.is_empty() {
-            return Err(
-                UserError::GroupNameInvalid("group name cannot be empty".to_string()).into(),
-            );
-        }
-        if group_name.len() > 32 {
-            return Err(UserError::GroupNameInvalid("group name too long".to_string()).into());
-        }
-        if !group_name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
-            return Err(UserError::GroupNameInvalid(
-                "invalid characters in group name".to_string(),
-            )
-            .into());
-        }
-        if group_name.starts_with('-') {
-            return Err(UserError::GroupNameInvalid(
-                "group name cannot start with dash".to_string(),
-            )
-            .into());
-        }
-        Ok(())
-    }
-
-    fn validate_uid(&self, uid: u32, force: bool) -> Result<()> {
-        if !force && uid < 1000 {
-            return Err(UserError::UidOutOfRange(uid).into());
-        }
-        if uid >= 65534 {
-            return Err(UserError::UidOutOfRange(uid).into());
-        }
-        Ok(())
-    }
-
-    fn validate_gid(&self, gid: u32, force: bool) -> Result<()> {
-        if !force && gid < 1000 {
-            return Err(UserError::GidOutOfRange(gid).into());
-        }
-        if gid >= 65534 {
-            return Err(UserError::GidOutOfRange(gid).into());
-        }
-        Ok(())
-    }
-
-    fn default_home_path(&self, username: &str) -> String {
-        format!("/home/{}", username)
-    }
-
-    fn default_shell(&self) -> String {
-        "/bin/bash".to_string()
-    }
-
-    fn lookup_user(&self, username: &str) -> Result<Option<UserRecord>> {
-        // Use getpwnam system call to query system user database
-        match CString::new(username) {
-            Ok(c_username) => {
-                unsafe {
-                    let pwd_ptr = libc::getpwnam(c_username.as_ptr());
-                    if pwd_ptr.is_null() {
-                        Ok(None)
-                    } else {
-                        let pwd = *pwd_ptr;
-                        let username = std::ffi::CStr::from_ptr(pwd.pw_name)
-                            .to_string_lossy()
-                            .to_string();
-                        let home = if pwd.pw_dir.is_null() {
-                            None
-                        } else {
-                            Some(
-                                std::ffi::CStr::from_ptr(pwd.pw_dir)
-                                    .to_string_lossy()
-                                    .to_string(),
-                            )
-                        };
-                        let shell = if pwd.pw_shell.is_null() {
-                            None
-                        } else {
-                            Some(
-                                std::ffi::CStr::from_ptr(pwd.pw_shell)
-                                    .to_string_lossy()
-                                    .to_string(),
-                            )
-                        };
-
-                        // Look up primary group name
-                        let grp_ptr = libc::getgrgid(pwd.pw_gid);
-                        let primary_group = if grp_ptr.is_null() {
-                            pwd.pw_gid.to_string() // fallback to GID if group name not found
-                        } else {
-                            std::ffi::CStr::from_ptr((*grp_ptr).gr_name)
-                                .to_string_lossy()
-                                .to_string()
-                        };
-
-                        Ok(Some(UserRecord {
-                            username,
-                            uid: pwd.pw_uid,
-                            primary_group,
-                            home,
-                            shell,
-                        }))
-                    }
-                }
-            }
-            Err(_) => {
-                // Invalid username (contains null bytes)
-                Ok(None)
-            }
-        }
-    }
-
-    fn lookup_user_by_uid(&self, uid: u32) -> Result<Option<UserRecord>> {
-        // Use getpwuid system call to query system user database
-        unsafe {
-            let pwd_ptr = libc::getpwuid(uid);
-            if pwd_ptr.is_null() {
-                Ok(None)
-            } else {
-                let pwd = *pwd_ptr;
-                let username = std::ffi::CStr::from_ptr(pwd.pw_name)
-                    .to_string_lossy()
-                    .to_string();
-                let home = if pwd.pw_dir.is_null() {
-                    None
-                } else {
-                    Some(
-                        std::ffi::CStr::from_ptr(pwd.pw_dir)
-                            .to_string_lossy()
-                            .to_string(),
-                    )
-                };
-                let shell = if pwd.pw_shell.is_null() {
-                    None
-                } else {
-                    Some(
-                        std::ffi::CStr::from_ptr(pwd.pw_shell)
-                            .to_string_lossy()
-                            .to_string(),
-                    )
-                };
-
-                // Look up primary group name
-                let grp_ptr = libc::getgrgid(pwd.pw_gid);
-                let primary_group = if grp_ptr.is_null() {
-                    pwd.pw_gid.to_string() // fallback to GID if group name not found
-                } else {
-                    std::ffi::CStr::from_ptr((*grp_ptr).gr_name)
-                        .to_string_lossy()
-                        .to_string()
-                };
-
-                Ok(Some(UserRecord {
-                    username,
-                    uid: pwd.pw_uid,
-                    primary_group,
-                    home,
-                    shell,
-                }))
-            }
-        }
-    }
-
-    fn lookup_group(&self, group_name: &str) -> Result<Option<GroupRecord>> {
-        // Use getgrnam system call to query system group database
-        match CString::new(group_name) {
-            Ok(c_group_name) => {
-                unsafe {
-                    let grp_ptr = libc::getgrnam(c_group_name.as_ptr());
-                    if grp_ptr.is_null() {
-                        Ok(None)
-                    } else {
-                        let grp = *grp_ptr;
-                        let name = std::ffi::CStr::from_ptr(grp.gr_name)
-                            .to_string_lossy()
-                            .to_string();
-                        let gid = grp.gr_gid;
-
-                        // Collect group members
-                        let mut members = Vec::new();
-                        let mut member_ptr = grp.gr_mem;
-                        while !member_ptr.is_null() && !(*member_ptr).is_null() {
-                            let member = std::ffi::CStr::from_ptr(*member_ptr)
-                                .to_string_lossy()
-                                .to_string();
-                            members.push(member);
-                            member_ptr = member_ptr.add(1);
-                        }
-
-                        Ok(Some(GroupRecord {
-                            name,
-                            gid: Some(gid),
-                            members,
-                        }))
-                    }
-                }
-            }
-            Err(_) => {
-                // Invalid group name (contains null bytes)
-                Ok(None)
-            }
-        }
-    }
-
-    fn delete_user(&mut self, username: &str, remove_home: bool, remove_mail: bool) -> Result<()> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if !self.user_exists(username)? {
-            return Err(UserError::UserNotFound(username.to_string()).into());
-        }
-        self.apply(BackendOp::DeleteUser {
-            username,
-            remove_home,
-            remove_mail,
-        })
-    }
-
-    fn delete_group(&mut self, group_name: &str) -> Result<()> {
-        if group_name.is_empty() {
-            return Err(
-                UserError::GroupNameInvalid("group name cannot be empty".to_string()).into(),
-            );
-        }
-        if !self.group_exists(group_name)? {
-            return Err(UserError::GroupNotFound(group_name.to_string()).into());
-        }
-        self.apply(BackendOp::DeleteGroup(group_name))
-    }
-
-    fn remove_user_from_group(&mut self, username: &str, group_name: &str) -> Result<()> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if group_name.is_empty() {
-            return Err(
-                UserError::GroupNameInvalid("group name cannot be empty".to_string()).into(),
-            );
-        }
-        if !self.user_exists(username)? {
-            return Err(UserError::UserNotFound(username.to_string()).into());
-        }
-        if !self.group_exists(group_name)? {
-            return Err(UserError::GroupNotFound(group_name.to_string()).into());
-        }
-        if !self.membership_exists(username, group_name)? {
-            return Err(UserError::MembershipNotFound(
-                username.to_string(),
-                group_name.to_string(),
-            )
-            .into());
-        }
-        self.apply(BackendOp::RemoveMembership {
-            username,
-            group: group_name,
-        })
-    }
-
-    fn list_groups_for_user(&self, username: &str) -> Result<Vec<String>> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        let record = self
-            .lookup_user(username)?
-            .ok_or_else(|| UserError::UserNotFound(username.to_string()))?;
-        let primary_gid = self
-            .lookup_group(&record.primary_group)?
-            .and_then(|g| g.gid)
-            .or_else(|| record.primary_group.parse().ok())
-            .unwrap_or(0);
-
-        // Primary group first, then supplementary groups from getgrouplist.
-        let mut groups = vec![record.primary_group.clone()];
-        for gid in Self::group_ids_for_user(username, primary_gid)? {
-            let name = nix::unistd::Group::from_gid(nix::unistd::Gid::from_raw(gid))
-                .ok()
-                .flatten()
-                .map(|g| g.name)
-                .unwrap_or_else(|| gid.to_string());
-            if !groups.contains(&name) {
-                groups.push(name);
-            }
-        }
-        Ok(groups)
-    }
-
-    fn list_groups_for_user_detailed(&self, username: &str) -> Result<Vec<GroupRecord>> {
-        let mut group_records = Vec::new();
-        for group_name in self.list_groups_for_user(username)? {
-            if let Some(group_record) = self.lookup_group(&group_name)? {
-                group_records.push(group_record);
-            } else {
-                group_records.push(GroupRecord {
-                    gid: group_name.parse().ok(),
-                    name: group_name,
-                    members: vec![],
-                });
-            }
-        }
-        Ok(group_records)
-    }
-
-    fn verify_password(&self, username: &str, password_plain: &str) -> Result<bool> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if password_plain.is_empty() {
-            return Ok(false); // Empty passwords are never valid
-        }
-        if !self.user_exists(username)? {
-            return Err(UserError::UserNotFound(username.to_string()).into());
-        }
-        let field = self
-            .shadow_field(username)
-            .map_err(|e| UserError::PasswordBackendFailure(e.to_string()))?
-            .ok_or_else(|| {
-                UserError::PasswordBackendFailure(format!(
-                    "no shadow entry for user '{}'",
-                    username
-                ))
-            })?;
-        if shadow_field_is_locked(&field) {
-            return Ok(false);
-        }
-        // Only formats this crate can verify without the system crypt()
-        // library are accepted. SHA-crypt ($5$, $6$), yescrypt ($y$) and
-        // others are reported as unsupported rather than as a mismatch.
-        if field.starts_with("$2a$")
-            || field.starts_with("$2b$")
-            || field.starts_with("$2y$")
-            || field.starts_with("$argon2")
-            || field.starts_with("$pbkdf2-")
-        {
-            PasswordHasher::verify_password(password_plain, &field)
-        } else {
-            Err(UserError::OldPasswordVerificationUnsupported.into())
-        }
-    }
-
-    fn set_password_hash(&mut self, username: &str, password_hash: &str) -> Result<()> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if password_hash.is_empty() {
-            return Err(
-                UserError::HashParamsInvalid("password hash cannot be empty".to_string()).into(),
-            );
-        }
-        if !self.user_exists(username)? {
-            return Err(UserError::UserNotFound(username.to_string()).into());
-        }
-        self.apply(BackendOp::SetPasswordHash {
-            username,
-            hash: password_hash,
-        })
-    }
-
-    fn set_password_plain(
-        &mut self,
-        username: &str,
-        password_plain: &str,
-        scheme: &HashScheme,
-        _params: Option<&str>,
-    ) -> Result<()> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if !self.user_exists(username)? {
-            return Err(UserError::UserNotFound(username.to_string()).into());
-        }
-        // chpasswd hashes the password with the system crypt() library.
-        self.apply(BackendOp::SetPasswordPlain {
-            username,
-            password: password_plain,
-            scheme,
-        })
-    }
-
-    fn planned_commands(&self, op: &BackendOp) -> Result<Vec<String>> {
-        Ok(system_commands(op)?
-            .iter()
-            .map(SystemCommand::display)
-            .collect())
-    }
-
-    fn hash_password(
-        &self,
-        password_plain: &str,
-        scheme: &HashScheme,
-        params: Option<&str>,
-    ) -> Result<String> {
-        PasswordHasher::hash_password(password_plain, scheme, params)
-    }
-
-    fn default_hash_scheme(&self) -> HashScheme {
-        HashScheme::Sha512Crypt
-    }
-
-    fn is_locked(&self, username: &str) -> Result<bool> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if !self.user_exists(username)? {
-            return Err(UserError::UserNotFound(username.to_string()).into());
-        }
-        // Prefer the shadow file (root only); fall back to `passwd -S`, which
-        // also works for the calling user's own account.
-        let shadow_err = match self.shadow_field(username) {
-            Ok(Some(field)) => return Ok(shadow_field_is_locked(&field)),
-            Ok(None) => format!(
-                "no entry for '{}' in {}",
-                username,
-                self.shadow_path.display()
-            ),
-            Err(e) => e.to_string(),
-        };
-        match query_passwd_status(username) {
-            Ok(out) => parse_passwd_status(&out, username).ok_or_else(|| {
-                UserError::BackendOperationFailed(format!(
-                    "unrecognized passwd -S output for '{}'",
-                    username
-                ))
-                .into()
-            }),
-            Err(e) => Err(UserError::BackendOperationFailed(format!(
-                "cannot determine lock state of '{}': {}; {}",
-                username, shadow_err, e
-            ))
-            .into()),
-        }
-    }
-
-    fn lock_user(&mut self, username: &str) -> Result<()> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if !self.user_exists(username)? {
-            return Err(UserError::UserNotFound(username.to_string()).into());
-        }
-        self.apply(BackendOp::Lock(username))
-    }
-
-    fn unlock_user(&mut self, username: &str) -> Result<()> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if !self.user_exists(username)? {
-            return Err(UserError::UserNotFound(username.to_string()).into());
-        }
-        self.apply(BackendOp::Unlock(username))
-    }
-}
-
-/// Mock backend for testing
-#[derive(Debug)]
-pub struct MockBackend {
-    users: Arc<Mutex<HashMap<String, UserInfo>>>,
-    groups: Arc<Mutex<HashMap<String, GroupInfo>>>,
-    memberships: Arc<Mutex<HashMap<String, Vec<String>>>>, // username -> groups
-    password_hashes: Arc<Mutex<HashMap<String, String>>>,  // username -> password hash
-    locked_status: Arc<Mutex<HashMap<String, bool>>>,      // username -> locked status
-    next_uid: Arc<Mutex<u32>>,
-    next_gid: Arc<Mutex<u32>>,
-}
-
-impl MockBackend {
-    pub fn new() -> Self {
-        Self {
-            users: Arc::new(Mutex::new(HashMap::new())),
-            groups: Arc::new(Mutex::new(HashMap::new())),
-            memberships: Arc::new(Mutex::new(HashMap::new())),
-            password_hashes: Arc::new(Mutex::new(HashMap::new())),
-            locked_status: Arc::new(Mutex::new(HashMap::new())),
-            next_uid: Arc::new(Mutex::new(1001)),
-            next_gid: Arc::new(Mutex::new(1001)),
-        }
-    }
-
-    pub fn with_existing_user(self, username: &str, uid: u32, primary_group: &str) -> Self {
-        let user = UserInfo {
-            username: username.to_string(),
-            uid,
-            primary_group: primary_group.to_string(),
-            supplementary_groups: vec![],
-            home: Some(format!("/home/{}", username)),
-            shell: Some("/bin/bash".to_string()),
-            gecos: None,
-            created: false,
-            existed: true,
-        };
-        self.users
-            .lock()
-            .unwrap()
-            .insert(username.to_string(), user);
-
-        let group = GroupInfo {
-            name: primary_group.to_string(),
-            gid: uid, // Simplified: use same ID
-            created: false,
-            existed: true,
-        };
-        self.groups
-            .lock()
-            .unwrap()
-            .insert(primary_group.to_string(), group);
-
-        self
-    }
-
-    pub fn with_existing_group(self, group_name: &str, gid: u32) -> Self {
-        let group = GroupInfo {
-            name: group_name.to_string(),
-            gid,
-            created: false,
-            existed: true,
-        };
-        self.groups
-            .lock()
-            .unwrap()
-            .insert(group_name.to_string(), group);
-        self
-    }
-
-    pub fn with_existing_membership(self, username: &str, group_name: &str) -> Self {
-        self.memberships
-            .lock()
-            .unwrap()
-            .entry(username.to_string())
-            .or_insert_with(Vec::new)
-            .push(group_name.to_string());
-        self
-    }
-
-    pub fn with_password(self, username: &str, password_hash: &str) -> Self {
-        self.password_hashes
-            .lock()
-            .unwrap()
-            .insert(username.to_string(), password_hash.to_string());
-        self
-    }
-
-    pub fn with_locked_user(self, username: &str, locked: bool) -> Self {
-        self.locked_status
-            .lock()
-            .unwrap()
-            .insert(username.to_string(), locked);
-        self
-    }
-}
-
-impl UserBackendProvider for MockBackend {
-    fn user_exists(&self, username: &str) -> Result<bool> {
-        Ok(self.users.lock().unwrap().contains_key(username))
-    }
-
-    fn group_exists(&self, group_name: &str) -> Result<bool> {
-        Ok(self.groups.lock().unwrap().contains_key(group_name))
-    }
-
-    fn membership_exists(&self, username: &str, group_name: &str) -> Result<bool> {
-        if let Some(groups) = self.memberships.lock().unwrap().get(username) {
-            Ok(groups.contains(&group_name.to_string()))
-        } else {
-            Ok(false)
-        }
-    }
-
-    fn next_uid(&self) -> Result<u32> {
-        let mut uid_gen = self.next_uid.lock().unwrap();
-        let uid = *uid_gen;
-        *uid_gen += 1;
-        Ok(uid)
-    }
-
-    fn next_gid(&self) -> Result<u32> {
-        let mut gid_gen = self.next_gid.lock().unwrap();
-        let gid = *gid_gen;
-        *gid_gen += 1;
-        Ok(gid)
-    }
-
-    fn create_user(&mut self, user_info: &UserInfo) -> Result<()> {
-        if self.user_exists(&user_info.username)? {
-            return Err(UserError::UsernameConflict(user_info.username.clone()).into());
-        }
-
-        let mut users = self.users.lock().unwrap();
-        users.insert(user_info.username.clone(), user_info.clone());
-
-        Ok(())
-    }
-
-    fn create_group(&mut self, group_info: &GroupInfo) -> Result<()> {
-        if self.group_exists(&group_info.name)? {
-            return Err(UserError::GroupConflict(group_info.name.clone()).into());
-        }
-
-        let mut groups = self.groups.lock().unwrap();
-        groups.insert(group_info.name.clone(), group_info.clone());
-
-        Ok(())
-    }
-
-    fn add_membership(&mut self, username: &str, group_name: &str) -> Result<()> {
-        if !self.user_exists(username)? {
-            return Err(UserError::GroupNotFound(username.to_string()).into());
-        }
-        if !self.group_exists(group_name)? {
-            return Err(UserError::GroupNotFound(group_name.to_string()).into());
-        }
-
-        let mut memberships = self.memberships.lock().unwrap();
-        let user_groups = memberships
-            .entry(username.to_string())
-            .or_insert_with(Vec::new);
-
-        if !user_groups.contains(&group_name.to_string()) {
-            user_groups.push(group_name.to_string());
-        }
-
-        Ok(())
-    }
-
-    fn validate_username(&self, username: &str) -> Result<()> {
-        if username.is_empty() {
-            return Err(UserError::UsernameInvalid("username cannot be empty".to_string()).into());
-        }
-        if username.len() > 32 {
-            return Err(UserError::UsernameInvalid("username too long".to_string()).into());
-        }
-        if !username
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
-            return Err(
-                UserError::UsernameInvalid("invalid characters in username".to_string()).into(),
-            );
-        }
-        if username.starts_with('-') {
-            return Err(
-                UserError::UsernameInvalid("username cannot start with dash".to_string()).into(),
-            );
-        }
-        Ok(())
-    }
-
-    fn validate_group_name(&self, group_name: &str) -> Result<()> {
-        if group_name.is_empty() {
-            return Err(
-                UserError::GroupNameInvalid("group name cannot be empty".to_string()).into(),
-            );
-        }
-        if group_name.len() > 32 {
-            return Err(UserError::GroupNameInvalid("group name too long".to_string()).into());
-        }
-        if !group_name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
-            return Err(UserError::GroupNameInvalid(
-                "invalid characters in group name".to_string(),
-            )
-            .into());
-        }
-        if group_name.starts_with('-') {
-            return Err(UserError::GroupNameInvalid(
-                "group name cannot start with dash".to_string(),
-            )
-            .into());
-        }
-        Ok(())
-    }
-
-    fn validate_uid(&self, uid: u32, force: bool) -> Result<()> {
-        if !force && uid < 1000 {
-            return Err(UserError::UidOutOfRange(uid).into());
-        }
-        if uid >= 65534 {
-            return Err(UserError::UidOutOfRange(uid).into());
-        }
-
-        // Check for conflicts
-        for user in self.users.lock().unwrap().values() {
-            if user.uid == uid {
-                return Err(UserError::UidConflict(uid).into());
-            }
-        }
-
-        Ok(())
-    }
-
-    fn validate_gid(&self, gid: u32, force: bool) -> Result<()> {
-        if !force && gid < 1000 {
-            return Err(UserError::GidOutOfRange(gid).into());
-        }
-        if gid >= 65534 {
-            return Err(UserError::GidOutOfRange(gid).into());
-        }
-
-        // Check for conflicts
-        for group in self.groups.lock().unwrap().values() {
-            if group.gid == gid {
-                return Err(UserError::GidConflict(gid).into());
-            }
-        }
-
-        Ok(())
-    }
-
-    fn default_home_path(&self, username: &str) -> String {
-        format!("/home/{}", username)
-    }
-
-    fn default_shell(&self) -> String {
-        "/bin/bash".to_string()
-    }
-
-    fn lookup_user(&self, username: &str) -> Result<Option<UserRecord>> {
-        if let Some(user) = self.users.lock().unwrap().get(username) {
-            Ok(Some(UserRecord {
-                username: user.username.clone(),
-                uid: user.uid,
-                primary_group: user.primary_group.clone(),
-                home: user.home.clone(),
-                shell: user.shell.clone(),
-            }))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn lookup_user_by_uid(&self, uid: u32) -> Result<Option<UserRecord>> {
-        let users = self.users.lock().unwrap();
-        for user in users.values() {
-            if user.uid == uid {
-                return Ok(Some(UserRecord {
-                    username: user.username.clone(),
-                    uid: user.uid,
-                    primary_group: user.primary_group.clone(),
-                    home: user.home.clone(),
-                    shell: user.shell.clone(),
-                }));
-            }
-        }
-        Ok(None)
-    }
-
-    fn lookup_group(&self, group_name: &str) -> Result<Option<GroupRecord>> {
-        if let Some(group) = self.groups.lock().unwrap().get(group_name) {
-            let members = self
-                .memberships
-                .lock()
-                .unwrap()
-                .iter()
-                .filter_map(|(username, groups)| {
-                    if groups.contains(&group_name.to_string()) {
-                        Some(username.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            Ok(Some(GroupRecord {
-                name: group.name.clone(),
-                gid: Some(group.gid),
-                members,
-            }))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn delete_user(
-        &mut self,
-        username: &str,
-        _remove_home: bool,
-        _remove_mail: bool,
-    ) -> Result<()> {
-        self.users.lock().unwrap().remove(username);
-        Ok(())
-    }
-
-    fn delete_group(&mut self, group_name: &str) -> Result<()> {
-        self.groups.lock().unwrap().remove(group_name);
-
-        // Remove from all user memberships
-        let mut memberships = self.memberships.lock().unwrap();
-        for groups in memberships.values_mut() {
-            groups.retain(|g| g != group_name);
-        }
-
-        Ok(())
-    }
-
-    fn remove_user_from_group(&mut self, username: &str, group_name: &str) -> Result<()> {
-        if let Some(groups) = self.memberships.lock().unwrap().get_mut(username) {
-            groups.retain(|g| g != group_name);
-        }
-        Ok(())
-    }
-
-    fn list_groups_for_user(&self, username: &str) -> Result<Vec<String>> {
-        Ok(self
-            .memberships
-            .lock()
-            .unwrap()
-            .get(username)
-            .cloned()
-            .unwrap_or_default())
-    }
-
-    fn list_groups_for_user_detailed(&self, username: &str) -> Result<Vec<GroupRecord>> {
-        let group_names = self.list_groups_for_user(username)?;
-        let mut group_records = Vec::new();
-
-        for group_name in group_names {
-            if let Some(group_record) = self.lookup_group(&group_name)? {
-                group_records.push(group_record);
-            } else {
-                // Create minimal record if group lookup fails
-                group_records.push(GroupRecord {
-                    name: group_name,
-                    gid: None,
-                    members: vec![],
-                });
-            }
-        }
-
-        Ok(group_records)
-    }
-
-    fn verify_password(&self, username: &str, password_plain: &str) -> Result<bool> {
-        if let Some(stored_hash) = self.password_hashes.lock().unwrap().get(username) {
-            PasswordHasher::verify_password(password_plain, stored_hash)
-        } else {
-            Ok(false)
-        }
-    }
-
-    fn set_password_hash(&mut self, username: &str, password_hash: &str) -> Result<()> {
-        self.password_hashes
-            .lock()
-            .unwrap()
-            .insert(username.to_string(), password_hash.to_string());
-        Ok(())
-    }
-
-    fn hash_password(
-        &self,
-        password_plain: &str,
-        scheme: &HashScheme,
-        params: Option<&str>,
-    ) -> Result<String> {
-        PasswordHasher::hash_password(password_plain, scheme, params)
-    }
-
-    fn default_hash_scheme(&self) -> HashScheme {
-        HashScheme::BackendDefault
-    }
-
-    fn is_locked(&self, username: &str) -> Result<bool> {
-        Ok(self
-            .locked_status
-            .lock()
-            .unwrap()
-            .get(username)
-            .copied()
-            .unwrap_or(false))
-    }
-
-    fn lock_user(&mut self, username: &str) -> Result<()> {
-        self.locked_status
-            .lock()
-            .unwrap()
-            .insert(username.to_string(), true);
-        Ok(())
-    }
-
-    fn unlock_user(&mut self, username: &str) -> Result<()> {
-        self.locked_status
-            .lock()
-            .unwrap()
-            .insert(username.to_string(), false);
-        Ok(())
-    }
-}
-
 /// User handle implementation
 #[derive(Debug)]
 pub struct UserHandle {
@@ -3219,1958 +1466,6 @@ impl UserHandle {
         Ok(UserHandle {
             alias: target.path.trim_end_matches('/').to_string(),
         })
-    }
-
-    /// Parse arguments into UserAddOptions
-    fn parse_add_options(&self, args: &Args, target: &UserTarget) -> Result<UserAddOptions> {
-        let mut options = UserAddOptions::default();
-
-        // Parse mode
-        if let Some(mode_str) = args.get("mode") {
-            options.mode = match mode_str.as_str() {
-                "user" => UserAddMode::User,
-                "group" => UserAddMode::Group,
-                "membership" => UserAddMode::Membership,
-                _ => return Err(UserError::InvalidMode(mode_str.clone()).into()),
-            };
-        }
-
-        // Parse backend
-        if let Some(backend_str) = args.get("backend") {
-            options.backend = match backend_str.as_str() {
-                "system" => UserBackend::System,
-                "mock" => UserBackend::Mock,
-                "file" => UserBackend::File,
-                "ldap" => UserBackend::Ldap,
-                _ => return Err(UserError::InvalidBackend(backend_str.clone()).into()),
-            };
-        }
-
-        // Parse boolean flags
-        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
-            options.dry_run = dry_run;
-        }
-        if let Some(ignore_if_exists) = args.get("ignore_if_exists") {
-            options.ignore_if_exists = ignore_if_exists.parse().unwrap_or(true);
-        }
-        if let Some(force) = crate::core::lenient::bool_arg(args, "force")? {
-            options.force = force;
-        }
-        if let Some(create_home) = args.get("create_home") {
-            options.create_home = create_home.parse().unwrap_or(true);
-        }
-
-        // Parse format
-        if let Some(format_str) = args.get("format") {
-            options.format = match format_str.as_str() {
-                "json" => OutputFormat::Json,
-                "text" => OutputFormat::Text,
-                _ => OutputFormat::Json,
-            };
-        }
-
-        // Parse user mode parameters
-        options.username = args
-            .get("username")
-            .cloned()
-            .or_else(|| target.extract_username());
-        if let Some(uid_str) = args.get("uid") {
-            options.uid = uid_str.parse().ok();
-        }
-        options.primary_group = args.get("primary_group").cloned();
-        // In mode=user, groups= is accepted as another name for
-        // supplementary_groups= (groups= is the group list in mode=membership).
-        let supplementary = args.get("supplementary_groups").or_else(|| {
-            if options.mode == UserAddMode::User {
-                args.get("groups")
-            } else {
-                None
-            }
-        });
-        if let Some(groups_str) = supplementary {
-            options.supplementary_groups = split_list(groups_str);
-        }
-        options.home = args.get("home").cloned();
-        options.shell = args.get("shell").cloned();
-        options.gecos = args.get("gecos").cloned();
-        options.password_hash = args.get("password_hash").cloned();
-
-        // Parse group mode parameters
-        options.group_name = args
-            .get("group_name")
-            .cloned()
-            .or_else(|| target.extract_group_name());
-        if let Some(gid_str) = args.get("gid") {
-            options.gid = gid_str.parse().ok();
-        }
-
-        // Parse membership mode parameters
-        options.member = args
-            .get("member")
-            .cloned()
-            .or_else(|| target.extract_member_name());
-        if options.mode != UserAddMode::User {
-            if let Some(groups_str) = args.get("groups") {
-                options.groups = split_list(groups_str);
-            }
-        }
-
-        Ok(options)
-    }
-
-    /// Parse arguments into UserDeleteOptions
-    fn parse_delete_options(&self, args: &Args, target: &UserTarget) -> Result<UserDeleteOptions> {
-        let mut options = UserDeleteOptions::default();
-
-        // Parse mode
-        if let Some(mode_str) = args.get("mode") {
-            options.mode = match mode_str.as_str() {
-                "user" => UserDeleteMode::User,
-                "group" => UserDeleteMode::Group,
-                "membership" => UserDeleteMode::Membership,
-                _ => return Err(UserError::InvalidMode(mode_str.clone()).into()),
-            };
-        }
-
-        // Parse backend
-        if let Some(backend_str) = args.get("backend") {
-            options.backend = match backend_str.as_str() {
-                "system" => UserBackend::System,
-                "mock" => UserBackend::Mock,
-                "file" => UserBackend::File,
-                "ldap" => UserBackend::Ldap,
-                _ => return Err(UserError::InvalidBackend(backend_str.clone()).into()),
-            };
-        }
-
-        // Parse boolean flags
-        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
-            options.dry_run = dry_run;
-        }
-        if let Some(ignore_if_missing) = args.get("ignore_if_missing") {
-            options.ignore_if_missing = ignore_if_missing.parse().unwrap_or(true);
-        }
-        if let Some(force) = crate::core::lenient::bool_arg(args, "force")? {
-            options.force = force;
-        }
-
-        // Parse format
-        if let Some(format_str) = args.get("format") {
-            options.format = match format_str.as_str() {
-                "json" => OutputFormat::Json,
-                "text" => OutputFormat::Text,
-                _ => OutputFormat::Json,
-            };
-        }
-
-        // Parse user mode parameters
-        options.username = args
-            .get("username")
-            .cloned()
-            .or_else(|| target.extract_username());
-        if let Some(remove_home) = args.get("remove_home") {
-            options.remove_home = remove_home.parse().unwrap_or(false);
-        }
-        if let Some(remove_mail) = args.get("remove_mail") {
-            options.remove_mail = remove_mail.parse().unwrap_or(false);
-        }
-        if let Some(remove_from_all_groups) = args.get("remove_from_all_groups") {
-            options.remove_from_all_groups = remove_from_all_groups.parse().unwrap_or(true);
-        }
-        if let Some(protect_system_users) = args.get("protect_system_users") {
-            options.protect_system_users = protect_system_users.parse().unwrap_or(true);
-        }
-        if let Some(min_uid) = args.get("min_uid_for_delete") {
-            options.min_uid_for_delete = min_uid.parse().unwrap_or(1000);
-        }
-
-        // Parse group mode parameters
-        options.group_name = args
-            .get("group_name")
-            .cloned()
-            .or_else(|| target.extract_group_name());
-        if let Some(only_if_empty) = args.get("only_if_empty") {
-            options.only_if_empty = only_if_empty.parse().unwrap_or(true);
-        }
-        if let Some(protect_system_groups) = args.get("protect_system_groups") {
-            options.protect_system_groups = protect_system_groups.parse().unwrap_or(true);
-        }
-        if let Some(min_gid) = args.get("min_gid_for_delete") {
-            options.min_gid_for_delete = min_gid.parse().unwrap_or(1000);
-        }
-
-        // Parse membership mode parameters
-        options.member = args
-            .get("member")
-            .cloned()
-            .or_else(|| target.extract_member_name());
-        if let Some(groups_str) = args.get("groups") {
-            options.groups = groups_str
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect();
-        }
-        if let Some(all_groups) = args.get("all_groups") {
-            options.all_groups = all_groups.parse().unwrap_or(false);
-        }
-
-        Ok(options)
-    }
-
-    /// Parse arguments into UserPasswdOptions
-    fn parse_passwd_options(&self, args: &Args, target: &UserTarget) -> Result<UserPasswdOptions> {
-        let mut options = UserPasswdOptions::default();
-
-        // Parse backend
-        if let Some(backend_str) = args.get("backend") {
-            options.backend = match backend_str.as_str() {
-                "system" => UserBackend::System,
-                "mock" => UserBackend::Mock,
-                "file" => UserBackend::File,
-                "ldap" => UserBackend::Ldap,
-                _ => return Err(UserError::InvalidBackend(backend_str.clone()).into()),
-            };
-        }
-
-        // Parse boolean flags
-        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
-            options.dry_run = dry_run;
-        }
-        if let Some(ignore_if_missing) = args.get("ignore_if_missing") {
-            options.ignore_if_missing = ignore_if_missing.parse().unwrap_or(true);
-        }
-        if let Some(force) = crate::core::lenient::bool_arg(args, "force")? {
-            options.force = force;
-        }
-        if let Some(require_old_password) = args.get("require_old_password") {
-            options.require_old_password = require_old_password.parse().unwrap_or(false);
-        }
-
-        // Parse format
-        if let Some(format_str) = args.get("format") {
-            options.format = match format_str.as_str() {
-                "json" => OutputFormat::Json,
-                "text" => OutputFormat::Text,
-                _ => OutputFormat::Json,
-            };
-        }
-
-        // Parse username
-        options.username = args
-            .get("username")
-            .cloned()
-            .or_else(|| target.extract_username());
-
-        // Parse password sources
-        options.new_password_plain = args.get("new_password_plain").cloned();
-        options.new_password_hash = args.get("new_password_hash").cloned();
-        options.old_password_plain = args.get("old_password_plain").cloned();
-
-        // Parse hash scheme
-        if let Some(scheme_str) = args.get("hash_scheme") {
-            options.hash_scheme = match scheme_str.as_str() {
-                "backend_default" => HashScheme::BackendDefault,
-                "sha512_crypt" => HashScheme::Sha512Crypt,
-                "bcrypt" => HashScheme::Bcrypt,
-                "argon2id" => HashScheme::Argon2id,
-                _ => return Err(UserError::HashSchemeUnsupported(scheme_str.clone()).into()),
-            };
-        }
-
-        // Parse hash params
-        options.hash_params = args.get("hash_params").cloned();
-
-        Ok(options)
-    }
-
-    /// Parse arguments into UserLockOptions
-    fn parse_lock_options(&self, args: &Args, target: &UserTarget) -> Result<UserLockOptions> {
-        let mut options = UserLockOptions::default();
-
-        // Parse backend
-        if let Some(backend_str) = args.get("backend") {
-            options.backend = match backend_str.as_str() {
-                "system" => UserBackend::System,
-                "mock" => UserBackend::Mock,
-                "file" => UserBackend::File,
-                "ldap" => UserBackend::Ldap,
-                _ => return Err(UserError::InvalidBackend(backend_str.clone()).into()),
-            };
-        }
-
-        // Parse boolean flags
-        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
-            options.dry_run = dry_run;
-        }
-        if let Some(ignore_if_missing) = args.get("ignore_if_missing") {
-            options.ignore_if_missing = ignore_if_missing.parse().unwrap_or(true);
-        }
-        if let Some(force) = crate::core::lenient::bool_arg(args, "force")? {
-            options.force = force;
-        }
-        if let Some(protect_system_users) = args.get("protect_system_users") {
-            options.protect_system_users = protect_system_users.parse().unwrap_or(true);
-        }
-
-        // Parse format
-        if let Some(format_str) = args.get("format") {
-            options.format = match format_str.as_str() {
-                "json" => OutputFormat::Json,
-                "text" => OutputFormat::Text,
-                _ => OutputFormat::Json,
-            };
-        }
-
-        // Parse username
-        options.username = args
-            .get("username")
-            .cloned()
-            .or_else(|| target.extract_username());
-
-        // Parse min_uid_for_lock
-        if let Some(min_uid) = args.get("min_uid_for_lock") {
-            options.min_uid_for_lock = min_uid.parse().unwrap_or(1000);
-        }
-
-        Ok(options)
-    }
-
-    /// Parse arguments into UserUnlockOptions
-    fn parse_unlock_options(&self, args: &Args, target: &UserTarget) -> Result<UserUnlockOptions> {
-        let mut options = UserUnlockOptions::default();
-
-        // Parse backend
-        if let Some(backend_str) = args.get("backend") {
-            options.backend = match backend_str.as_str() {
-                "system" => UserBackend::System,
-                "mock" => UserBackend::Mock,
-                "file" => UserBackend::File,
-                "ldap" => UserBackend::Ldap,
-                _ => return Err(UserError::InvalidBackend(backend_str.clone()).into()),
-            };
-        }
-
-        // Parse boolean flags
-        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
-            options.dry_run = dry_run;
-        }
-        if let Some(ignore_if_missing) = args.get("ignore_if_missing") {
-            options.ignore_if_missing = ignore_if_missing.parse().unwrap_or(true);
-        }
-        if let Some(force) = crate::core::lenient::bool_arg(args, "force")? {
-            options.force = force;
-        }
-        if let Some(protect_system_users) = args.get("protect_system_users") {
-            options.protect_system_users = protect_system_users.parse().unwrap_or(true);
-        }
-
-        // Parse format
-        if let Some(format_str) = args.get("format") {
-            options.format = match format_str.as_str() {
-                "json" => OutputFormat::Json,
-                "text" => OutputFormat::Text,
-                _ => OutputFormat::Json,
-            };
-        }
-
-        // Parse username
-        options.username = args
-            .get("username")
-            .cloned()
-            .or_else(|| target.extract_username());
-
-        // Parse min_uid_for_unlock
-        if let Some(min_uid) = args.get("min_uid_for_unlock") {
-            options.min_uid_for_unlock = min_uid.parse().unwrap_or(1000);
-        }
-
-        Ok(options)
-    }
-
-    /// Parse arguments into UserGroupsOptions
-    fn parse_groups_options(&self, args: &Args, target: &UserTarget) -> Result<UserGroupsOptions> {
-        let mut options = UserGroupsOptions::default();
-
-        // Parse backend
-        if let Some(backend_str) = args.get("backend") {
-            options.backend = match backend_str.as_str() {
-                "system" => UserBackend::System,
-                "mock" => UserBackend::Mock,
-                "file" => UserBackend::File,
-                "ldap" => UserBackend::Ldap,
-                _ => return Err(UserError::InvalidBackend(backend_str.clone()).into()),
-            };
-        }
-
-        // Parse boolean flags
-        if let Some(ignore_if_missing) = args.get("ignore_if_missing") {
-            options.ignore_if_missing = ignore_if_missing.parse().unwrap_or(true);
-        }
-        if let Some(include_primary) = args.get("include_primary") {
-            options.include_primary = include_primary.parse().unwrap_or(true);
-        }
-        if let Some(include_supplementary) = args.get("include_supplementary") {
-            options.include_supplementary = include_supplementary.parse().unwrap_or(true);
-        }
-        if let Some(include_system_groups) = args.get("include_system_groups") {
-            options.include_system_groups = include_system_groups.parse().unwrap_or(true);
-        }
-
-        // Parse format
-        if let Some(format_str) = args.get("format") {
-            options.format = match format_str.as_str() {
-                "json" => OutputFormat::Json,
-                "text" => OutputFormat::Text,
-                _ => OutputFormat::Json,
-            };
-        }
-
-        // Parse username
-        options.username = args
-            .get("username")
-            .cloned()
-            .or_else(|| target.extract_username());
-
-        // Parse min_gid_for_system
-        if let Some(min_gid) = args.get("min_gid_for_system") {
-            options.min_gid_for_system = min_gid.parse().unwrap_or(1000);
-        }
-
-        // Parse group_name_filter
-        options.group_name_filter = args.get("group_name_filter").cloned();
-
-        Ok(options)
-    }
-
-    /// Parse arguments into UserExistsOptions
-    fn parse_exists_options(&self, args: &Args, target: &UserTarget) -> Result<UserExistsOptions> {
-        let mut options = UserExistsOptions::default();
-
-        // Parse backend
-        if let Some(backend_str) = args.get("backend") {
-            options.backend = match backend_str.as_str() {
-                "system" => UserBackend::System,
-                "mock" => UserBackend::Mock,
-                "file" => UserBackend::File,
-                "ldap" => UserBackend::Ldap,
-                _ => return Err(UserError::InvalidBackend(backend_str.clone()).into()),
-            };
-        }
-
-        // Parse format
-        if let Some(format_str) = args.get("format") {
-            options.format = match format_str.as_str() {
-                "json" => OutputFormat::Json,
-                "text" => OutputFormat::Text,
-                _ => OutputFormat::Json,
-            };
-        }
-
-        // Parse username
-        options.username = args
-            .get("username")
-            .cloned()
-            .or_else(|| target.extract_username());
-
-        // Parse uid
-        if let Some(uid_str) = args.get("uid") {
-            options.uid = Some(uid_str.parse().map_err(|_| {
-                UserError::InternalError(format!("Invalid uid format: {}", uid_str))
-            })?);
-        }
-
-        Ok(options)
-    }
-
-    /// Create a backend based on the backend type
-    fn create_backend(&self, backend_type: &UserBackend) -> Result<Box<dyn UserBackendProvider>> {
-        match backend_type {
-            UserBackend::System => Ok(Box::new(SystemBackend::new())),
-            UserBackend::Mock => Ok(Box::new(MockBackend::new())),
-            UserBackend::File | UserBackend::Ldap => {
-                Err(UserError::BackendNotSupported(backend_type.to_string()).into())
-            }
-        }
-    }
-
-    /// Main add operation
-    pub fn add(&self, target: &UserTarget, options: UserAddOptions) -> Result<UserAddResponse> {
-        let mut backend = self.create_backend(&options.backend)?;
-
-        match options.mode {
-            UserAddMode::User => self.add_user(target, &options, backend.as_mut()),
-            UserAddMode::Group => self.add_group(target, &options, backend.as_mut()),
-            UserAddMode::Membership => self.add_membership(target, &options, backend.as_mut()),
-        }
-    }
-
-    /// Main delete operation
-    pub fn delete(
-        &self,
-        target: &UserTarget,
-        options: UserDeleteOptions,
-    ) -> Result<UserDeleteResponse> {
-        let mut backend = self.create_backend(&options.backend)?;
-
-        match options.mode {
-            UserDeleteMode::User => self.delete_user(target, &options, backend.as_mut()),
-            UserDeleteMode::Group => self.delete_group(target, &options, backend.as_mut()),
-            UserDeleteMode::Membership => {
-                self.delete_membership(target, &options, backend.as_mut())
-            }
-        }
-    }
-
-    /// Main passwd operation
-    pub fn passwd(
-        &self,
-        target: &UserTarget,
-        options: UserPasswdOptions,
-    ) -> Result<UserPasswdResponse> {
-        let mut backend = self.create_backend(&options.backend)?;
-        self.passwd_user(target, &options, backend.as_mut())
-    }
-
-    /// Main lock operation
-    pub fn lock(&self, target: &UserTarget, options: UserLockOptions) -> Result<UserLockResponse> {
-        let mut backend = self.create_backend(&options.backend)?;
-        self.lock_user(target, &options, backend.as_mut())
-    }
-
-    /// Main unlock operation
-    pub fn unlock(
-        &self,
-        target: &UserTarget,
-        options: UserUnlockOptions,
-    ) -> Result<UserUnlockResponse> {
-        let mut backend = self.create_backend(&options.backend)?;
-        self.unlock_user(target, &options, backend.as_mut())
-    }
-
-    /// Main groups operation
-    pub fn groups(
-        &self,
-        target: &UserTarget,
-        options: UserGroupsOptions,
-    ) -> Result<UserGroupsResponse> {
-        let backend = self.create_backend(&options.backend)?;
-        self.groups_user(target, &options, backend.as_ref())
-    }
-
-    /// Main exists operation
-    pub fn exists(
-        &self,
-        target: &UserTarget,
-        options: UserExistsOptions,
-    ) -> Result<UserExistsResponse> {
-        let backend = self.create_backend(&options.backend)?;
-        self.exists_user(target, &options, backend.as_ref())
-    }
-
-    /// Add user operation
-    fn add_user(
-        &self,
-        target: &UserTarget,
-        options: &UserAddOptions,
-        backend: &mut dyn UserBackendProvider,
-    ) -> Result<UserAddResponse> {
-        // Validate and get username
-        let username = options
-            .username
-            .clone()
-            .or_else(|| target.extract_username())
-            .ok_or(UserError::UsernameRequired)?;
-
-        backend.validate_username(&username)?;
-
-        // Check if user already exists
-        if backend.user_exists(&username)? {
-            if !options.ignore_if_exists {
-                return Err(UserError::UsernameConflict(username).into());
-            }
-
-            // User exists and we're ignoring - return existing info
-            return Ok(UserAddResponse {
-                planned_commands: Vec::new(),
-                ok: true,
-                mode: options.mode.to_string(),
-                backend: options.backend.to_string(),
-                dry_run: options.dry_run,
-                user: Some(UserInfo {
-                    username: username.clone(),
-                    uid: backend.lookup_user(&username)?.map(|u| u.uid).unwrap_or(0),
-                    primary_group: username.clone(), // Simplified
-                    supplementary_groups: vec![],
-                    home: Some(backend.default_home_path(&username)),
-                    shell: Some(backend.default_shell()),
-                    gecos: options.gecos.clone(),
-                    created: false,
-                    existed: true,
-                }),
-                group: None,
-                groups: vec![],
-                member: None,
-                memberships: vec![],
-                warnings: vec![],
-            });
-        }
-
-        // Get or assign UID
-        let uid = if let Some(uid) = options.uid {
-            backend.validate_uid(uid, options.force)?;
-            uid
-        } else {
-            backend.next_uid()?
-        };
-
-        // Determine primary group
-        let primary_group = options
-            .primary_group
-            .clone()
-            .unwrap_or_else(|| username.clone());
-        // An option-shaped value would be read by groupadd as an option
-        if primary_group.starts_with('-') {
-            return Err(UserError::GroupNameInvalid(
-                "primary_group cannot start with dash".to_string(),
-            )
-            .into());
-        }
-
-        // Check if primary group exists, create if needed
-        let mut planned = Vec::new();
-        let mut groups_created = Vec::new();
-        if !backend.group_exists(&primary_group)? {
-            let group_gid = if primary_group == username {
-                uid // Use same ID for user's primary group
-            } else {
-                backend.next_gid()?
-            };
-
-            backend.validate_gid(group_gid, options.force)?;
-
-            let group_info = GroupInfo {
-                name: primary_group.clone(),
-                gid: group_gid,
-                created: !options.dry_run,
-                existed: false,
-            };
-
-            if options.dry_run {
-                planned.extend(backend.planned_commands(&BackendOp::CreateGroup(&group_info))?);
-            } else {
-                backend.create_group(&group_info)?;
-            }
-            groups_created.push(group_info);
-        }
-
-        // Check supplementary groups before changing anything
-        for group_name in &options.supplementary_groups {
-            if !backend.group_exists(group_name)? {
-                return Err(UserError::GroupNotFound(group_name.clone()).into());
-            }
-        }
-
-        // Create user
-        let home_path = options
-            .home
-            .clone()
-            .unwrap_or_else(|| backend.default_home_path(&username));
-        let shell_path = options
-            .shell
-            .clone()
-            .unwrap_or_else(|| backend.default_shell());
-
-        let user_info = UserInfo {
-            username: username.clone(),
-            uid,
-            primary_group: primary_group.clone(),
-            supplementary_groups: options.supplementary_groups.clone(),
-            home: Some(home_path),
-            shell: Some(shell_path),
-            gecos: options.gecos.clone(),
-            created: !options.dry_run,
-            existed: false,
-        };
-
-        if options.dry_run {
-            planned.extend(backend.planned_commands(&BackendOp::CreateUser(&user_info))?);
-        } else {
-            backend.create_user(&user_info)?;
-        }
-
-        // Add supplementary groups once the user exists
-        let mut memberships_added = Vec::new();
-        for group_name in &options.supplementary_groups {
-            if backend.membership_exists(&username, group_name)? {
-                memberships_added.push(MembershipInfo {
-                    group: group_name.clone(),
-                    added: false,
-                    already_member: true,
-                });
-            } else {
-                if options.dry_run {
-                    planned.extend(backend.planned_commands(&BackendOp::AddMembership {
-                        username: &username,
-                        group: group_name,
-                    })?);
-                } else {
-                    backend.add_membership(&username, group_name)?;
-                }
-                memberships_added.push(MembershipInfo {
-                    group: group_name.clone(),
-                    added: !options.dry_run,
-                    already_member: false,
-                });
-            }
-        }
-
-        Ok(UserAddResponse {
-            planned_commands: planned,
-            ok: true,
-            mode: options.mode.to_string(),
-            backend: options.backend.to_string(),
-            dry_run: options.dry_run,
-            user: Some(user_info),
-            group: None,
-            groups: groups_created,
-            member: None,
-            memberships: memberships_added,
-            warnings: vec![],
-        })
-    }
-
-    /// Add group operation
-    fn add_group(
-        &self,
-        target: &UserTarget,
-        options: &UserAddOptions,
-        backend: &mut dyn UserBackendProvider,
-    ) -> Result<UserAddResponse> {
-        // Validate and get group name
-        let group_name = options
-            .group_name
-            .clone()
-            .or_else(|| target.extract_group_name())
-            .ok_or(UserError::GroupNameRequired)?;
-
-        backend.validate_group_name(&group_name)?;
-
-        // Check if group already exists
-        if backend.group_exists(&group_name)? {
-            if !options.ignore_if_exists {
-                return Err(UserError::GroupConflict(group_name).into());
-            }
-
-            // Group exists and we're ignoring - return existing info
-            return Ok(UserAddResponse {
-                planned_commands: Vec::new(),
-                ok: true,
-                mode: options.mode.to_string(),
-                backend: options.backend.to_string(),
-                dry_run: options.dry_run,
-                user: None,
-                group: Some(GroupInfo {
-                    name: group_name.clone(),
-                    gid: backend
-                        .lookup_group(&group_name)?
-                        .and_then(|g| g.gid)
-                        .unwrap_or(0),
-                    created: false,
-                    existed: true,
-                }),
-                groups: vec![],
-                member: None,
-                memberships: vec![],
-                warnings: vec![],
-            });
-        }
-
-        // Get or assign GID
-        let gid = if let Some(gid) = options.gid {
-            backend.validate_gid(gid, options.force)?;
-            gid
-        } else {
-            backend.next_gid()?
-        };
-
-        // Create group
-        let group_info = GroupInfo {
-            name: group_name.clone(),
-            gid,
-            created: !options.dry_run,
-            existed: false,
-        };
-
-        let mut planned = Vec::new();
-        if options.dry_run {
-            planned.extend(backend.planned_commands(&BackendOp::CreateGroup(&group_info))?);
-        } else {
-            backend.create_group(&group_info)?;
-        }
-
-        Ok(UserAddResponse {
-            planned_commands: planned,
-            ok: true,
-            mode: options.mode.to_string(),
-            backend: options.backend.to_string(),
-            dry_run: options.dry_run,
-            user: None,
-            group: Some(group_info),
-            groups: vec![],
-            member: None,
-            memberships: vec![],
-            warnings: vec![],
-        })
-    }
-
-    /// Add membership operation
-    fn add_membership(
-        &self,
-        target: &UserTarget,
-        options: &UserAddOptions,
-        backend: &mut dyn UserBackendProvider,
-    ) -> Result<UserAddResponse> {
-        // Validate and get member name
-        let member = options
-            .member
-            .clone()
-            .or_else(|| target.extract_member_name())
-            .ok_or(UserError::MemberRequired)?;
-
-        if options.groups.is_empty() {
-            return Err(UserError::GroupsRequired.into());
-        }
-
-        // Check if user exists
-        if !backend.user_exists(&member)? {
-            return Err(UserError::GroupNotFound(member).into()); // Using existing error type
-        }
-
-        let mut memberships_added = Vec::new();
-        let mut warnings = Vec::new();
-        let mut planned = Vec::new();
-
-        for group_name in &options.groups {
-            // Check if group exists
-            if !backend.group_exists(group_name)? {
-                return Err(UserError::GroupNotFound(group_name.clone()).into());
-            }
-
-            // Check if membership already exists
-            if backend.membership_exists(&member, group_name)? {
-                if !options.ignore_if_exists {
-                    return Err(
-                        UserError::MembershipExists(member.clone(), group_name.clone()).into(),
-                    );
-                }
-
-                memberships_added.push(MembershipInfo {
-                    group: group_name.clone(),
-                    added: false,
-                    already_member: true,
-                });
-                warnings.push(format!(
-                    "User {} was already a member of group {}",
-                    member, group_name
-                ));
-            } else {
-                if options.dry_run {
-                    planned.extend(backend.planned_commands(&BackendOp::AddMembership {
-                        username: &member,
-                        group: group_name,
-                    })?);
-                } else {
-                    backend.add_membership(&member, group_name)?;
-                }
-
-                memberships_added.push(MembershipInfo {
-                    group: group_name.clone(),
-                    added: !options.dry_run,
-                    already_member: false,
-                });
-            }
-        }
-
-        Ok(UserAddResponse {
-            planned_commands: planned,
-            ok: true,
-            mode: options.mode.to_string(),
-            backend: options.backend.to_string(),
-            dry_run: options.dry_run,
-            user: None,
-            group: None,
-            groups: vec![],
-            member: Some(member),
-            memberships: memberships_added,
-            warnings,
-        })
-    }
-
-    /// Delete user operation
-    fn delete_user(
-        &self,
-        target: &UserTarget,
-        options: &UserDeleteOptions,
-        backend: &mut dyn UserBackendProvider,
-    ) -> Result<UserDeleteResponse> {
-        // Validate and get username
-        let username = options
-            .username
-            .clone()
-            .or_else(|| target.extract_username())
-            .ok_or(UserError::UsernameRequired)?;
-
-        backend.validate_username(&username)?;
-
-        // Look up user record
-        let user_record = backend.lookup_user(&username)?;
-
-        if user_record.is_none() {
-            if options.ignore_if_missing {
-                return Ok(UserDeleteResponse {
-                    planned_commands: Vec::new(),
-                    ok: true,
-                    mode: options.mode.to_string(),
-                    backend: options.backend.to_string(),
-                    dry_run: options.dry_run,
-                    user: Some(UserDeleteInfo {
-                        username: username.clone(),
-                        uid: None,
-                        existed: false,
-                        deleted: false,
-                        missing: true,
-                    }),
-                    group: None,
-                    home: None,
-                    mail: None,
-                    member: None,
-                    memberships: vec![],
-                    warnings: vec![format!(
-                        "User {} did not exist; nothing to delete.",
-                        username
-                    )],
-                });
-            } else {
-                return Err(UserError::UserNotFound(username).into());
-            }
-        }
-
-        let user_record = user_record.unwrap();
-
-        // Check system user protection
-        if options.protect_system_users
-            && user_record.uid < options.min_uid_for_delete
-            && !options.force
-        {
-            return Err(UserError::SystemUserProtected(username, user_record.uid).into());
-        }
-
-        let mut warnings = Vec::new();
-        if user_record.uid < options.min_uid_for_delete && options.force {
-            warnings.push(format!(
-                "Warning: Deleting system user {} (uid={}) with force=true",
-                username, user_record.uid
-            ));
-        }
-
-        // Handle membership removal. The primary group is a property of the
-        // account itself and goes away with it, so it is not removed
-        // separately.
-        let mut planned = Vec::new();
-        let mut memberships_removed = Vec::new();
-        if options.remove_from_all_groups {
-            let groups = backend.list_groups_for_user(&username)?;
-            for group_name in groups {
-                if group_name != user_record.primary_group {
-                    let op = BackendOp::RemoveMembership {
-                        username: &username,
-                        group: &group_name,
-                    };
-                    if options.dry_run {
-                        planned.extend(backend.planned_commands(&op)?);
-                    } else {
-                        backend.remove_user_from_group(&username, &group_name)?;
-                    }
-                }
-                memberships_removed.push(MembershipDeleteInfo {
-                    group: group_name,
-                    removed: !options.dry_run,
-                    was_member: true,
-                    missing_group: false,
-                });
-            }
-        }
-
-        // Handle home directory
-        let home_info = if options.remove_home {
-            let home_path = user_record
-                .home
-                .clone()
-                .unwrap_or_else(|| backend.default_home_path(&username));
-            // In a real implementation, would check if directory exists and remove it
-            Some(HomeInfo {
-                path: home_path,
-                removed: !options.dry_run,
-                was_present: true, // Simplified assumption
-            })
-        } else {
-            None
-        };
-
-        // Handle mail spool
-        let mail_info = if options.remove_mail {
-            let mail_path = format!("/var/mail/{}", username);
-            // In a real implementation, would check if mail spool exists and remove it
-            Some(MailInfo {
-                path: mail_path,
-                removed: !options.dry_run,
-                was_present: true, // Simplified assumption
-            })
-        } else {
-            None
-        };
-
-        // Delete user
-        if options.dry_run {
-            planned.extend(backend.planned_commands(&BackendOp::DeleteUser {
-                username: &username,
-                remove_home: options.remove_home,
-                remove_mail: options.remove_mail,
-            })?);
-        } else {
-            backend.delete_user(&username, options.remove_home, options.remove_mail)?;
-        }
-
-        Ok(UserDeleteResponse {
-            planned_commands: planned,
-            ok: true,
-            mode: options.mode.to_string(),
-            backend: options.backend.to_string(),
-            dry_run: options.dry_run,
-            user: Some(UserDeleteInfo {
-                username: username.clone(),
-                uid: Some(user_record.uid),
-                existed: true,
-                deleted: !options.dry_run,
-                missing: false,
-            }),
-            group: None,
-            home: home_info,
-            mail: mail_info,
-            member: None,
-            memberships: memberships_removed,
-            warnings,
-        })
-    }
-
-    /// Delete group operation
-    fn delete_group(
-        &self,
-        target: &UserTarget,
-        options: &UserDeleteOptions,
-        backend: &mut dyn UserBackendProvider,
-    ) -> Result<UserDeleteResponse> {
-        // Validate and get group name
-        let group_name = options
-            .group_name
-            .clone()
-            .or_else(|| target.extract_group_name())
-            .ok_or(UserError::GroupNameRequired)?;
-
-        backend.validate_group_name(&group_name)?;
-
-        // Look up group record
-        let group_record = backend.lookup_group(&group_name)?;
-
-        if group_record.is_none() {
-            if options.ignore_if_missing {
-                return Ok(UserDeleteResponse {
-                    planned_commands: Vec::new(),
-                    ok: true,
-                    mode: options.mode.to_string(),
-                    backend: options.backend.to_string(),
-                    dry_run: options.dry_run,
-                    user: None,
-                    group: Some(GroupDeleteInfo {
-                        name: group_name.clone(),
-                        gid: None,
-                        existed: false,
-                        deleted: false,
-                        missing: true,
-                        member_count_before: 0,
-                    }),
-                    home: None,
-                    mail: None,
-                    member: None,
-                    memberships: vec![],
-                    warnings: vec![format!(
-                        "Group {} did not exist; nothing to delete.",
-                        group_name
-                    )],
-                });
-            } else {
-                return Err(UserError::GroupNotFound(group_name).into());
-            }
-        }
-
-        let group_record = group_record.unwrap();
-
-        // Check system group protection
-        if options.protect_system_groups
-            && group_record
-                .gid
-                .map_or(false, |gid| gid < options.min_gid_for_delete)
-            && !options.force
-        {
-            return Err(
-                UserError::SystemGroupProtected(group_name, group_record.gid.unwrap_or(0)).into(),
-            );
-        }
-
-        // Check if group is empty
-        let member_count = group_record.members.len();
-        if options.only_if_empty && member_count > 0 && !options.force {
-            return Err(UserError::GroupNotEmpty(group_name).into());
-        }
-
-        let mut warnings = Vec::new();
-        if group_record
-            .gid
-            .map_or(false, |gid| gid < options.min_gid_for_delete)
-            && options.force
-        {
-            warnings.push(format!(
-                "Warning: Deleting system group {} (gid={}) with force=true",
-                group_name,
-                group_record
-                    .gid
-                    .map_or("unknown".to_string(), |g| g.to_string())
-            ));
-        }
-        if member_count > 0 && options.force {
-            warnings.push(format!(
-                "Warning: Deleting non-empty group {} with force=true",
-                group_name
-            ));
-        }
-
-        // Delete group
-        let mut planned = Vec::new();
-        if options.dry_run {
-            planned.extend(backend.planned_commands(&BackendOp::DeleteGroup(&group_name))?);
-        } else {
-            backend.delete_group(&group_name)?;
-        }
-
-        Ok(UserDeleteResponse {
-            planned_commands: planned,
-            ok: true,
-            mode: options.mode.to_string(),
-            backend: options.backend.to_string(),
-            dry_run: options.dry_run,
-            user: None,
-            group: Some(GroupDeleteInfo {
-                name: group_name.clone(),
-                gid: group_record.gid,
-                existed: true,
-                deleted: !options.dry_run,
-                missing: false,
-                member_count_before: member_count as u32,
-            }),
-            home: None,
-            mail: None,
-            member: None,
-            memberships: vec![],
-            warnings,
-        })
-    }
-
-    /// Delete membership operation
-    fn delete_membership(
-        &self,
-        target: &UserTarget,
-        options: &UserDeleteOptions,
-        backend: &mut dyn UserBackendProvider,
-    ) -> Result<UserDeleteResponse> {
-        // Validate and get member name
-        let member = options
-            .member
-            .clone()
-            .or_else(|| target.extract_member_name())
-            .ok_or(UserError::MemberRequired)?;
-
-        // Check if user exists
-        if !backend.user_exists(&member)? {
-            if options.ignore_if_missing {
-                return Ok(UserDeleteResponse {
-                    planned_commands: Vec::new(),
-                    ok: true,
-                    mode: options.mode.to_string(),
-                    backend: options.backend.to_string(),
-                    dry_run: options.dry_run,
-                    user: None,
-                    group: None,
-                    home: None,
-                    mail: None,
-                    member: Some(member.clone()),
-                    memberships: vec![],
-                    warnings: vec![format!(
-                        "User {} does not exist; nothing to delete.",
-                        member
-                    )],
-                });
-            } else {
-                return Err(UserError::UserNotFound(member).into());
-            }
-        }
-
-        let mut memberships_removed = Vec::new();
-        let mut planned = Vec::new();
-        let mut warnings = Vec::new();
-
-        let groups_to_process = if options.all_groups {
-            backend.list_groups_for_user(&member)?
-        } else if options.groups.is_empty() {
-            return Err(UserError::GroupsRequired.into());
-        } else {
-            options.groups.clone()
-        };
-
-        for group_name in &groups_to_process {
-            // Check if group exists
-            if !backend.group_exists(group_name)? {
-                if options.ignore_if_missing {
-                    memberships_removed.push(MembershipDeleteInfo {
-                        group: group_name.clone(),
-                        removed: false,
-                        was_member: false,
-                        missing_group: true,
-                    });
-                    warnings.push(format!("Group {} does not exist", group_name));
-                    continue;
-                } else {
-                    return Err(UserError::GroupNotFound(group_name.clone()).into());
-                }
-            }
-
-            // Check if user is member of group
-            if !backend.membership_exists(&member, group_name)? {
-                if options.ignore_if_missing {
-                    memberships_removed.push(MembershipDeleteInfo {
-                        group: group_name.clone(),
-                        removed: false,
-                        was_member: false,
-                        missing_group: false,
-                    });
-                    warnings.push(format!(
-                        "User {} was not a member of group {}",
-                        member, group_name
-                    ));
-                    continue;
-                } else {
-                    return Err(
-                        UserError::MembershipNotFound(member.clone(), group_name.clone()).into(),
-                    );
-                }
-            }
-
-            // Remove membership
-            if options.dry_run {
-                planned.extend(backend.planned_commands(&BackendOp::RemoveMembership {
-                    username: &member,
-                    group: group_name,
-                })?);
-            } else {
-                backend.remove_user_from_group(&member, group_name)?;
-            }
-
-            memberships_removed.push(MembershipDeleteInfo {
-                group: group_name.clone(),
-                removed: !options.dry_run,
-                was_member: true,
-                missing_group: false,
-            });
-        }
-
-        Ok(UserDeleteResponse {
-            planned_commands: planned,
-            ok: true,
-            mode: options.mode.to_string(),
-            backend: options.backend.to_string(),
-            dry_run: options.dry_run,
-            user: None,
-            group: None,
-            home: None,
-            mail: None,
-            member: Some(member),
-            memberships: memberships_removed,
-            warnings,
-        })
-    }
-
-    /// Password change operation  
-    fn passwd_user(
-        &self,
-        target: &UserTarget,
-        options: &UserPasswdOptions,
-        backend: &mut dyn UserBackendProvider,
-    ) -> Result<UserPasswdResponse> {
-        // Validate and get username
-        let username = options
-            .username
-            .clone()
-            .or_else(|| target.extract_username())
-            .ok_or(UserError::UsernameRequired)?;
-
-        backend.validate_username(&username)?;
-
-        // Validate password sources
-        match (&options.new_password_plain, &options.new_password_hash) {
-            (None, None) => return Err(UserError::PasswordMissingNewPassword.into()),
-            (Some(_), Some(_)) => return Err(UserError::PasswordConflictingSources.into()),
-            _ => {} // Exactly one is provided - good
-        }
-
-        // Check if old password verification is required
-        if options.require_old_password {
-            if options.old_password_plain.is_none() {
-                return Err(UserError::OldPasswordRequired.into());
-            }
-        }
-
-        // Look up user record
-        let user_record = backend.lookup_user(&username)?;
-
-        if user_record.is_none() {
-            if options.ignore_if_missing {
-                return Ok(UserPasswdResponse {
-                    planned_commands: Vec::new(),
-                    ok: true,
-                    backend: options.backend.to_string(),
-                    dry_run: options.dry_run,
-                    user: UserPasswordInfo {
-                        username: username.clone(),
-                        existed: false,
-                        missing: true,
-                    },
-                    password: PasswordInfo {
-                        changed: false,
-                        scheme: None,
-                        source: None,
-                        old_password_verified: false,
-                    },
-                    warnings: vec![format!(
-                        "User {} did not exist; password was not changed.",
-                        username
-                    )],
-                });
-            } else {
-                return Err(UserError::UserNotFound(username).into());
-            }
-        }
-
-        // Verify old password if required
-        let mut old_password_verified = false;
-        if options.require_old_password {
-            let old_password = options.old_password_plain.as_ref().unwrap();
-            old_password_verified =
-                backend
-                    .verify_password(&username, old_password)
-                    .map_err(|e| match e.downcast::<UserError>() {
-                        Ok(user_err) => user_err,
-                        Err(_) => UserError::OldPasswordVerificationUnsupported,
-                    })?;
-
-            if !old_password_verified {
-                return Err(UserError::OldPasswordMismatch(username).into());
-            }
-        }
-
-        // Determine password source and scheme, then apply (unless dry run)
-        let mut planned = Vec::new();
-        let (source, scheme) = if let Some(plain_password) = &options.new_password_plain {
-            let effective_scheme = if options.hash_scheme == HashScheme::BackendDefault {
-                backend.default_hash_scheme()
-            } else {
-                options.hash_scheme.clone()
-            };
-            let op = BackendOp::SetPasswordPlain {
-                username: &username,
-                password: plain_password,
-                scheme: &effective_scheme,
-            };
-            if options.dry_run {
-                planned.extend(backend.planned_commands(&op)?);
-            } else {
-                backend
-                    .set_password_plain(
-                        &username,
-                        plain_password,
-                        &effective_scheme,
-                        options.hash_params.as_deref(),
-                    )
-                    .map_err(|e| match e.downcast::<UserError>() {
-                        Ok(user_err @ UserError::HashSchemeUnsupported(_))
-                        | Ok(user_err @ UserError::HashParamsInvalid(_)) => user_err,
-                        Ok(other) => UserError::PasswordBackendFailure(other.to_string()),
-                        Err(e) => UserError::PasswordBackendFailure(e.to_string()),
-                    })?;
-            }
-            (PasswordSource::Plain, effective_scheme)
-        } else if let Some(pre_hash) = &options.new_password_hash {
-            // Basic validation of hash format (just check it's not empty and has reasonable structure)
-            if pre_hash.is_empty() || !pre_hash.contains('$') {
-                return Err(UserError::HashParamsInvalid("Invalid hash format".to_string()).into());
-            }
-            let op = BackendOp::SetPasswordHash {
-                username: &username,
-                hash: pre_hash,
-            };
-            if options.dry_run {
-                planned.extend(backend.planned_commands(&op)?);
-            } else {
-                backend
-                    .set_password_hash(&username, pre_hash)
-                    .map_err(|e| match e.downcast::<UserError>() {
-                        Ok(user_err @ UserError::HashParamsInvalid(_)) => user_err,
-                        Ok(other) => UserError::PasswordBackendFailure(other.to_string()),
-                        Err(e) => UserError::PasswordBackendFailure(e.to_string()),
-                    })?;
-            }
-            (PasswordSource::Hash, HashScheme::BackendDefault) // Scheme is unknown for pre-hash
-        } else {
-            unreachable!() // We already validated exactly one source is provided
-        };
-        let password_changed = !options.dry_run;
-
-        let mut warnings = Vec::new();
-        if options.dry_run {
-            warnings.push("Dry run: no password was actually changed.".to_string());
-        }
-
-        Ok(UserPasswdResponse {
-            planned_commands: planned,
-            ok: true,
-            backend: options.backend.to_string(),
-            dry_run: options.dry_run,
-            user: UserPasswordInfo {
-                username: username.clone(),
-                existed: true,
-                missing: false,
-            },
-            password: PasswordInfo {
-                changed: password_changed,
-                scheme: Some(scheme.to_string()),
-                source: Some(source.to_string()),
-                old_password_verified,
-            },
-            warnings,
-        })
-    }
-
-    /// Lock user operation  
-    fn lock_user(
-        &self,
-        target: &UserTarget,
-        options: &UserLockOptions,
-        backend: &mut dyn UserBackendProvider,
-    ) -> Result<UserLockResponse> {
-        // Validate and get username
-        let username = options
-            .username
-            .clone()
-            .or_else(|| target.extract_username())
-            .ok_or(UserError::UsernameRequired)?;
-
-        backend.validate_username(&username)?;
-
-        // Check if user exists
-        let user_record = backend.lookup_user(&username)?;
-        let (existed, uid, missing) = match user_record {
-            Some(record) => (true, Some(record.uid), false),
-            None => {
-                if options.ignore_if_missing {
-                    // Return success with missing user info
-                    let mut warnings = Vec::new();
-                    warnings.push(format!("User {} did not exist; nothing to lock.", username));
-                    if options.dry_run {
-                        warnings.push("Dry run: no changes were made.".to_string());
-                    }
-
-                    return Ok(UserLockResponse {
-                        planned_commands: Vec::new(),
-                        ok: true,
-                        backend: options.backend.to_string(),
-                        dry_run: options.dry_run,
-                        user: UserLockInfo {
-                            username,
-                            uid: None,
-                            existed: false,
-                            missing: true,
-                        },
-                        lock: LockInfo {
-                            requested: true,
-                            was_locked: None,
-                            is_locked: None,
-                            changed: false,
-                        },
-                        warnings,
-                    });
-                } else {
-                    return Err(UserError::UserNotFound(username).into());
-                }
-            }
-        };
-
-        let uid = uid.unwrap(); // Safe because we know user exists at this point
-
-        // Check system user protection
-        if options.protect_system_users && uid < options.min_uid_for_lock && !options.force {
-            return Err(UserError::SystemUserLockProtected(username, uid).into());
-        }
-
-        let mut warnings = Vec::new();
-
-        // Check current lock status. A dry run reports an unknown state
-        // instead of failing when it cannot be read (for example without
-        // permission to read /etc/shadow).
-        let was_locked = match backend.is_locked(&username) {
-            Ok(v) => Some(v),
-            Err(e) if options.dry_run => {
-                warnings.push(format!(
-                    "Could not determine whether {} is locked: {}",
-                    username, e
-                ));
-                None
-            }
-            Err(e) => return Err(UserError::LockBackendFailure(e.to_string()).into()),
-        };
-
-        // Add system user warning if forced
-        if options.protect_system_users && uid < options.min_uid_for_lock && options.force {
-            warnings.push(format!(
-                "Warning: Locking system user {} (uid={}) with force=true.",
-                username, uid
-            ));
-        }
-
-        // Check if already locked
-        if was_locked == Some(true) {
-            warnings.push(format!("User {} was already locked.", username));
-        }
-
-        let mut planned = Vec::new();
-        let (is_locked, changed) = if options.dry_run {
-            warnings
-                .push("Dry run: account would be locked, but no changes were made.".to_string());
-            if was_locked != Some(true) {
-                planned.extend(backend.planned_commands(&BackendOp::Lock(&username))?);
-            }
-            (was_locked, false) // No actual change in dry run
-        } else if was_locked == Some(true) {
-            (Some(true), false) // Already locked, no change
-        } else {
-            // Actually lock the user
-            backend
-                .lock_user(&username)
-                .map_err(|e| UserError::LockBackendFailure(e.to_string()))?;
-            (Some(true), true) // Successfully locked
-        };
-
-        Ok(UserLockResponse {
-            planned_commands: planned,
-            ok: true,
-            backend: options.backend.to_string(),
-            dry_run: options.dry_run,
-            user: UserLockInfo {
-                username,
-                uid: Some(uid),
-                existed,
-                missing,
-            },
-            lock: LockInfo {
-                requested: true,
-                was_locked,
-                is_locked,
-                changed,
-            },
-            warnings,
-        })
-    }
-
-    /// Unlock user operation  
-    fn unlock_user(
-        &self,
-        target: &UserTarget,
-        options: &UserUnlockOptions,
-        backend: &mut dyn UserBackendProvider,
-    ) -> Result<UserUnlockResponse> {
-        // Validate and get username
-        let username = options
-            .username
-            .clone()
-            .or_else(|| target.extract_username())
-            .ok_or(UserError::UsernameRequired)?;
-
-        backend.validate_username(&username)?;
-
-        // Check if user exists
-        let user_record = backend.lookup_user(&username)?;
-        let (existed, uid, missing) = match user_record {
-            Some(record) => (true, Some(record.uid), false),
-            None => {
-                if options.ignore_if_missing {
-                    // Return success with missing user info
-                    let mut warnings = Vec::new();
-                    warnings.push(format!(
-                        "User {} did not exist; nothing to unlock.",
-                        username
-                    ));
-                    if options.dry_run {
-                        warnings.push("Dry run: no changes were made.".to_string());
-                    }
-
-                    return Ok(UserUnlockResponse {
-                        planned_commands: Vec::new(),
-                        ok: true,
-                        backend: options.backend.to_string(),
-                        dry_run: options.dry_run,
-                        user: UserUnlockInfo {
-                            username,
-                            uid: None,
-                            existed: false,
-                            missing: true,
-                        },
-                        unlock: UnlockInfo {
-                            requested: true,
-                            was_locked: None,
-                            is_locked: None,
-                            changed: false,
-                        },
-                        warnings,
-                    });
-                } else {
-                    return Err(UserError::UserNotFound(username).into());
-                }
-            }
-        };
-
-        let uid = uid.unwrap(); // Safe because we know user exists at this point
-
-        // Check system user protection
-        if options.protect_system_users && uid < options.min_uid_for_unlock && !options.force {
-            return Err(UserError::SystemUserUnlockProtected(username, uid).into());
-        }
-
-        let mut warnings = Vec::new();
-
-        // Check current lock status (unknown is tolerated in a dry run only)
-        let was_locked = match backend.is_locked(&username) {
-            Ok(v) => Some(v),
-            Err(e) if options.dry_run => {
-                warnings.push(format!(
-                    "Could not determine whether {} is locked: {}",
-                    username, e
-                ));
-                None
-            }
-            Err(e) => return Err(UserError::UnlockBackendFailure(e.to_string()).into()),
-        };
-
-        // Add system user warning if forced
-        if options.protect_system_users && uid < options.min_uid_for_unlock && options.force {
-            warnings.push(format!(
-                "Warning: Unlocking system user {} (uid={}) with force=true.",
-                username, uid
-            ));
-        }
-
-        // Check if already unlocked
-        if was_locked == Some(false) {
-            warnings.push(format!("User {} was already unlocked.", username));
-        }
-
-        let mut planned = Vec::new();
-        let (is_locked, changed) = if options.dry_run {
-            warnings
-                .push("Dry run: account would be unlocked, but no changes were made.".to_string());
-            if was_locked != Some(false) {
-                planned.extend(backend.planned_commands(&BackendOp::Unlock(&username))?);
-            }
-            (was_locked, false) // No actual change in dry run
-        } else if was_locked == Some(false) {
-            (Some(false), false) // Already unlocked, no change
-        } else {
-            // Actually unlock the user
-            backend
-                .unlock_user(&username)
-                .map_err(|e| UserError::UnlockBackendFailure(e.to_string()))?;
-            (Some(false), true) // Successfully unlocked
-        };
-
-        Ok(UserUnlockResponse {
-            planned_commands: planned,
-            ok: true,
-            backend: options.backend.to_string(),
-            dry_run: options.dry_run,
-            user: UserUnlockInfo {
-                username,
-                uid: Some(uid),
-                existed,
-                missing,
-            },
-            unlock: UnlockInfo {
-                requested: true,
-                was_locked,
-                is_locked,
-                changed,
-            },
-            warnings,
-        })
-    }
-
-    /// Groups user operation
-    pub fn groups_user(
-        &self,
-        target: &UserTarget,
-        options: &UserGroupsOptions,
-        backend: &dyn UserBackendProvider,
-    ) -> Result<UserGroupsResponse> {
-        // Validate and get username
-        let username = options
-            .username
-            .clone()
-            .or_else(|| target.extract_username())
-            .ok_or(UserError::UsernameRequired)?;
-
-        backend.validate_username(&username)?;
-
-        // Check if user exists
-        let user_record = backend.lookup_user(&username)?;
-        let (existed, uid, missing) = match &user_record {
-            Some(record) => (true, Some(record.uid), false),
-            None => {
-                if options.ignore_if_missing {
-                    // Return success with missing user info
-                    let warnings = vec![format!(
-                        "User {} did not exist; no groups to list.",
-                        username
-                    )];
-
-                    return Ok(UserGroupsResponse {
-                        ok: true,
-                        backend: options.backend.to_string(),
-                        user: UserGroupsResult {
-                            username,
-                            uid: None,
-                            existed: false,
-                            missing: true,
-                        },
-                        groups: vec![],
-                        warnings,
-                    });
-                } else {
-                    return Err(UserError::UserNotFound(username).into());
-                }
-            }
-        };
-
-        // Get detailed group information
-        let group_records = backend
-            .list_groups_for_user_detailed(&username)
-            .map_err(|e| UserError::GroupsBackendFailure(e.to_string()))?;
-
-        // Determine primary group name
-        let primary_group_name = user_record.as_ref().map(|u| u.primary_group.clone());
-
-        // Process and filter groups
-        let mut groups = Vec::new();
-        let mut warnings = Vec::new();
-
-        for group_record in group_records {
-            let is_primary = primary_group_name
-                .as_ref()
-                .map(|pg| pg == &group_record.name)
-                .unwrap_or(false);
-
-            let is_supplementary = !is_primary;
-
-            // Apply inclusion filters
-            if !options.include_primary && is_primary {
-                continue;
-            }
-            if !options.include_supplementary && is_supplementary {
-                continue;
-            }
-
-            // Determine if it's a system group
-            let system_group = match group_record.gid {
-                Some(gid) => gid < options.min_gid_for_system,
-                None => false, // Unknown GID, assume non-system
-            };
-
-            if !options.include_system_groups && system_group {
-                continue;
-            }
-
-            // Apply name filter if specified
-            if let Some(filter) = &options.group_name_filter {
-                if group_record.name != *filter {
-                    continue;
-                }
-            }
-
-            groups.push(GroupInfoDetailed {
-                name: group_record.name,
-                gid: group_record.gid,
-                primary: is_primary,
-                supplementary: is_supplementary,
-                system_group,
-            });
-        }
-
-        // Add warning if no groups match filters
-        if groups.is_empty() && existed {
-            warnings.push(format!(
-                "User {} has no groups matching the current filters.",
-                username
-            ));
-        }
-
-        Ok(UserGroupsResponse {
-            ok: true,
-            backend: options.backend.to_string(),
-            user: UserGroupsResult {
-                username,
-                uid,
-                existed,
-                missing,
-            },
-            groups,
-            warnings,
-        })
-    }
-
-    /// Exists user operation
-    fn exists_user(
-        &self,
-        target: &UserTarget,
-        options: &UserExistsOptions,
-        backend: &dyn UserBackendProvider,
-    ) -> Result<UserExistsResponse> {
-        // Extract username from target if available
-        let target_username = target.extract_username();
-
-        // Determine final username and uid for lookup
-        let query_username = options
-            .username
-            .as_ref()
-            .or(target_username.as_ref())
-            .cloned();
-        let query_uid = options.uid;
-
-        // Validate that we have at least one identity to check
-        if query_username.is_none() && query_uid.is_none() {
-            return Err(UserError::IdentityRequired.into());
-        }
-
-        // If both username and options.username are provided, ensure they match
-        if let (Some(target_name), Some(option_name)) = (&target_username, &options.username) {
-            if target_name != option_name {
-                return Err(UserError::UsernameInvalid(format!(
-                    "Target username '{}' does not match option username '{}'",
-                    target_name, option_name
-                ))
-                .into());
-            }
-        }
-
-        let mut warnings = Vec::new();
-
-        // Perform the lookup
-        let (user_record, _lookup_method) = if let Some(username) = &query_username {
-            // Primary lookup by username
-            match backend.lookup_user(username) {
-                Ok(record) => (record, "username"),
-                Err(e) => {
-                    return Err(UserError::ExistsBackendFailure(
-                        options.backend.to_string(),
-                        format!("Failed to lookup user '{}': {}", username, e),
-                    )
-                    .into());
-                }
-            }
-        } else if let Some(uid) = query_uid {
-            // Lookup by UID only
-            match backend.lookup_user_by_uid(uid) {
-                Ok(record) => (record, "uid"),
-                Err(e) => {
-                    return Err(UserError::ExistsBackendFailure(
-                        options.backend.to_string(),
-                        format!("Failed to lookup user with uid {}: {}", uid, e),
-                    )
-                    .into());
-                }
-            }
-        } else {
-            unreachable!("Should have been caught by identity validation above");
-        };
-
-        // Check for consistency when both username and uid are provided
-        if let (Some(username), Some(uid), Some(record)) =
-            (&query_username, query_uid, &user_record)
-        {
-            if record.uid != uid {
-                return Err(UserError::ExistsMismatch(username.clone(), record.uid, uid).into());
-            }
-        }
-
-        // Prepare response
-        if let Some(record) = user_record {
-            // User exists
-            Ok(UserExistsResponse {
-                ok: true,
-                backend: options.backend.to_string(),
-                query: UserExistsQuery {
-                    username: query_username,
-                    uid: query_uid,
-                },
-                user: UserExistsResult {
-                    exists: true,
-                    username: Some(record.username),
-                    uid: Some(record.uid),
-                },
-                warnings,
-            })
-        } else {
-            // User does not exist
-            if let Some(username) = &query_username {
-                warnings.push(format!(
-                    "User {} does not exist in backend {}.",
-                    username, options.backend
-                ));
-            } else if let Some(uid) = query_uid {
-                warnings.push(format!(
-                    "User with uid {} does not exist in backend {}.",
-                    uid, options.backend
-                ));
-            }
-
-            Ok(UserExistsResponse {
-                ok: true,
-                backend: options.backend.to_string(),
-                query: UserExistsQuery {
-                    username: query_username,
-                    uid: query_uid,
-                },
-                user: UserExistsResult {
-                    exists: false,
-                    username: None,
-                    uid: None,
-                },
-                warnings,
-            })
-        }
     }
 
     /// Format response as text
@@ -5629,11 +1924,240 @@ impl UserHandle {
     }
 }
 
+/// `Some(verb)` when the call asks for help (`None` inside means the
+/// handle's help).
+fn help_request(method: &str, args: &Args) -> Option<Option<String>> {
+    let named = |v: Option<&String>| {
+        v.map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "true")
+    };
+    if let Some(v) = method.strip_prefix("--help=") {
+        return Some(Some(v.to_string()).filter(|v| !v.is_empty()));
+    }
+    if crate::core::help::HELP_ALIASES.contains(&method) || crate::core::help::is_help_flag(method)
+    {
+        return Some(named(args.get("verb")).or_else(|| named(args.get("help"))));
+    }
+    if args.contains_key("help") || args.contains_key("--help") || args.contains_key("-h") {
+        return Some(
+            named(args.get("help"))
+                .or_else(|| named(args.get("--help")))
+                .or_else(|| Some(method.to_string()).filter(|m| !m.is_empty())),
+        );
+    }
+    None
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Unit tests: the mock store `backend=mock` uses (shared by clones).
+    pub(crate) static TEST_MOCK: std::cell::RefCell<Option<MockBackend>> =
+        const { std::cell::RefCell::new(None) };
+    /// Unit tests: when set, `backend=system` records its commands here
+    /// instead of running them (lookups read the real database).
+    pub(crate) static TEST_RECORD: std::cell::RefCell<Option<Arc<Mutex<Vec<SystemCommand>>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A verb's checked options.
+enum Parsed {
+    Exists(UserExistsOptions),
+    Groups(UserGroupsOptions),
+    Add(UserAddOptions),
+    Delete(UserDeleteOptions),
+    Passwd(UserPasswdOptions),
+    Lock(UserLockOptions),
+    Unlock(UserUnlockOptions),
+}
+
+impl Parsed {
+    fn format(&self) -> &OutputFormat {
+        match self {
+            Parsed::Exists(o) => &o.format,
+            Parsed::Groups(o) => &o.format,
+            Parsed::Add(o) => &o.format,
+            Parsed::Delete(o) => &o.format,
+            Parsed::Passwd(o) => &o.format,
+            Parsed::Lock(o) => &o.format,
+            Parsed::Unlock(o) => &o.format,
+        }
+    }
+
+    fn backend(&self) -> &UserBackend {
+        match self {
+            Parsed::Exists(o) => &o.backend,
+            Parsed::Groups(o) => &o.backend,
+            Parsed::Add(o) => &o.backend,
+            Parsed::Delete(o) => &o.backend,
+            Parsed::Passwd(o) => &o.backend,
+            Parsed::Lock(o) => &o.backend,
+            Parsed::Unlock(o) => &o.backend,
+        }
+    }
+
+    fn timeout_ms(&self) -> u64 {
+        match self {
+            Parsed::Exists(_) | Parsed::Groups(_) => args::DEFAULT_TIMEOUT_MS,
+            Parsed::Add(o) => o.timeout_ms,
+            Parsed::Delete(o) => o.timeout_ms,
+            Parsed::Passwd(o) => o.timeout_ms,
+            Parsed::Lock(o) => o.timeout_ms,
+            Parsed::Unlock(o) => o.timeout_ms,
+        }
+    }
+}
+
+/// Prints a failure (the JSON error object on stdout for format=json) and
+/// returns its status; `main` prints `Error: [<code>] <message>`.
+fn report(io: &mut IoStreams, json: bool, err: &UserError) -> Result<Status> {
+    if json {
+        writeln!(
+            io.stdout,
+            "{}",
+            serde_json::to_string_pretty(&err.to_json())?
+        )?;
+        io.stdout.flush()?;
+    }
+    Ok(Status::coded(err.exit_code(), &err.code(), err.to_string()))
+}
+
+impl UserHandle {
+    fn backend_for(
+        &self,
+        kind: &UserBackend,
+        timeout_ms: u64,
+    ) -> Result<Box<dyn UserBackendProvider>, UserError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        match kind {
+            UserBackend::System => {
+                #[cfg(test)]
+                if let Some(log) = TEST_RECORD.with(|r| r.borrow().clone()) {
+                    return Ok(Box::new(SystemBackend::recording(log)));
+                }
+                Ok(Box::new(SystemBackend::new(deadline)))
+            }
+            UserBackend::Mock => {
+                #[cfg(test)]
+                if let Some(m) = TEST_MOCK.with(|m| m.borrow().clone()) {
+                    return Ok(Box::new(m));
+                }
+                Ok(Box::new(MockBackend::new()))
+            }
+            UserBackend::File | UserBackend::Ldap => {
+                Err(UserError::BackendNotSupported(kind.to_string()))
+            }
+        }
+    }
+
+    fn parse(
+        &self,
+        verb: &str,
+        args: &Args,
+        stdin: &mut dyn std::io::Read,
+    ) -> Result<Parsed, UserError> {
+        args::check_known(verb, args)?;
+        let target = UserTarget {
+            path: self.alias.clone(),
+        };
+        Ok(match verb {
+            "exists" => Parsed::Exists(args::parse_exists(args, &target)?),
+            "groups" => Parsed::Groups(args::parse_groups(args, &target)?),
+            "add" => Parsed::Add(args::parse_add(args, &target)?),
+            "delete" => Parsed::Delete(args::parse_delete(args, &target)?),
+            "passwd" => Parsed::Passwd(args::parse_passwd(args, &target, stdin)?),
+            "lock" => Parsed::Lock(args::parse_lock(args, &target)?),
+            _ => Parsed::Unlock(args::parse_unlock(args, &target)?),
+        })
+    }
+
+    /// Runs the verb and renders its result.
+    fn run(&self, parsed: &Parsed, backend: &mut dyn UserBackendProvider) -> Result<String> {
+        let text = matches!(parsed.format(), OutputFormat::Text);
+        let json = |v: &dyn erased::Json| v.pretty();
+        Ok(match parsed {
+            Parsed::Exists(o) => {
+                let r = self.exists_user(o, backend)?;
+                if text {
+                    self.format_exists_text_response(&r)
+                } else {
+                    json(&r)?
+                }
+            }
+            Parsed::Groups(o) => {
+                let r = self.groups_user(o, backend)?;
+                if text {
+                    self.format_groups_text_response(&r)
+                } else {
+                    json(&r)?
+                }
+            }
+            Parsed::Add(o) => {
+                let r = match o.mode {
+                    UserAddMode::User => self.add_user(o, backend)?,
+                    UserAddMode::Group => self.add_group(o, backend)?,
+                    UserAddMode::Membership => self.add_membership(o, backend)?,
+                };
+                if text {
+                    self.format_text_response(&r) + &planned_text(&r.planned_commands)
+                } else {
+                    json(&r)?
+                }
+            }
+            Parsed::Delete(o) => {
+                let r = match o.mode {
+                    UserDeleteMode::User => self.delete_user(o, backend)?,
+                    UserDeleteMode::Group => self.delete_group(o, backend)?,
+                    UserDeleteMode::Membership => self.delete_membership(o, backend)?,
+                };
+                if text {
+                    self.format_delete_text_response(&r) + &planned_text(&r.planned_commands)
+                } else {
+                    json(&r)?
+                }
+            }
+            Parsed::Passwd(o) => {
+                let r = self.passwd_user(o, backend)?;
+                if text {
+                    self.format_passwd_text_response(&r) + &planned_text(&r.planned_commands)
+                } else {
+                    json(&r)?
+                }
+            }
+            Parsed::Lock(o) => {
+                let r = self.lock_user(o, backend)?;
+                if text {
+                    self.format_lock_text_response(&r) + &planned_text(&r.planned_commands)
+                } else {
+                    json(&r)?
+                }
+            }
+            Parsed::Unlock(o) => {
+                let r = self.unlock_user(o, backend)?;
+                if text {
+                    self.format_unlock_text_response(&r) + &planned_text(&r.planned_commands)
+                } else {
+                    json(&r)?
+                }
+            }
+        })
+    }
+}
+
+/// Serializing any response to pretty JSON.
+mod erased {
+    pub trait Json {
+        fn pretty(&self) -> anyhow::Result<String>;
+    }
+    impl<T: serde::Serialize> Json for T {
+        fn pretty(&self) -> anyhow::Result<String> {
+            Ok(serde_json::to_string_pretty(self)?)
+        }
+    }
+}
+
 impl Handle for UserHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &[
-            "add", "delete", "passwd", "lock", "unlock", "groups", "exists",
-        ]
+        args::VERBS
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -5641,16 +2165,12 @@ impl Handle for UserHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Check if this is a help request based on args or help verb
-        if args.contains_key("--help")
-            || args.contains_key("-h")
-            || crate::core::help::HELP_ALIASES.contains(&verb)
-        {
+        if let Some(topic) = help_request(verb, args) {
             let text = crate::core::help::render_legacy(
                 "user",
                 &USER_HELP,
                 self.verbs(),
-                args.get("verb").map(String::as_str),
+                topic.as_deref(),
             );
             write!(io.stdout, "{}", text)?;
             if !text.ends_with('\n') {
@@ -5658,433 +2178,56 @@ impl Handle for UserHandle {
             }
             return Ok(Status::ok());
         }
-
-        match verb {
-            "add" => {
-                // Create target from args if needed
-                let target = UserTarget {
-                    path: self.alias.clone(),
-                };
-
-                // Parse options
-                let options = match self.parse_add_options(args, &target) {
-                    Ok(opts) => opts,
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            return Ok(Status::err(1, user_err.to_string()));
-                        } else {
-                            return Err(e);
-                        }
-                    }
-                };
-
-                // Perform add operation
-                match self.add(&target, options.clone()) {
-                    Ok(response) => {
-                        match options.format {
-                            OutputFormat::Json => {
-                                writeln!(
-                                    io.stdout,
-                                    "{}",
-                                    serde_json::to_string_pretty(&response)?
-                                )?;
-                            }
-                            OutputFormat::Text => {
-                                write!(io.stdout, "{}", self.format_text_response(&response))?;
-                                write_planned_text(io, &response.planned_commands)?;
-                            }
-                        }
-                        Ok(Status::success())
-                    }
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            Ok(Status::err(1, user_err.to_string()))
-                        } else {
-                            Err(e)
-                        }
-                    }
+        // format=json is the default; a failure before the format is known
+        // is reported as JSON too unless format=text was asked for.
+        let json = args.get("format").map(String::as_str) != Some("text");
+        if !args::VERBS.contains(&verb) {
+            let err = UserError::InvalidArgument(format!(
+                "unknown verb for user: {verb:?}{} (verbs: {}); nothing was done",
+                args::hint(verb, args::VERBS),
+                args::VERBS.join(", ")
+            ));
+            return report(io, json, &err);
+        }
+        let parsed = match self.parse(verb, args, io.stdin) {
+            Ok(p) => p,
+            Err(e) => return report(io, json, &e),
+        };
+        let json = matches!(parsed.format(), OutputFormat::Json);
+        let mut backend = match self.backend_for(parsed.backend(), parsed.timeout_ms()) {
+            Ok(b) => b,
+            Err(e) => return report(io, json, &e),
+        };
+        match self.run(&parsed, backend.as_mut()) {
+            Ok(out) => {
+                write!(io.stdout, "{}", out)?;
+                if !out.ends_with('\n') {
+                    writeln!(io.stdout)?;
                 }
+                io.stdout.flush()?;
+                Ok(Status::ok())
             }
-            "delete" => {
-                // Create target from args if needed
-                let target = UserTarget {
-                    path: self.alias.clone(),
+            Err(e) => {
+                let err = match e.downcast::<UserError>() {
+                    Ok(u) => u,
+                    Err(other) => UserError::BackendOperationFailed(format!("{other:#}")),
                 };
-
-                // Parse options
-                let options = match self.parse_delete_options(args, &target) {
-                    Ok(opts) => opts,
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            return Ok(Status::err(1, user_err.to_string()));
-                        } else {
-                            return Err(e);
-                        }
-                    }
-                };
-
-                // Perform delete operation
-                match self.delete(&target, options.clone()) {
-                    Ok(response) => {
-                        match options.format {
-                            OutputFormat::Json => {
-                                writeln!(
-                                    io.stdout,
-                                    "{}",
-                                    serde_json::to_string_pretty(&response)?
-                                )?;
-                            }
-                            OutputFormat::Text => {
-                                write!(
-                                    io.stdout,
-                                    "{}",
-                                    self.format_delete_text_response(&response)
-                                )?;
-                                write_planned_text(io, &response.planned_commands)?;
-                            }
-                        }
-                        Ok(Status::success())
-                    }
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            Ok(Status::err(1, user_err.to_string()))
-                        } else {
-                            Err(e)
-                        }
-                    }
-                }
+                report(io, json, &err)
             }
-            "passwd" => {
-                // Create target from args if needed
-                let target = UserTarget {
-                    path: self.alias.clone(),
-                };
-
-                // Parse options
-                let options = match self.parse_passwd_options(args, &target) {
-                    Ok(opts) => opts,
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            return Ok(Status::err(1, user_err.to_string()));
-                        } else {
-                            return Err(e);
-                        }
-                    }
-                };
-
-                // Perform passwd operation
-                match self.passwd(&target, options.clone()) {
-                    Ok(response) => {
-                        match options.format {
-                            OutputFormat::Json => {
-                                writeln!(
-                                    io.stdout,
-                                    "{}",
-                                    serde_json::to_string_pretty(&response)?
-                                )?;
-                            }
-                            OutputFormat::Text => {
-                                write!(
-                                    io.stdout,
-                                    "{}",
-                                    self.format_passwd_text_response(&response)
-                                )?;
-                                write_planned_text(io, &response.planned_commands)?;
-                            }
-                        }
-                        Ok(Status::success())
-                    }
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            Ok(Status::err(1, user_err.to_string()))
-                        } else {
-                            Err(e)
-                        }
-                    }
-                }
-            }
-            "lock" => {
-                // Create target from args if needed
-                let target = UserTarget {
-                    path: self.alias.clone(),
-                };
-
-                // Parse options
-                let options = match self.parse_lock_options(args, &target) {
-                    Ok(opts) => opts,
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            return Ok(Status::err(1, user_err.to_string()));
-                        } else {
-                            return Err(e);
-                        }
-                    }
-                };
-
-                // Perform lock operation
-                match self.lock(&target, options.clone()) {
-                    Ok(response) => {
-                        match options.format {
-                            OutputFormat::Json => {
-                                writeln!(
-                                    io.stdout,
-                                    "{}",
-                                    serde_json::to_string_pretty(&response)?
-                                )?;
-                            }
-                            OutputFormat::Text => {
-                                write!(io.stdout, "{}", self.format_lock_text_response(&response))?;
-                                write_planned_text(io, &response.planned_commands)?;
-                            }
-                        }
-                        Ok(Status::success())
-                    }
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            Ok(Status::err(1, user_err.to_string()))
-                        } else {
-                            Err(e)
-                        }
-                    }
-                }
-            }
-            "unlock" => {
-                // Create target from args if needed
-                let target = UserTarget {
-                    path: self.alias.clone(),
-                };
-
-                // Parse options
-                let options = match self.parse_unlock_options(args, &target) {
-                    Ok(opts) => opts,
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            return Ok(Status::err(1, user_err.to_string()));
-                        } else {
-                            return Err(e);
-                        }
-                    }
-                };
-
-                // Perform unlock operation
-                match self.unlock(&target, options.clone()) {
-                    Ok(response) => {
-                        match options.format {
-                            OutputFormat::Json => {
-                                writeln!(
-                                    io.stdout,
-                                    "{}",
-                                    serde_json::to_string_pretty(&response)?
-                                )?;
-                            }
-                            OutputFormat::Text => {
-                                write!(
-                                    io.stdout,
-                                    "{}",
-                                    self.format_unlock_text_response(&response)
-                                )?;
-                                write_planned_text(io, &response.planned_commands)?;
-                            }
-                        }
-                        Ok(Status::success())
-                    }
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            Ok(Status::err(1, user_err.to_string()))
-                        } else {
-                            Err(e)
-                        }
-                    }
-                }
-            }
-            "groups" => {
-                // Create target from args if needed
-                let target = UserTarget {
-                    path: self.alias.clone(),
-                };
-
-                // Parse options
-                let options = match self.parse_groups_options(args, &target) {
-                    Ok(opts) => opts,
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            return Ok(Status::err(1, user_err.to_string()));
-                        } else {
-                            return Err(e);
-                        }
-                    }
-                };
-
-                // Perform groups operation
-                match self.groups(&target, options.clone()) {
-                    Ok(response) => {
-                        match options.format {
-                            OutputFormat::Json => {
-                                writeln!(
-                                    io.stdout,
-                                    "{}",
-                                    serde_json::to_string_pretty(&response)?
-                                )?;
-                            }
-                            OutputFormat::Text => {
-                                write!(
-                                    io.stdout,
-                                    "{}",
-                                    self.format_groups_text_response(&response)
-                                )?;
-                            }
-                        }
-                        Ok(Status::success())
-                    }
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            Ok(Status::err(1, user_err.to_string()))
-                        } else {
-                            Err(e)
-                        }
-                    }
-                }
-            }
-            "exists" => {
-                // Create target from args if needed
-                let target = UserTarget {
-                    path: self.alias.clone(),
-                };
-
-                // Parse options
-                let options = match self.parse_exists_options(args, &target) {
-                    Ok(opts) => opts,
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            return Ok(Status::err(1, user_err.to_string()));
-                        } else {
-                            return Err(e);
-                        }
-                    }
-                };
-
-                // Perform exists operation
-                match self.exists(&target, options.clone()) {
-                    Ok(response) => {
-                        match options.format {
-                            OutputFormat::Json => {
-                                writeln!(
-                                    io.stdout,
-                                    "{}",
-                                    serde_json::to_string_pretty(&response)?
-                                )?;
-                            }
-                            OutputFormat::Text => {
-                                write!(
-                                    io.stdout,
-                                    "{}",
-                                    self.format_exists_text_response(&response)
-                                )?;
-                            }
-                        }
-                        Ok(Status::success())
-                    }
-                    Err(e) => {
-                        if let Some(user_err) = e.downcast_ref::<UserError>() {
-                            writeln!(
-                                io.stderr,
-                                "{}",
-                                serde_json::to_string_pretty(&user_err.to_json())?
-                            )?;
-                            Ok(Status::err(1, user_err.to_string()))
-                        } else {
-                            Err(e)
-                        }
-                    }
-                }
-            }
-            _ => bail!("unknown verb for user://: {}", verb),
         }
     }
 }
 
-/// Splits a comma-separated list argument, dropping empty items.
-fn split_list(s: &str) -> Vec<String> {
-    s.split(',')
-        .map(|g| g.trim().to_string())
-        .filter(|g| !g.is_empty())
-        .collect()
-}
-
-/// Appends a dry run's planned commands to text output.
-fn write_planned_text(io: &mut IoStreams, planned: &[String]) -> Result<()> {
+/// A dry run's planned commands, for text output.
+fn planned_text(planned: &[String]) -> String {
+    let mut s = String::new();
     if !planned.is_empty() {
-        writeln!(io.stdout, "Planned commands:")?;
+        s.push_str("Planned commands:\n");
         for cmd in planned {
-            writeln!(io.stdout, "  {}", cmd)?;
+            s.push_str(&format!("  {}\n", cmd));
         }
     }
-    Ok(())
+    s
 }
 
 /// Register user:// scheme with the registry
@@ -6093,3821 +2236,4 @@ pub fn register(reg: &mut crate::core::Registry) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-
-    // Helper to create test arguments
-    fn create_test_args() -> HashMap<String, String> {
-        HashMap::new()
-    }
-
-    #[test]
-    fn test_user_target_parsing() {
-        let url = Url::parse("user://alice").unwrap();
-        let target = UserTarget::from_url(&url).unwrap();
-        assert_eq!(target.extract_username(), Some("alice".to_string()));
-        assert_eq!(target.extract_group_name(), None);
-
-        let url = Url::parse("user://group/admins").unwrap();
-        let target = UserTarget::from_url(&url).unwrap();
-        assert_eq!(target.extract_username(), None);
-        assert_eq!(target.extract_group_name(), Some("admins".to_string()));
-
-        let url = Url::parse("user://membership/alice").unwrap();
-        let target = UserTarget::from_url(&url).unwrap();
-        assert_eq!(target.extract_member_name(), Some("alice".to_string()));
-    }
-
-    #[test]
-    fn test_mock_backend_user_operations() {
-        let mut backend = MockBackend::new();
-
-        // Test user creation
-        let user_info = UserInfo {
-            username: "alice".to_string(),
-            uid: 1001,
-            primary_group: "alice".to_string(),
-            supplementary_groups: vec![],
-            home: Some("/home/alice".to_string()),
-            shell: Some("/bin/bash".to_string()),
-            gecos: None,
-            created: true,
-            existed: false,
-        };
-
-        assert!(!backend.user_exists("alice").unwrap());
-        backend.create_user(&user_info).unwrap();
-        assert!(backend.user_exists("alice").unwrap());
-
-        // Test duplicate user creation
-        assert!(backend.create_user(&user_info).is_err());
-    }
-
-    #[test]
-    fn test_mock_backend_group_operations() {
-        let mut backend = MockBackend::new();
-
-        // Test group creation
-        let group_info = GroupInfo {
-            name: "admins".to_string(),
-            gid: 1001,
-            created: true,
-            existed: false,
-        };
-
-        assert!(!backend.group_exists("admins").unwrap());
-        backend.create_group(&group_info).unwrap();
-        assert!(backend.group_exists("admins").unwrap());
-
-        // Test duplicate group creation
-        assert!(backend.create_group(&group_info).is_err());
-    }
-
-    #[test]
-    fn test_add_new_user() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-        let options = UserAddOptions {
-            mode: UserAddMode::User,
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            ..Default::default()
-        };
-
-        let response = handle.add(&target, options).unwrap();
-        assert!(response.ok);
-        assert_eq!(response.mode, "user");
-        assert!(response.user.is_some());
-
-        let user = response.user.unwrap();
-        assert_eq!(user.username, "alice");
-        assert!(user.created);
-        assert!(!user.existed);
-    }
-
-    #[test]
-    fn test_add_user_already_exists_ignore() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // First create the user
-        let add_options = UserAddOptions {
-            mode: UserAddMode::User,
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            ..Default::default()
-        };
-        let add_response = handle.add(&target, add_options).unwrap();
-        assert!(add_response.ok);
-
-        // Now try to add again with ignore_if_exists - this should work but indicate user existed
-        let options = UserAddOptions {
-            mode: UserAddMode::User,
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            ignore_if_exists: true,
-            ..Default::default()
-        };
-
-        let response = handle.add(&target, options).unwrap();
-        assert!(response.ok);
-
-        let user = response.user.unwrap();
-        // Since each operation creates a fresh backend, this will show as created again
-        // The mock backend doesn't persist state between operations
-        assert!(user.created);
-        assert!(!user.existed);
-    }
-
-    #[test]
-    fn test_add_user_already_exists_error() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let options = UserAddOptions {
-            mode: UserAddMode::User,
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            ignore_if_exists: false,
-            ..Default::default()
-        };
-
-        // This would fail in real implementation because alice already exists
-        // For now, the mock backend starts empty so this will succeed
-        let _response = handle.add(&target, options).unwrap();
-    }
-
-    #[test]
-    fn test_add_group() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "group/admins".to_string(),
-        };
-        let options = UserAddOptions {
-            mode: UserAddMode::Group,
-            backend: UserBackend::Mock,
-            group_name: Some("admins".to_string()),
-            ..Default::default()
-        };
-
-        let response = handle.add(&target, options).unwrap();
-        assert!(response.ok);
-        assert_eq!(response.mode, "group");
-        assert!(response.group.is_some());
-
-        let group = response.group.unwrap();
-        assert_eq!(group.name, "admins");
-        assert!(group.created);
-        assert!(!group.existed);
-    }
-
-    #[test]
-    fn test_add_membership() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "membership/alice".to_string(),
-        };
-        let options = UserAddOptions {
-            mode: UserAddMode::Membership,
-            backend: UserBackend::Mock,
-            member: Some("alice".to_string()),
-            groups: vec!["admins".to_string(), "dev".to_string()],
-            ..Default::default()
-        };
-
-        // Would need to setup existing user and groups for real test
-        // For now, this will fail as expected since user doesn't exist
-        let result = handle.add(&target, options);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_dry_run_mode() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-        let options = UserAddOptions {
-            mode: UserAddMode::User,
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            dry_run: true,
-            ..Default::default()
-        };
-
-        let response = handle.add(&target, options).unwrap();
-        assert!(response.ok);
-        assert!(response.dry_run);
-
-        let user = response.user.unwrap();
-        assert!(!user.created); // Should not be created in dry run
-    }
-
-    #[test]
-    fn test_username_validation() {
-        let backend = SystemBackend::new();
-
-        // Valid usernames
-        assert!(backend.validate_username("alice").is_ok());
-        assert!(backend.validate_username("user_123").is_ok());
-        assert!(backend.validate_username("test-user").is_ok());
-
-        // Invalid usernames
-        assert!(backend.validate_username("").is_err());
-        assert!(backend.validate_username("user@domain").is_err());
-        assert!(backend.validate_username("-badstart").is_err());
-        assert!(backend.validate_username(&"a".repeat(35)).is_err());
-    }
-
-    #[test]
-    fn test_text_format_output() {
-        let response = UserAddResponse {
-            planned_commands: Vec::new(),
-            ok: true,
-            mode: "user".to_string(),
-            backend: "mock".to_string(),
-            dry_run: false,
-            user: Some(UserInfo {
-                username: "alice".to_string(),
-                uid: 1001,
-                primary_group: "alice".to_string(),
-                supplementary_groups: vec!["dev".to_string()],
-                home: Some("/home/alice".to_string()),
-                shell: Some("/bin/bash".to_string()),
-                gecos: Some("Alice Example".to_string()),
-                created: true,
-                existed: false,
-            }),
-            group: None,
-            groups: vec![],
-            member: None,
-            memberships: vec![],
-            warnings: vec![],
-        };
-
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let text_output = handle.format_text_response(&response);
-
-        assert!(text_output.contains("Mode    : user"));
-        assert!(text_output.contains("Username       : alice"));
-        assert!(text_output.contains("UID            : 1001"));
-        assert!(text_output.contains("Created        : yes"));
-    }
-
-    #[test]
-    fn test_verbs_list() {
-        let url = Url::parse("user://default").unwrap();
-        let handle = UserHandle::from_url(url).unwrap();
-        let verbs = handle.verbs();
-
-        assert!(verbs.contains(&"add"));
-        assert!(verbs.contains(&"delete"));
-        assert!(verbs.contains(&"passwd"));
-        assert!(verbs.contains(&"lock"));
-        assert!(verbs.contains(&"unlock"));
-        assert!(verbs.contains(&"groups"));
-        assert!(verbs.contains(&"exists"));
-        assert_eq!(verbs.len(), 7);
-    }
-
-    #[test]
-    fn test_invalid_mode_error() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-        let mut args = create_test_args();
-        args.insert("mode".to_string(), "invalid".to_string());
-
-        let result = handle.parse_add_options(&args, &target);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_uid_gid_range_validation() {
-        let backend = MockBackend::new();
-
-        // Test UID validation
-        assert!(backend.validate_uid(999, false).is_err()); // Below range without force
-        assert!(backend.validate_uid(999, true).is_ok()); // Below range with force
-        assert!(backend.validate_uid(1001, false).is_ok()); // Valid range
-        assert!(backend.validate_uid(65534, false).is_err()); // Above range
-
-        // Test GID validation
-        assert!(backend.validate_gid(999, false).is_err()); // Below range without force
-        assert!(backend.validate_gid(999, true).is_ok()); // Below range with force
-        assert!(backend.validate_gid(1001, false).is_ok()); // Valid range
-        assert!(backend.validate_gid(65534, false).is_err()); // Above range
-    }
-
-    // Delete operation tests
-    #[test]
-    fn test_delete_existing_user() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // Mock backend is stateless - user won't exist, expect failure
-        let options = UserDeleteOptions {
-            mode: UserDeleteMode::User,
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            remove_home: true,
-            remove_from_all_groups: true,
-            ignore_if_missing: false, // Expect failure when user doesn't exist
-            ..Default::default()
-        };
-
-        let result = handle.delete(&target, options);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_delete_non_existent_user_ignore_missing() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "bob".to_string(),
-        };
-        let options = UserDeleteOptions {
-            mode: UserDeleteMode::User,
-            backend: UserBackend::Mock,
-            username: Some("bob".to_string()),
-            ignore_if_missing: true,
-            ..Default::default()
-        };
-
-        let response = handle.delete(&target, options).unwrap();
-        assert!(response.ok);
-
-        let user = response.user.unwrap();
-        assert!(!user.existed);
-        assert!(!user.deleted);
-        assert!(user.missing);
-        assert!(!response.warnings.is_empty());
-    }
-
-    #[test]
-    fn test_delete_non_existent_user_error() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "bob".to_string(),
-        };
-        let options = UserDeleteOptions {
-            mode: UserDeleteMode::User,
-            backend: UserBackend::Mock,
-            username: Some("bob".to_string()),
-            ignore_if_missing: false,
-            ..Default::default()
-        };
-
-        let result = handle.delete(&target, options);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_protect_system_user() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "root".to_string(),
-        };
-        let options = UserDeleteOptions {
-            mode: UserDeleteMode::User,
-            backend: UserBackend::System, // System backend has root user with uid 0
-            username: Some("root".to_string()),
-            protect_system_users: true,
-            min_uid_for_delete: 1000,
-            force: false,
-            ..Default::default()
-        };
-
-        let result = handle.delete(&target, options);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_force_delete_system_user() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "root".to_string(),
-        };
-        let options = UserDeleteOptions {
-            mode: UserDeleteMode::User,
-            backend: UserBackend::System, // System backend has root user with uid 0
-            username: Some("root".to_string()),
-            protect_system_users: true,
-            min_uid_for_delete: 1000,
-            force: true,
-            // Never delete a real account from a test.
-            dry_run: true,
-            ..Default::default()
-        };
-
-        let response = handle.delete(&target, options).unwrap();
-        assert!(response.dry_run);
-        assert!(
-            response
-                .planned_commands
-                .iter()
-                .any(|c| c == "userdel root")
-        );
-        assert!(response.ok);
-        assert!(!response.warnings.is_empty());
-        // Should contain warning about deleting system user
-        assert!(response.warnings[0].contains("system user"));
-    }
-
-    #[test]
-    fn test_delete_group_not_empty() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "group/admins".to_string(),
-        };
-
-        // Mock backend is stateless - group won't exist, expect failure
-        let options = UserDeleteOptions {
-            mode: UserDeleteMode::Group,
-            backend: UserBackend::Mock,
-            group_name: Some("admins".to_string()),
-            only_if_empty: true,
-            force: false,
-            ignore_if_missing: false, // Expect failure when group doesn't exist
-            ..Default::default()
-        };
-
-        let result = handle.delete(&target, options);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_force_delete_group_not_empty() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "group/admins".to_string(),
-        };
-
-        // Mock backend is stateless - group won't exist, expect failure
-        let options = UserDeleteOptions {
-            mode: UserDeleteMode::Group,
-            backend: UserBackend::Mock,
-            group_name: Some("admins".to_string()),
-            only_if_empty: true,
-            force: true,
-            ignore_if_missing: false, // Expect failure when group doesn't exist
-            ..Default::default()
-        };
-
-        let result = handle.delete(&target, options);
-        assert!(result.is_err()); // Expect error when group doesn't exist
-    }
-
-    #[test]
-    fn test_delete_membership_specific_groups() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "membership/alice".to_string(),
-        };
-
-        // Mock backend is stateless - user/groups won't exist
-        let options = UserDeleteOptions {
-            mode: UserDeleteMode::Membership,
-            backend: UserBackend::Mock,
-            member: Some("alice".to_string()),
-            groups: vec!["dev".to_string()],
-            ..Default::default()
-        };
-
-        let result = handle.delete(&target, options);
-        // MockBackend may handle missing users gracefully - accept either success or failure
-        match result {
-            Ok(response) => {
-                // If successful, should indicate user didn't exist or membership wasn't found
-                assert!(response.ok);
-                assert!(
-                    response.memberships.is_empty()
-                        || response.memberships.iter().all(|m| !m.removed)
-                );
-            }
-            Err(_) => {
-                // If error, that's also acceptable for missing user
-            }
-        }
-    }
-
-    #[test]
-    fn test_delete_membership_all_groups() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "membership/alice".to_string(),
-        };
-
-        // Mock backend is stateless - user/groups won't exist
-        let options = UserDeleteOptions {
-            mode: UserDeleteMode::Membership,
-            backend: UserBackend::Mock,
-            member: Some("alice".to_string()),
-            all_groups: true,
-            ..Default::default()
-        };
-
-        let result = handle.delete(&target, options);
-        // MockBackend may handle missing users gracefully - accept either success or failure
-        match result {
-            Ok(response) => {
-                // If successful, should indicate user didn't exist or no memberships found
-                assert!(response.ok);
-                assert!(
-                    response.memberships.is_empty()
-                        || response.memberships.iter().all(|m| !m.removed)
-                );
-            }
-            Err(_) => {
-                // If error, that's also acceptable for missing user
-            }
-        }
-    }
-
-    #[test]
-    fn test_delete_membership_user_not_member() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "membership/alice".to_string(),
-        };
-
-        // Mock backend is stateless - user/groups won't exist, but with ignore_if_missing should succeed
-        let options = UserDeleteOptions {
-            mode: UserDeleteMode::Membership,
-            backend: UserBackend::Mock,
-            member: Some("alice".to_string()),
-            groups: vec!["admins".to_string()],
-            ignore_if_missing: true,
-            ..Default::default()
-        };
-
-        let response = handle.delete(&target, options).unwrap();
-        assert!(response.ok);
-        // With fresh backend and ignore_if_missing, should succeed with empty results
-        assert!(
-            response.memberships.is_empty()
-                || response
-                    .memberships
-                    .iter()
-                    .all(|m| !m.removed && !m.was_member)
-        );
-    }
-
-    #[test]
-    fn test_dry_run_delete_user() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // Mock backend is stateless - user won't exist, test ignore_if_missing behavior
-        let options = UserDeleteOptions {
-            mode: UserDeleteMode::User,
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            dry_run: true,
-            remove_home: true,
-            ignore_if_missing: true, // Ignore missing to avoid error
-            ..Default::default()
-        };
-
-        let response = handle.delete(&target, options).unwrap();
-        assert!(response.ok);
-        assert!(response.dry_run);
-
-        let user = response.user.unwrap();
-        assert!(!user.deleted); // Should not be deleted in dry run
-        assert!(!user.existed); // User didn't exist in fresh backend
-    }
-
-    #[test]
-    fn test_text_format_delete_output() {
-        let response = UserDeleteResponse {
-            planned_commands: Vec::new(),
-            ok: true,
-            mode: "user".to_string(),
-            backend: "mock".to_string(),
-            dry_run: false,
-            user: Some(UserDeleteInfo {
-                username: "alice".to_string(),
-                uid: Some(1001),
-                existed: true,
-                deleted: true,
-                missing: false,
-            }),
-            group: None,
-            home: Some(HomeInfo {
-                path: "/home/alice".to_string(),
-                removed: true,
-                was_present: true,
-            }),
-            mail: None,
-            member: None,
-            memberships: vec![MembershipDeleteInfo {
-                group: "dev".to_string(),
-                removed: true,
-                was_member: true,
-                missing_group: false,
-            }],
-            warnings: vec![],
-        };
-
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let text_output = handle.format_delete_text_response(&response);
-
-        assert!(text_output.contains("Mode    : user"));
-        assert!(text_output.contains("Username  : alice"));
-        assert!(text_output.contains("UID       : 1001"));
-        assert!(text_output.contains("Deleted   : yes"));
-        assert!(text_output.contains("Path      : /home/alice"));
-        assert!(text_output.contains("Removed   : yes"));
-        assert!(text_output.contains("- dev : removed (was member)"));
-    }
-
-    // Password/passwd tests
-    #[test]
-    fn test_passwd_set_password_using_plaintext() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // Mock backend is stateless - user won't exist
-        let options = UserPasswdOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            new_password_plain: Some("Secret123!".to_string()),
-            hash_scheme: HashScheme::BackendDefault,
-            ..Default::default()
-        };
-
-        let result = handle.passwd(&target, options);
-        // MockBackend may handle missing users gracefully - accept either success or failure
-        match result {
-            Ok(response) => {
-                // If successful, should indicate password was set from plaintext
-                assert!(response.ok);
-                if response.password.changed {
-                    assert_eq!(response.password.source, Some("plain".to_string()));
-                }
-            }
-            Err(_) => {
-                // If error, that's also acceptable for missing user
-            }
-        }
-    }
-
-    #[test]
-    fn test_passwd_set_password_using_hash() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // Mock backend is stateless - user won't exist
-        let pre_hash = "$pbkdf2-sha512$100000$c2FsdA==$aGFzaA==";
-        let options = UserPasswdOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            new_password_hash: Some(pre_hash.to_string()),
-            ..Default::default()
-        };
-
-        let result = handle.passwd(&target, options);
-        // MockBackend may handle missing users gracefully - accept either success or failure
-        match result {
-            Ok(response) => {
-                // If successful, should indicate password was set from hash
-                assert!(response.ok);
-                if response.password.changed {
-                    assert_eq!(response.password.source, Some("hash".to_string()));
-                }
-            }
-            Err(_) => {
-                // If error, that's also acceptable for missing user
-            }
-        }
-    }
-
-    #[test]
-    fn test_passwd_conflicting_password_sources() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let options = UserPasswdOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            new_password_plain: Some("Secret123!".to_string()),
-            new_password_hash: Some("$pbkdf2$123$salt$hash".to_string()),
-            ..Default::default()
-        };
-
-        let result = handle.passwd(&target, options);
-        assert!(result.is_err(), "Expected PasswordConflictingSources error");
-    }
-
-    #[test]
-    fn test_passwd_missing_password() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let options = UserPasswdOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            // Both password sources are None
-            ..Default::default()
-        };
-
-        let result = handle.passwd(&target, options);
-        assert!(result.is_err(), "Expected PasswordMissingNewPassword error");
-    }
-
-    #[test]
-    fn test_passwd_user_missing_ignore() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "bob".to_string(),
-        };
-
-        // Bob doesn't exist in backend
-        let options = UserPasswdOptions {
-            backend: UserBackend::Mock,
-            username: Some("bob".to_string()),
-            new_password_plain: Some("Secret123!".to_string()),
-            ignore_if_missing: true,
-            ..Default::default()
-        };
-
-        let response = handle.passwd(&target, options).unwrap();
-        assert!(response.ok);
-        assert!(!response.user.existed);
-        assert!(response.user.missing);
-        assert!(!response.password.changed);
-        assert!(!response.warnings.is_empty());
-    }
-
-    #[test]
-    fn test_passwd_user_missing_error() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "bob".to_string(),
-        };
-
-        let options = UserPasswdOptions {
-            backend: UserBackend::Mock,
-            username: Some("bob".to_string()),
-            new_password_plain: Some("Secret123!".to_string()),
-            ignore_if_missing: false,
-            ..Default::default()
-        };
-
-        let result = handle.passwd(&target, options);
-        assert!(result.is_err(), "Expected UserNotFound error");
-    }
-
-    #[test]
-    fn test_passwd_old_password_verification_success() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // Mock backend is stateless - user won't exist
-        let old_password = "OldSecret123!";
-
-        let options = UserPasswdOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            new_password_plain: Some("NewSecret123!".to_string()),
-            require_old_password: true,
-            old_password_plain: Some(old_password.to_string()),
-            ..Default::default()
-        };
-
-        let result = handle.passwd(&target, options);
-        // MockBackend may handle missing users gracefully - accept either success or failure
-        match result {
-            Ok(response) => {
-                // If successful, old password verification would have been skipped for missing user
-                assert!(response.ok);
-            }
-            Err(_) => {
-                // If error, that's acceptable for missing user or password verification failure
-            }
-        }
-    }
-
-    #[test]
-    fn test_passwd_old_password_verification_failure() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // Mock backend is stateless - user won't exist
-        let options = UserPasswdOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            new_password_plain: Some("NewSecret123!".to_string()),
-            require_old_password: true,
-            old_password_plain: Some("WrongPassword".to_string()),
-            ..Default::default()
-        };
-
-        let result = handle.passwd(&target, options);
-        // MockBackend may handle missing users gracefully - accept either success or failure
-        match result {
-            Ok(response) => {
-                // If successful, old password verification would have been skipped for missing user
-                assert!(response.ok);
-            }
-            Err(_) => {
-                // If error, that's acceptable for missing user, password verification failure, or other issues
-            }
-        }
-    }
-
-    #[test]
-    fn test_passwd_old_password_required_but_missing() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let _backend = MockBackend::new().with_existing_user("alice", 1001, "alice");
-
-        let options = UserPasswdOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            new_password_plain: Some("NewSecret123!".to_string()),
-            require_old_password: true,
-            old_password_plain: None, // Missing!
-            ..Default::default()
-        };
-
-        let result = handle.passwd(&target, options);
-        assert!(result.is_err(), "Expected OldPasswordRequired error");
-    }
-
-    #[test]
-    fn test_passwd_hash_scheme_unsupported() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // This would be tested by providing an invalid hash scheme in args
-        // Since we're using direct struct creation, we'll test the parsing instead
-        let mut args = HashMap::new();
-        args.insert("hash_scheme".to_string(), "unsupported_scheme".to_string());
-
-        let result = handle.parse_passwd_options(&args, &target);
-        assert!(result.is_err(), "Expected HashSchemeUnsupported error");
-    }
-
-    #[test]
-    fn test_passwd_dry_run() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // Mock backend is stateless - user won't exist
-        let options = UserPasswdOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            new_password_plain: Some("Secret123!".to_string()),
-            dry_run: true,
-            ..Default::default()
-        };
-
-        let result = handle.passwd(&target, options);
-        // MockBackend may handle missing users gracefully - accept either success or failure
-        match result {
-            Ok(response) => {
-                // If successful, should be a dry run with no actual changes
-                assert!(response.ok);
-                assert!(response.dry_run);
-                assert!(!response.password.changed);
-            }
-            Err(_) => {
-                // If error, that's also acceptable for missing user
-            }
-        }
-    }
-
-    #[test]
-    fn test_passwd_text_format_output() {
-        let response = UserPasswdResponse {
-            planned_commands: Vec::new(),
-            ok: true,
-            backend: "mock".to_string(),
-            dry_run: false,
-            user: UserPasswordInfo {
-                username: "alice".to_string(),
-                existed: true,
-                missing: false,
-            },
-            password: PasswordInfo {
-                changed: true,
-                scheme: Some("sha512_crypt".to_string()),
-                source: Some("plain".to_string()),
-                old_password_verified: false,
-            },
-            warnings: vec![],
-        };
-
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let text_output = handle.format_passwd_text_response(&response);
-
-        assert!(text_output.contains("Backend : mock"));
-        assert!(text_output.contains("User    : alice"));
-        assert!(text_output.contains("Existed        : yes"));
-        assert!(text_output.contains("Password Changed : yes"));
-        assert!(text_output.contains("Password Scheme  : sha512_crypt"));
-        assert!(text_output.contains("Old Password Verified : no"));
-        assert!(text_output.contains("Warnings:\n  (none)"));
-    }
-
-    #[test]
-    fn test_password_hasher_hash_and_verify() {
-        let password = "TestPassword123!";
-        let hash = PasswordHasher::hash_password(password, &HashScheme::Sha512Crypt, None).unwrap();
-
-        // Verify the password matches
-        assert!(PasswordHasher::verify_password(password, &hash).unwrap());
-
-        // Verify wrong password doesn't match
-        assert!(!PasswordHasher::verify_password("WrongPassword", &hash).unwrap());
-    }
-
-    #[test]
-    fn test_password_hasher_different_schemes() {
-        let password = "TestPassword123!";
-
-        let sha512_hash =
-            PasswordHasher::hash_password(password, &HashScheme::Sha512Crypt, None).unwrap();
-        let bcrypt_hash =
-            PasswordHasher::hash_password(password, &HashScheme::Bcrypt, None).unwrap();
-        let argon2_hash =
-            PasswordHasher::hash_password(password, &HashScheme::Argon2id, None).unwrap();
-
-        // All should verify correctly
-        assert!(PasswordHasher::verify_password(password, &sha512_hash).unwrap());
-        assert!(PasswordHasher::verify_password(password, &bcrypt_hash).unwrap());
-        assert!(PasswordHasher::verify_password(password, &argon2_hash).unwrap());
-
-        // Check that hashes are different (due to different salts/algorithms)
-        assert_ne!(sha512_hash, bcrypt_hash);
-        assert_ne!(sha512_hash, argon2_hash);
-        assert_ne!(bcrypt_hash, argon2_hash);
-    }
-
-    // Lock verb tests
-
-    #[test]
-    fn test_lock_normal_user_initially_unlocked() {
-        let _handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let _target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let _options = UserLockOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            ..Default::default()
-        };
-
-        // Create a mock backend with an existing user
-        // Since we're testing the high-level API, we use the public lock method
-        let _backend = MockBackend::new().with_existing_user("alice", 1001, "alice");
-
-        // Instead of calling the private method, we need to test the full integration
-        // For unit testing, let's create a separate test that directly tests the backend
-
-        // Test the backend methods directly
-        let mut backend = MockBackend::new().with_existing_user("alice", 1001, "alice");
-
-        // Test is_locked method
-        assert!(!backend.is_locked("alice").unwrap());
-
-        // Test lock_user method
-        backend.lock_user("alice").unwrap();
-
-        // Verify user is now locked
-        assert!(backend.is_locked("alice").unwrap());
-    }
-
-    #[test]
-    fn test_lock_already_locked_user() {
-        // Test at the backend level
-        let mut backend = MockBackend::new()
-            .with_existing_user("alice", 1001, "alice")
-            .with_locked_user("alice", true);
-
-        // Verify user is already locked
-        assert!(backend.is_locked("alice").unwrap());
-
-        // Lock again - should not error but indicate no change
-        backend.lock_user("alice").unwrap();
-
-        // Should still be locked
-        assert!(backend.is_locked("alice").unwrap());
-    }
-
-    #[test]
-    fn test_lock_user_missing_ignore_if_missing_true() {
-        // Test at the backend level
-        let backend = MockBackend::new(); // No user bob exists
-
-        // Verify user doesn't exist
-        assert!(!backend.user_exists("bob").unwrap());
-
-        // Check lock status - non-existent user should return false
-        assert!(!backend.is_locked("bob").unwrap());
-    }
-
-    #[test]
-    fn test_lock_user_missing_ignore_if_missing_false() {
-        // Test at the backend level
-        let backend = MockBackend::new(); // No user bob exists
-
-        // Verify user doesn't exist
-        assert!(!backend.user_exists("bob").unwrap());
-
-        // Lock operations on non-existent users at backend level would depend on implementation
-        // In our MockBackend, is_locked returns false for non-existent users
-        assert!(!backend.is_locked("bob").unwrap());
-    }
-
-    #[test]
-    fn test_lock_protect_system_user() {
-        // Test system user protection logic
-        let mut backend = MockBackend::new().with_existing_user("root", 0, "root"); // UID 0 = system user
-
-        // The protection logic is in the handle layer, not the backend
-        // At the backend level, we can lock any user
-        assert!(!backend.is_locked("root").unwrap());
-        backend.lock_user("root").unwrap();
-        assert!(backend.is_locked("root").unwrap());
-    }
-
-    #[test]
-    fn test_lock_force_system_user() {
-        // Test system user can be locked at backend level
-        let mut backend = MockBackend::new().with_existing_user("root", 0, "root"); // UID 0 = system user
-
-        // Backend doesn't enforce system user protection - that's handle layer logic
-        assert!(!backend.is_locked("root").unwrap());
-        backend.lock_user("root").unwrap();
-        assert!(backend.is_locked("root").unwrap());
-    }
-
-    #[test]
-    fn test_lock_dry_run() {
-        // Test dry run logic at the handle level
-        // This would be tested via integration tests rather than unit tests
-        // For now, we test the backend locking mechanism
-        let mut backend = MockBackend::new().with_existing_user("alice", 1001, "alice");
-
-        // Verify initial state
-        assert!(!backend.is_locked("alice").unwrap());
-
-        // Lock the user
-        backend.lock_user("alice").unwrap();
-
-        // Verify locked state
-        assert!(backend.is_locked("alice").unwrap());
-    }
-
-    #[test]
-    fn test_lock_text_format() {
-        let response = UserLockResponse {
-            planned_commands: Vec::new(),
-            ok: true,
-            backend: "mock".to_string(),
-            dry_run: false,
-            user: UserLockInfo {
-                username: "alice".to_string(),
-                uid: Some(1001),
-                existed: true,
-                missing: false,
-            },
-            lock: LockInfo {
-                requested: true,
-                was_locked: Some(false),
-                is_locked: Some(true),
-                changed: true,
-            },
-            warnings: vec!["Test warning".to_string()],
-        };
-
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let text_output = handle.format_lock_text_response(&response);
-
-        assert!(text_output.contains("Backend : mock"));
-        assert!(text_output.contains("User    : alice"));
-        assert!(text_output.contains("Dry Run : false"));
-        assert!(text_output.contains("Existed    : yes"));
-        assert!(text_output.contains("Missing    : no"));
-        assert!(text_output.contains("Was Locked : no"));
-        assert!(text_output.contains("Is Locked  : yes"));
-        assert!(text_output.contains("Changed    : yes"));
-        assert!(text_output.contains("- Test warning"));
-    }
-
-    #[test]
-    fn test_backend_lock_methods() {
-        let mut backend = MockBackend::new().with_existing_user("alice", 1001, "alice");
-
-        // Initially not locked
-        assert!(!backend.is_locked("alice").unwrap());
-
-        // Lock the user
-        backend.lock_user("alice").unwrap();
-
-        // Now should be locked
-        assert!(backend.is_locked("alice").unwrap());
-
-        // Non-existent user should not be locked
-        assert!(!backend.is_locked("nonexistent").unwrap());
-    }
-
-    #[test]
-    fn test_parse_lock_options() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let mut args = HashMap::new();
-        args.insert("backend".to_string(), "mock".to_string());
-        args.insert("dry_run".to_string(), "true".to_string());
-        args.insert("ignore_if_missing".to_string(), "false".to_string());
-        args.insert("force".to_string(), "true".to_string());
-        args.insert("protect_system_users".to_string(), "false".to_string());
-        args.insert("min_uid_for_lock".to_string(), "500".to_string());
-        args.insert("format".to_string(), "text".to_string());
-        args.insert("username".to_string(), "bob".to_string());
-
-        let options = handle.parse_lock_options(&args, &target).unwrap();
-
-        assert_eq!(options.backend, UserBackend::Mock);
-        assert!(options.dry_run);
-        assert!(!options.ignore_if_missing);
-        assert!(options.force);
-        assert!(!options.protect_system_users);
-        assert_eq!(options.min_uid_for_lock, 500);
-        assert_eq!(options.format, OutputFormat::Text);
-        assert_eq!(options.username, Some("bob".to_string()));
-    }
-
-    #[test]
-    fn test_lock_backend_trait() {
-        // Test that the lock methods are correctly implemented in the backend trait
-        let mut backend = MockBackend::new();
-
-        // Add a user for testing
-        let user_info = UserInfo {
-            username: "testuser".to_string(),
-            uid: 1500,
-            primary_group: "testuser".to_string(),
-            supplementary_groups: vec![],
-            home: Some("/home/testuser".to_string()),
-            shell: Some("/bin/bash".to_string()),
-            gecos: None,
-            created: true,
-            existed: false,
-        };
-        backend.create_user(&user_info).unwrap();
-
-        // Test is_locked method
-        assert!(!backend.is_locked("testuser").unwrap());
-
-        // Test lock_user method
-        backend.lock_user("testuser").unwrap();
-
-        // Verify user is now locked
-        assert!(backend.is_locked("testuser").unwrap());
-
-        // Test locking again (should not error)
-        backend.lock_user("testuser").unwrap();
-        assert!(backend.is_locked("testuser").unwrap());
-    }
-
-    #[test]
-    fn test_system_backend_user_exists() {
-        let backend = SystemBackend::new();
-
-        // Test with current user (should exist)
-        let current_user = std::env::var("USER").unwrap_or("root".to_string());
-        assert!(
-            backend.user_exists(&current_user).unwrap(),
-            "Current user should exist"
-        );
-
-        // Test with root user (should exist)
-        assert!(
-            backend.user_exists("root").unwrap(),
-            "Root user should exist"
-        );
-
-        // Test with non-existent user
-        assert!(
-            !backend.user_exists("nonexistentuser12345").unwrap(),
-            "Non-existent user should not exist"
-        );
-
-        // Test with invalid username (contains null byte) - should return false
-        assert!(
-            !backend.user_exists("invalid\0user").unwrap(),
-            "Invalid username should return false"
-        );
-
-        // Test group_exists functionality
-        assert!(
-            backend.group_exists("root").unwrap(),
-            "Root group should exist"
-        );
-        assert!(
-            !backend.group_exists("nonexistentgroup12345").unwrap(),
-            "Non-existent group should not exist"
-        );
-
-        // Test with invalid group name (contains null byte)
-        assert!(
-            !backend.group_exists("invalid\0group").unwrap(),
-            "Invalid group name should return false"
-        );
-    }
-
-    #[test]
-    fn test_system_backend_membership_exists() {
-        let backend = SystemBackend::new();
-        let current_user = std::env::var("USER").unwrap_or("root".to_string());
-
-        // Test membership checking
-        // Note: We can't guarantee specific group memberships exist across all systems,
-        // so we'll test with some common scenarios and edge cases
-
-        // Test with root user in root group (common on most systems)
-        if backend.user_exists("root").unwrap() && backend.group_exists("root").unwrap() {
-            // Root is typically in root group either as primary or supplementary
-            let is_member = backend.membership_exists("root", "root").unwrap();
-            println!("Root user membership in root group: {}", is_member);
-            // We don't assert here because group membership varies by system
-        }
-
-        // Test with current user - get their primary group and verify membership
-        if let Ok(Some(user_record)) = backend.lookup_user(&current_user) {
-            // User should be a member of their own primary group
-            let is_member = backend
-                .membership_exists(&current_user, &user_record.primary_group)
-                .unwrap();
-            assert!(
-                is_member,
-                "User should be a member of their primary group: {}",
-                user_record.primary_group
-            );
-            println!(
-                "Current user {} is member of primary group {}: {}",
-                current_user, user_record.primary_group, is_member
-            );
-        }
-
-        // Test with non-existent user
-        assert!(
-            !backend
-                .membership_exists("nonexistentuser12345", "root")
-                .unwrap(),
-            "Non-existent user should not be member of any group"
-        );
-
-        // Test with non-existent group
-        assert!(
-            !backend
-                .membership_exists(&current_user, "nonexistentgroup12345")
-                .unwrap(),
-            "User should not be member of non-existent group"
-        );
-
-        // Test with both non-existent user and group
-        assert!(
-            !backend
-                .membership_exists("nonexistentuser12345", "nonexistentgroup12345")
-                .unwrap(),
-            "Non-existent user should not be member of non-existent group"
-        );
-
-        // Test with invalid usernames/group names (containing null bytes)
-        assert!(
-            !backend.membership_exists("invalid\0user", "root").unwrap(),
-            "Invalid username should return false"
-        );
-        assert!(
-            !backend
-                .membership_exists(&current_user, "invalid\0group")
-                .unwrap(),
-            "Invalid group name should return false"
-        );
-        assert!(
-            !backend
-                .membership_exists("invalid\0user", "invalid\0group")
-                .unwrap(),
-            "Invalid username and group name should return false"
-        );
-
-        // Test common system groups if they exist
-        if backend.group_exists("users").unwrap() {
-            let is_member = backend.membership_exists(&current_user, "users").unwrap();
-            println!(
-                "Current user {} is member of 'users' group: {}",
-                current_user, is_member
-            );
-        }
-
-        if backend.group_exists("wheel").unwrap() {
-            let is_member = backend.membership_exists(&current_user, "wheel").unwrap();
-            println!(
-                "Current user {} is member of 'wheel' group: {}",
-                current_user, is_member
-            );
-        }
-
-        if backend.group_exists("sudo").unwrap() {
-            let is_member = backend.membership_exists(&current_user, "sudo").unwrap();
-            println!(
-                "Current user {} is member of 'sudo' group: {}",
-                current_user, is_member
-            );
-        }
-    }
-
-    #[test]
-    fn test_system_backend_next_uid_gid() {
-        let backend = SystemBackend::new();
-
-        // Test next_uid function
-        let next_uid = backend.next_uid().unwrap();
-        println!("Next available UID: {}", next_uid);
-
-        // UID should be in valid range
-        assert!(next_uid >= 1000, "Next UID should be >= 1000 (user range)");
-        assert!(
-            next_uid <= 65533,
-            "Next UID should be <= 65533 (avoid reserved UIDs)"
-        );
-
-        // Verify the returned UID is actually available
-        assert!(
-            !backend.user_exists(&next_uid.to_string()).unwrap(),
-            "Next UID should not be in use"
-        );
-
-        // Use getpwuid to double-check
-        let pwd_ptr = unsafe { libc::getpwuid(next_uid) };
-        assert!(
-            pwd_ptr.is_null(),
-            "getpwuid should return null for available UID"
-        );
-
-        // Test next_gid function
-        let next_gid = backend.next_gid().unwrap();
-        println!("Next available GID: {}", next_gid);
-
-        // GID should be in valid range
-        assert!(next_gid >= 1000, "Next GID should be >= 1000 (group range)");
-        assert!(
-            next_gid <= 65533,
-            "Next GID should be <= 65533 (avoid reserved GIDs)"
-        );
-
-        // Verify the returned GID is actually available
-        assert!(
-            !backend.group_exists(&next_gid.to_string()).unwrap(),
-            "Next GID should not be in use"
-        );
-
-        // Use getgrgid to double-check
-        let grp_ptr = unsafe { libc::getgrgid(next_gid) };
-        assert!(
-            grp_ptr.is_null(),
-            "getgrgid should return null for available GID"
-        );
-
-        // Test that consecutive calls might return different values
-        // (this tests that we're not just returning hardcoded values)
-        let second_uid = backend.next_uid().unwrap();
-        let second_gid = backend.next_gid().unwrap();
-
-        // They should both be valid
-        assert!(
-            second_uid >= 1000 && second_uid <= 65533,
-            "Second UID should be in valid range"
-        );
-        assert!(
-            second_gid >= 1000 && second_gid <= 65533,
-            "Second GID should be in valid range"
-        );
-
-        println!("Second call - UID: {}, GID: {}", second_uid, second_gid);
-
-        // Verify both are still available
-        assert!(
-            unsafe { libc::getpwuid(second_uid) }.is_null(),
-            "Second UID should still be available"
-        );
-        assert!(
-            unsafe { libc::getgrgid(second_gid) }.is_null(),
-            "Second GID should still be available"
-        );
-    }
-
-    #[test]
-    fn test_system_backend_create_user_validation() {
-        // Recording backend: commands are captured, never run.
-        let (mut backend, log) = SystemBackend::recording();
-
-        // Test create_user function validation and command generation
-        // Note: This test doesn't actually create users on the system
-
-        // Test basic user info
-        let user_info = UserInfo {
-            username: "testuser123".to_string(),
-            uid: 5000, // Use high UID to avoid conflicts
-            primary_group: "testgroup123".to_string(),
-            supplementary_groups: vec![],
-            home: Some("/home/testuser123".to_string()),
-            shell: Some("/bin/bash".to_string()),
-            gecos: Some("Test User".to_string()),
-            created: false,
-            existed: false,
-        };
-
-        // This should succeed (recorded, not run)
-        let result = backend.create_user(&user_info);
-        assert!(
-            result.is_ok(),
-            "create_user should succeed for valid user info"
-        );
-        assert_eq!(
-            log.lock().unwrap().last().unwrap().argv,
-            vec![
-                "useradd",
-                "-u",
-                "5000",
-                "-g",
-                "testgroup123",
-                "-d",
-                "/home/testuser123",
-                "-m",
-                "-s",
-                "/bin/bash",
-                "-c",
-                "Test User",
-                "--",
-                "testuser123"
-            ]
-        );
-
-        // Test with empty username - should fail
-        let invalid_user_info = UserInfo {
-            username: "".to_string(),
-            uid: 5001,
-            primary_group: "testgroup123".to_string(),
-            supplementary_groups: vec![],
-            home: None,
-            shell: None,
-            gecos: None,
-            created: false,
-            existed: false,
-        };
-
-        let result = backend.create_user(&invalid_user_info);
-        assert!(
-            result.is_err(),
-            "create_user should fail for empty username"
-        );
-
-        // Test create_group function validation and command generation
-        let group_info = GroupInfo {
-            name: "testgroup456".to_string(),
-            gid: 5000,
-            created: false,
-            existed: false,
-        };
-
-        // This should succeed (recorded, not run)
-        let result = backend.create_group(&group_info);
-        assert!(
-            result.is_ok(),
-            "create_group should succeed for valid group info"
-        );
-        assert_eq!(
-            log.lock().unwrap().last().unwrap().argv,
-            vec!["groupadd", "-g", "5000", "--", "testgroup456"]
-        );
-
-        // Test with empty group name - should fail
-        let invalid_group_info = GroupInfo {
-            name: "".to_string(),
-            gid: 5001,
-            created: false,
-            existed: false,
-        };
-
-        let result = backend.create_group(&invalid_group_info);
-        assert!(
-            result.is_err(),
-            "create_group should fail for empty group name"
-        );
-
-        // Test add_membership function validation and command generation
-        // Note: These would fail because the users/groups don't actually exist
-        // but we can test the validation logic
-
-        let result = backend.add_membership("", "somegroup");
-        assert!(
-            result.is_err(),
-            "add_membership should fail for empty username"
-        );
-
-        let result = backend.add_membership("someuser", "");
-        assert!(
-            result.is_err(),
-            "add_membership should fail for empty group name"
-        );
-
-        println!("SystemBackend user creation validation tests completed successfully");
-    }
-
-    #[test]
-    fn test_system_backend_delete_functions_validation() {
-        // Recording backend: commands are captured, never run.
-        let (mut backend, log) = SystemBackend::recording();
-
-        // Test delete_user function validation and command generation
-        // Note: This test doesn't actually delete users on the system
-
-        // Test with empty username - should fail
-        let result = backend.delete_user("", false, false);
-        assert!(
-            result.is_err(),
-            "delete_user should fail for empty username"
-        );
-
-        // Test with non-existent user - should fail
-        let result = backend.delete_user("nonexistentuser12345", false, false);
-        assert!(
-            result.is_err(),
-            "delete_user should fail for non-existent user"
-        );
-
-        // Test with valid parameters for real user (simulated, won't actually delete)
-        let current_user = std::env::var("USER").unwrap_or("testuser".to_string());
-        if backend.user_exists(&current_user).unwrap() {
-            // This should succeed (simulated) - different combinations
-            let result = backend.delete_user(&current_user, false, false);
-            assert!(
-                result.is_ok(),
-                "delete_user should succeed for existing user (basic)"
-            );
-
-            let result = backend.delete_user(&current_user, true, false);
-            assert!(
-                result.is_ok(),
-                "delete_user should succeed for existing user (remove home)"
-            );
-
-            let result = backend.delete_user(&current_user, false, true);
-            assert!(
-                result.is_ok(),
-                "delete_user should succeed for existing user (remove mail)"
-            );
-
-            let result = backend.delete_user(&current_user, true, true);
-            assert!(
-                result.is_ok(),
-                "delete_user should succeed for existing user (remove both)"
-            );
-
-            let argvs: Vec<Vec<String>> =
-                log.lock().unwrap().iter().map(|c| c.argv.clone()).collect();
-            let u = current_user.clone();
-            assert_eq!(argvs[0], vec!["userdel".to_string(), u.clone()]);
-            assert_eq!(
-                argvs[1],
-                vec!["userdel".to_string(), "-r".into(), u.clone()]
-            );
-            assert_eq!(argvs[2], vec!["userdel".to_string(), u.clone()]);
-            assert_eq!(
-                argvs[3],
-                vec![
-                    "rm".to_string(),
-                    "-f".into(),
-                    "--".into(),
-                    format!("/var/mail/{}", u)
-                ]
-            );
-            assert_eq!(argvs[4], vec!["userdel".to_string(), "-r".into(), u]);
-        }
-
-        // Test delete_group function validation and command generation
-
-        // Test with empty group name - should fail
-        let result = backend.delete_group("");
-        assert!(
-            result.is_err(),
-            "delete_group should fail for empty group name"
-        );
-
-        // Test with non-existent group - should fail
-        let result = backend.delete_group("nonexistentgroup12345");
-        assert!(
-            result.is_err(),
-            "delete_group should fail for non-existent group"
-        );
-
-        // Test with existing group (simulated, won't actually delete)
-        if backend.group_exists("root").unwrap() {
-            let result = backend.delete_group("root");
-            assert!(
-                result.is_ok(),
-                "delete_group should succeed for existing group (recorded)"
-            );
-            assert_eq!(
-                log.lock().unwrap().last().unwrap().argv,
-                vec!["groupdel", "root"]
-            );
-        }
-
-        // Test remove_user_from_group function validation and command generation
-
-        // Test with empty username - should fail
-        let result = backend.remove_user_from_group("", "somegroup");
-        assert!(
-            result.is_err(),
-            "remove_user_from_group should fail for empty username"
-        );
-
-        // Test with empty group name - should fail
-        let result = backend.remove_user_from_group("someuser", "");
-        assert!(
-            result.is_err(),
-            "remove_user_from_group should fail for empty group name"
-        );
-
-        // Test with non-existent user - should fail
-        let result = backend.remove_user_from_group("nonexistentuser12345", "root");
-        assert!(
-            result.is_err(),
-            "remove_user_from_group should fail for non-existent user"
-        );
-
-        // Test with non-existent group - should fail
-        let current_user = std::env::var("USER").unwrap_or("root".to_string());
-        let result = backend.remove_user_from_group(&current_user, "nonexistentgroup12345");
-        assert!(
-            result.is_err(),
-            "remove_user_from_group should fail for non-existent group"
-        );
-
-        // Test list_groups_for_user function validation and functionality
-
-        // Test with empty username - should fail
-        let result = backend.list_groups_for_user("");
-        assert!(
-            result.is_err(),
-            "list_groups_for_user should fail for empty username"
-        );
-
-        // Test with non-existent user - should fail
-        let result = backend.list_groups_for_user("nonexistentuser12345");
-        assert!(
-            result.is_err(),
-            "list_groups_for_user should fail for non-existent user"
-        );
-
-        // Test with existing user - should succeed and return at least primary group
-        if backend.user_exists(&current_user).unwrap() {
-            let result = backend.list_groups_for_user(&current_user);
-            assert!(
-                result.is_ok(),
-                "list_groups_for_user should succeed for existing user"
-            );
-
-            let groups = result.unwrap();
-            assert!(
-                !groups.is_empty(),
-                "list_groups_for_user should return at least the primary group"
-            );
-            println!("Groups for user {}: {:?}", current_user, groups);
-        }
-
-        println!("SystemBackend delete functions validation tests completed successfully");
-    }
-
-    #[test]
-    fn test_system_backend_password_functions_validation() {
-        let mut backend = SystemBackend::new();
-
-        // Test password verification
-        println!("Testing SystemBackend password verification...");
-
-        // Test with empty username - should fail with validation error
-        let result = backend.verify_password("", "password123");
-        assert!(
-            result.is_err(),
-            "verify_password should fail for empty username"
-        );
-
-        // Test with empty password - should return false (not an error, just invalid)
-        let result = backend.verify_password("testuser", "");
-        assert_eq!(
-            result.unwrap(),
-            false,
-            "verify_password should return false for empty password"
-        );
-
-        // Test with non-existent user - should fail with UserNotFound error
-        let result = backend.verify_password("nonexistentuser12345", "password123");
-        assert!(
-            result.is_err(),
-            "verify_password should fail for non-existent user"
-        );
-
-        // Test set_password_hash
-        println!("Testing SystemBackend set_password_hash...");
-
-        // Test with empty username - should fail with validation error
-        let result = backend.set_password_hash("", "$6$salt$hash");
-        assert!(
-            result.is_err(),
-            "set_password_hash should fail for empty username"
-        );
-
-        // Test with empty hash - should fail with validation error
-        let result = backend.set_password_hash("testuser", "");
-        assert!(
-            result.is_err(),
-            "set_password_hash should fail for empty hash"
-        );
-
-        // Test with non-existent user - should fail with UserNotFound error
-        let result = backend.set_password_hash("nonexistentuser12345", "$6$salt$hash");
-        assert!(
-            result.is_err(),
-            "set_password_hash should fail for non-existent user"
-        );
-
-        // Test is_locked
-        println!("Testing SystemBackend is_locked...");
-
-        // Test with empty username - should fail with validation error
-        let result = backend.is_locked("");
-        assert!(result.is_err(), "is_locked should fail for empty username");
-
-        // Test with non-existent user - should fail with UserNotFound error
-        let result = backend.is_locked("nonexistentuser12345");
-        assert!(
-            result.is_err(),
-            "is_locked should fail for non-existent user"
-        );
-
-        // Test lock_user
-        println!("Testing SystemBackend lock_user...");
-
-        // Test with empty username - should fail with validation error
-        let result = backend.lock_user("");
-        assert!(result.is_err(), "lock_user should fail for empty username");
-
-        // Test with non-existent user - should fail with UserNotFound error
-        let result = backend.lock_user("nonexistentuser12345");
-        assert!(
-            result.is_err(),
-            "lock_user should fail for non-existent user"
-        );
-
-        println!("SystemBackend password functions validation tests completed successfully");
-    }
-
-    #[test]
-    fn test_password_hasher_unix_verification() {
-        println!("Testing PasswordHasher Unix password verification...");
-
-        // Test empty password and hash
-        assert!(!PasswordHasher::verify_unix_password_hash("", "").unwrap());
-        assert!(!PasswordHasher::verify_unix_password_hash("password", "").unwrap());
-        assert!(!PasswordHasher::verify_unix_password_hash("", "$6$salt$hash").unwrap());
-
-        // Test locked account indicators
-        assert!(!PasswordHasher::verify_unix_password_hash("password", "!$6$salt$hash").unwrap());
-        assert!(!PasswordHasher::verify_unix_password_hash("password", "*$6$salt$hash").unwrap());
-
-        // Test unknown hash formats (should return false for safety)
-        assert!(!PasswordHasher::verify_unix_password_hash("password", "$1$salt$hash").unwrap()); // MD5 crypt (old)
-        assert!(!PasswordHasher::verify_unix_password_hash("password", "$5$salt$hash").unwrap()); // SHA-256 crypt
-        assert!(!PasswordHasher::verify_unix_password_hash("password", "$6$salt$hash").unwrap()); // SHA-512 crypt
-        assert!(!PasswordHasher::verify_unix_password_hash("password", "$2a$10$salt").unwrap()); // bcrypt
-
-        // Test our custom PBKDF2 format
-        let password = "TestPassword123!";
-        let hash = PasswordHasher::hash_password(password, &HashScheme::Sha512Crypt, None).unwrap();
-        assert!(PasswordHasher::verify_unix_password_hash(password, &hash).unwrap());
-        assert!(!PasswordHasher::verify_unix_password_hash("WrongPassword", &hash).unwrap());
-
-        println!("PasswordHasher Unix password verification tests completed successfully");
-    }
-
-    // Unlock operation tests
-
-    #[test]
-    fn test_unlock_locked_user() {
-        let _handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let _target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // Create a backend with a locked user
-        let mut backend = MockBackend::new()
-            .with_existing_user("alice", 1001, "alice")
-            .with_locked_user("alice", true);
-
-        // Verify user is locked
-        assert!(backend.is_locked("alice").unwrap());
-
-        // Test unlock operation through high-level API would require integration
-        // For unit testing, test backend directly
-        backend.unlock_user("alice").unwrap();
-        assert!(!backend.is_locked("alice").unwrap());
-    }
-
-    #[test]
-    fn test_unlock_already_unlocked_user() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-        let options = UserUnlockOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            ignore_if_missing: true,
-            ..Default::default()
-        };
-
-        let response = handle.unlock(&target, options).unwrap();
-        assert!(response.ok);
-        assert_eq!(response.user.username, "alice");
-        assert!(!response.user.existed);
-        assert!(response.user.missing);
-        assert_eq!(response.unlock.was_locked, None);
-        assert_eq!(response.unlock.is_locked, None);
-        assert!(!response.unlock.changed);
-        assert!(!response.warnings.is_empty());
-    }
-
-    #[test]
-    fn test_unlock_user_missing_ignore_if_missing_true() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "bob".to_string(),
-        };
-        let options = UserUnlockOptions {
-            backend: UserBackend::Mock,
-            username: Some("bob".to_string()),
-            ignore_if_missing: true,
-            ..Default::default()
-        };
-
-        let response = handle.unlock(&target, options).unwrap();
-        assert!(response.ok);
-        assert_eq!(response.user.username, "bob");
-        assert!(!response.user.existed);
-        assert!(response.user.missing);
-        assert_eq!(response.unlock.was_locked, None);
-        assert_eq!(response.unlock.is_locked, None);
-        assert!(!response.unlock.changed);
-        assert!(!response.warnings.is_empty());
-        assert!(response.warnings[0].contains("did not exist"));
-    }
-
-    #[test]
-    fn test_unlock_user_missing_ignore_if_missing_false() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "bob".to_string(),
-        };
-        let options = UserUnlockOptions {
-            backend: UserBackend::Mock,
-            username: Some("bob".to_string()),
-            ignore_if_missing: false,
-            ..Default::default()
-        };
-
-        let result = handle.unlock(&target, options);
-        assert!(result.is_err(), "Expected UserNotFound error");
-    }
-
-    #[test]
-    fn test_unlock_protect_system_user() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "root".to_string(),
-        };
-        let options = UserUnlockOptions {
-            backend: UserBackend::Mock,
-            username: Some("root".to_string()),
-            protect_system_users: true,
-            min_uid_for_unlock: 1000,
-            force: false,
-            ..Default::default()
-        };
-
-        // Create a backend with root user that's locked
-        let mut backend = MockBackend::new()
-            .with_existing_user("root", 0, "root")
-            .with_locked_user("root", true);
-
-        let err = handle
-            .unlock_user(&target, &options, &mut backend)
-            .expect_err("Expected SystemUserUnlockProtected error");
-        assert!(
-            matches!(err.downcast_ref::<UserError>(), Some(UserError::SystemUserUnlockProtected(name, 0)) if name == "root"),
-            "unexpected error: {err}"
-        );
-        // The protected account must be left exactly as it was
-        assert!(backend.is_locked("root").unwrap());
-
-        // The protection also applies to any uid below the threshold
-        let mut backend = MockBackend::new()
-            .with_existing_user("daemon", 999, "daemon")
-            .with_locked_user("daemon", true);
-        let options = UserUnlockOptions {
-            username: Some("daemon".to_string()),
-            ..options
-        };
-        assert!(handle.unlock_user(&target, &options, &mut backend).is_err());
-        assert!(backend.is_locked("daemon").unwrap());
-    }
-
-    #[test]
-    fn test_unlock_force_system_user() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "root".to_string(),
-        };
-        let options = UserUnlockOptions {
-            backend: UserBackend::Mock,
-            username: Some("root".to_string()),
-            protect_system_users: true,
-            min_uid_for_unlock: 1000,
-            force: true,
-            ..Default::default()
-        };
-
-        // Create a backend with root user that's locked
-        let mut backend = MockBackend::new()
-            .with_existing_user("root", 0, "root")
-            .with_locked_user("root", true);
-
-        let response = handle.unlock_user(&target, &options, &mut backend).unwrap();
-        assert!(response.ok);
-        assert_eq!(response.unlock.was_locked, Some(true));
-        assert_eq!(response.unlock.is_locked, Some(false));
-        assert!(response.unlock.changed);
-        assert!(!response.warnings.is_empty());
-        assert!(response.warnings.iter().any(|w| w.contains("system user")));
-        // force=true is the only way past the protection, and it really unlocks
-        assert!(!backend.is_locked("root").unwrap());
-    }
-
-    #[test]
-    fn test_unlock_dry_run() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-        let options = UserUnlockOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            dry_run: true,
-            ..Default::default()
-        };
-
-        // Create a backend with a locked user
-        let mut backend = MockBackend::new()
-            .with_existing_user("alice", 1001, "alice")
-            .with_locked_user("alice", true);
-
-        let response = handle.unlock_user(&target, &options, &mut backend).unwrap();
-        // The account itself must still be locked after a dry run
-        assert!(backend.is_locked("alice").unwrap());
-        assert!(response.ok);
-        assert!(response.dry_run);
-        assert_eq!(response.unlock.was_locked, Some(true));
-        assert_eq!(response.unlock.is_locked, Some(true)); // Should remain locked in dry run
-        assert!(!response.unlock.changed);
-        assert!(!response.warnings.is_empty());
-        assert!(response.warnings.iter().any(|w| w.contains("Dry run")));
-    }
-
-    #[test]
-    fn test_unlock_text_format_output() {
-        let response = UserUnlockResponse {
-            planned_commands: Vec::new(),
-            ok: true,
-            backend: "mock".to_string(),
-            dry_run: false,
-            user: UserUnlockInfo {
-                username: "alice".to_string(),
-                uid: Some(1001),
-                existed: true,
-                missing: false,
-            },
-            unlock: UnlockInfo {
-                requested: true,
-                was_locked: Some(true),
-                is_locked: Some(false),
-                changed: true,
-            },
-            warnings: vec![],
-        };
-
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let text_output = handle.format_unlock_text_response(&response);
-
-        // Same column layout as format_lock_text_response
-        assert!(text_output.contains("Backend : mock"));
-        assert!(text_output.contains("User    : alice"));
-        assert!(text_output.contains("Existed    : yes"));
-        assert!(text_output.contains("Missing    : no"));
-        assert!(text_output.contains("Was Locked : yes"));
-        assert!(text_output.contains("Is Locked  : no"));
-        assert!(text_output.contains("Changed    : yes"));
-    }
-
-    #[test]
-    fn test_unlock_verbs_includes_unlock() {
-        let url = Url::parse("user://default").unwrap();
-        let handle = UserHandle::from_url(url).unwrap();
-        let verbs = handle.verbs();
-
-        assert!(verbs.contains(&"unlock"), "Verbs should include 'unlock'");
-        assert!(verbs.contains(&"lock"), "Verbs should include 'lock'");
-        assert_eq!(
-            verbs,
-            &[
-                "add", "delete", "passwd", "lock", "unlock", "groups", "exists"
-            ],
-            "Should have 7 verbs: add, delete, passwd, lock, unlock, groups, exists"
-        );
-    }
-
-    #[test]
-    fn test_parse_unlock_options() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let mut args = HashMap::new();
-        args.insert("backend".to_string(), "mock".to_string());
-        args.insert("dry_run".to_string(), "true".to_string());
-        args.insert("ignore_if_missing".to_string(), "false".to_string());
-        args.insert("force".to_string(), "true".to_string());
-        args.insert("protect_system_users".to_string(), "false".to_string());
-        args.insert("min_uid_for_unlock".to_string(), "500".to_string());
-        args.insert("format".to_string(), "text".to_string());
-        args.insert("username".to_string(), "bob".to_string());
-
-        let options = handle.parse_unlock_options(&args, &target).unwrap();
-
-        assert_eq!(options.backend, UserBackend::Mock);
-        assert!(options.dry_run);
-        assert!(!options.ignore_if_missing);
-        assert!(options.force);
-        assert!(!options.protect_system_users);
-        assert_eq!(options.min_uid_for_unlock, 500);
-        assert_eq!(options.format, OutputFormat::Text);
-        assert_eq!(options.username, Some("bob".to_string()));
-    }
-
-    #[test]
-    fn test_unlock_backend_trait() {
-        let mut backend = MockBackend::new();
-
-        // Add a user for testing
-        let user_info = UserInfo {
-            username: "testuser".to_string(),
-            uid: 1500,
-            primary_group: "testuser".to_string(),
-            supplementary_groups: vec![],
-            home: Some("/home/testuser".to_string()),
-            shell: Some("/bin/bash".to_string()),
-            gecos: None,
-            created: true,
-            existed: false,
-        };
-        backend.create_user(&user_info).unwrap();
-
-        // User should initially be unlocked
-        assert!(!backend.is_locked("testuser").unwrap());
-
-        // Lock the user
-        backend.lock_user("testuser").unwrap();
-        assert!(backend.is_locked("testuser").unwrap());
-
-        // Unlock the user
-        backend.unlock_user("testuser").unwrap();
-        assert!(!backend.is_locked("testuser").unwrap());
-
-        // Unlocking again should not error
-        backend.unlock_user("testuser").unwrap();
-        assert!(!backend.is_locked("testuser").unwrap());
-    }
-
-    #[test]
-    fn test_unlock_username_validation() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "".to_string(),
-        }; // Empty target
-        let options = UserUnlockOptions {
-            backend: UserBackend::Mock,
-            username: None, // No username in options either
-            ..Default::default()
-        };
-
-        let result = handle.unlock(&target, options);
-        assert!(result.is_err(), "Expected UsernameRequired error");
-    }
-
-    #[test]
-    fn test_unlock_username_from_target() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-        let options = UserUnlockOptions {
-            backend: UserBackend::Mock,
-            username: None, // Should extract from target
-            ignore_if_missing: true,
-            ..Default::default()
-        };
-
-        let response = handle.unlock(&target, options).unwrap();
-        assert_eq!(response.user.username, "alice");
-    }
-
-    #[test]
-    fn test_unlock_symmetry_with_lock() {
-        // Test that lock + unlock is a round-trip operation
-        let mut backend = MockBackend::new().with_existing_user("alice", 1001, "alice");
-
-        // Initially unlocked
-        assert!(!backend.is_locked("alice").unwrap());
-
-        // Lock the user
-        backend.lock_user("alice").unwrap();
-        assert!(backend.is_locked("alice").unwrap());
-
-        // Unlock should restore original state
-        backend.unlock_user("alice").unwrap();
-        assert!(!backend.is_locked("alice").unwrap());
-
-        // Multiple unlock operations should be idempotent
-        backend.unlock_user("alice").unwrap();
-        backend.unlock_user("alice").unwrap();
-        assert!(!backend.is_locked("alice").unwrap());
-    }
-
-    // Groups verb tests
-
-    #[test]
-    fn test_groups_verb_user_with_groups() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // Create backend with user and groups
-        let backend = MockBackend::new()
-            .with_existing_user("alice", 1001, "alice")
-            .with_existing_group("alice", 1001)
-            .with_existing_group("dev", 1002)
-            .with_existing_group("adm", 4)
-            .with_existing_membership("alice", "alice")
-            .with_existing_membership("alice", "dev")
-            .with_existing_membership("alice", "adm");
-
-        let options = UserGroupsOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            ..Default::default()
-        };
-
-        let response = handle.groups_user(&target, &options, &backend).unwrap();
-        assert!(response.ok);
-        assert_eq!(response.user.username, "alice");
-        assert_eq!(response.user.uid, Some(1001));
-        assert!(response.user.existed);
-        assert!(!response.user.missing);
-
-        // Should have 3 groups
-        assert_eq!(response.groups.len(), 3);
-
-        // Find alice group (primary)
-        let alice_group = response
-            .groups
-            .iter()
-            .find(|g| g.name == "alice")
-            .expect("Should have alice group");
-        assert!(alice_group.primary);
-        assert!(!alice_group.supplementary);
-        assert!(!alice_group.system_group); // gid 1001 >= 1000
-
-        // Find dev group (supplementary)
-        let dev_group = response
-            .groups
-            .iter()
-            .find(|g| g.name == "dev")
-            .expect("Should have dev group");
-        assert!(!dev_group.primary);
-        assert!(dev_group.supplementary);
-        assert!(!dev_group.system_group); // gid 1002 >= 1000
-
-        // Find adm group (system)
-        let adm_group = response
-            .groups
-            .iter()
-            .find(|g| g.name == "adm")
-            .expect("Should have adm group");
-        assert!(!adm_group.primary);
-        assert!(adm_group.supplementary);
-        assert!(adm_group.system_group); // gid 4 < 1000
-
-        assert!(response.warnings.is_empty());
-    }
-
-    #[test]
-    fn test_groups_verb_exclude_system_groups() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // Create backend with user and groups
-        let backend = MockBackend::new()
-            .with_existing_user("alice", 1001, "alice")
-            .with_existing_group("alice", 1001)
-            .with_existing_group("dev", 1002)
-            .with_existing_group("adm", 4)
-            .with_existing_membership("alice", "alice")
-            .with_existing_membership("alice", "dev")
-            .with_existing_membership("alice", "adm");
-
-        let options = UserGroupsOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            include_system_groups: false,
-            min_gid_for_system: 1000,
-            ..Default::default()
-        };
-
-        let response = handle.groups_user(&target, &options, &backend).unwrap();
-        assert!(response.ok);
-
-        // Should only have 2 groups (alice and dev), adm should be filtered out
-        assert_eq!(response.groups.len(), 2);
-        assert!(response.groups.iter().any(|g| g.name == "alice"));
-        assert!(response.groups.iter().any(|g| g.name == "dev"));
-        assert!(!response.groups.iter().any(|g| g.name == "adm"));
-    }
-
-    #[test]
-    fn test_groups_verb_exclude_primary() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let backend = MockBackend::new()
-            .with_existing_user("alice", 1001, "alice")
-            .with_existing_group("alice", 1001)
-            .with_existing_group("dev", 1002)
-            .with_existing_membership("alice", "alice")
-            .with_existing_membership("alice", "dev");
-
-        let options = UserGroupsOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            include_primary: false,
-            ..Default::default()
-        };
-
-        let response = handle.groups_user(&target, &options, &backend).unwrap();
-        assert!(response.ok);
-
-        // Should only have dev group, alice (primary) should be filtered out
-        assert_eq!(response.groups.len(), 1);
-        assert!(!response.groups.iter().any(|g| g.name == "alice"));
-        assert!(response.groups.iter().any(|g| g.name == "dev"));
-    }
-
-    #[test]
-    fn test_groups_verb_exclude_supplementary() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let backend = MockBackend::new()
-            .with_existing_user("alice", 1001, "alice")
-            .with_existing_group("alice", 1001)
-            .with_existing_group("dev", 1002)
-            .with_existing_membership("alice", "alice")
-            .with_existing_membership("alice", "dev");
-
-        let options = UserGroupsOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            include_supplementary: false,
-            ..Default::default()
-        };
-
-        let response = handle.groups_user(&target, &options, &backend).unwrap();
-        assert!(response.ok);
-
-        // Should only have alice group (primary), dev should be filtered out
-        assert_eq!(response.groups.len(), 1);
-        assert!(response.groups.iter().any(|g| g.name == "alice"));
-        assert!(!response.groups.iter().any(|g| g.name == "dev"));
-    }
-
-    #[test]
-    fn test_groups_verb_group_name_filter() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let backend = MockBackend::new()
-            .with_existing_user("alice", 1001, "alice")
-            .with_existing_group("alice", 1001)
-            .with_existing_group("dev", 1002)
-            .with_existing_membership("alice", "alice")
-            .with_existing_membership("alice", "dev");
-
-        let options = UserGroupsOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            group_name_filter: Some("dev".to_string()),
-            ..Default::default()
-        };
-
-        let response = handle.groups_user(&target, &options, &backend).unwrap();
-        assert!(response.ok);
-
-        // Should only have dev group matching the filter
-        assert_eq!(response.groups.len(), 1);
-        assert!(!response.groups.iter().any(|g| g.name == "alice"));
-        assert!(response.groups.iter().any(|g| g.name == "dev"));
-    }
-
-    #[test]
-    fn test_groups_verb_user_missing_ignore_true() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "bob".to_string(),
-        };
-
-        let options = UserGroupsOptions {
-            backend: UserBackend::Mock,
-            username: Some("bob".to_string()),
-            ignore_if_missing: true,
-            ..Default::default()
-        };
-
-        let response = handle.groups(&target, options).unwrap();
-        assert!(response.ok);
-        assert_eq!(response.user.username, "bob");
-        assert_eq!(response.user.uid, None);
-        assert!(!response.user.existed);
-        assert!(response.user.missing);
-        assert!(response.groups.is_empty());
-        assert!(!response.warnings.is_empty());
-        assert!(response.warnings[0].contains("did not exist"));
-    }
-
-    #[test]
-    fn test_groups_verb_user_missing_ignore_false() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "bob".to_string(),
-        };
-
-        let options = UserGroupsOptions {
-            backend: UserBackend::Mock,
-            username: Some("bob".to_string()),
-            ignore_if_missing: false,
-            ..Default::default()
-        };
-
-        let result = handle.groups(&target, options);
-        assert!(result.is_err(), "Expected UserNotFound error");
-    }
-
-    #[test]
-    fn test_groups_verb_no_groups_warning() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        // User exists but has no groups
-        let backend = MockBackend::new().with_existing_user("alice", 1001, "alice");
-
-        let options = UserGroupsOptions {
-            backend: UserBackend::Mock,
-            username: Some("alice".to_string()),
-            ..Default::default()
-        };
-
-        let response = handle.groups_user(&target, &options, &backend).unwrap();
-        assert!(response.ok);
-        assert!(response.groups.is_empty());
-        assert!(!response.warnings.is_empty());
-        assert!(response.warnings[0].contains("no groups matching"));
-    }
-
-    #[test]
-    fn test_groups_verb_text_format() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-
-        let response = UserGroupsResponse {
-            ok: true,
-            backend: "mock".to_string(),
-            user: UserGroupsResult {
-                username: "alice".to_string(),
-                uid: Some(1001),
-                existed: true,
-                missing: false,
-            },
-            groups: vec![
-                GroupInfoDetailed {
-                    name: "alice".to_string(),
-                    gid: Some(1001),
-                    primary: true,
-                    supplementary: false,
-                    system_group: false,
-                },
-                GroupInfoDetailed {
-                    name: "dev".to_string(),
-                    gid: Some(1002),
-                    primary: false,
-                    supplementary: true,
-                    system_group: false,
-                },
-                GroupInfoDetailed {
-                    name: "adm".to_string(),
-                    gid: Some(4),
-                    primary: false,
-                    supplementary: true,
-                    system_group: true,
-                },
-            ],
-            warnings: vec![],
-        };
-
-        let text_output = handle.format_groups_text_response(&response);
-
-        assert!(text_output.contains("Backend : mock"));
-        assert!(text_output.contains("User    : alice (uid=1001)"));
-        assert!(text_output.contains("alice (gid=1001) [primary]"));
-        assert!(text_output.contains("dev (gid=1002) [supplementary]"));
-        assert!(text_output.contains("adm (gid=4) [supplementary, system]"));
-    }
-
-    #[test]
-    fn test_groups_verb_includes_groups() {
-        let url = Url::parse("user://default").unwrap();
-        let handle = UserHandle::from_url(url).unwrap();
-        let verbs = handle.verbs();
-
-        assert!(verbs.contains(&"groups"), "Verbs should include 'groups'");
-        assert!(verbs.contains(&"exists"), "Verbs should include 'exists'");
-        assert_eq!(
-            verbs.len(),
-            7,
-            "Should have 7 verbs: add, delete, passwd, lock, unlock, groups, exists"
-        );
-    }
-
-    #[test]
-    fn test_parse_groups_options() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let mut args = HashMap::new();
-        args.insert("backend".to_string(), "mock".to_string());
-        args.insert("ignore_if_missing".to_string(), "false".to_string());
-        args.insert("include_primary".to_string(), "false".to_string());
-        args.insert("include_supplementary".to_string(), "true".to_string());
-        args.insert("include_system_groups".to_string(), "false".to_string());
-        args.insert("min_gid_for_system".to_string(), "500".to_string());
-        args.insert("group_name_filter".to_string(), "dev".to_string());
-        args.insert("format".to_string(), "text".to_string());
-        args.insert("username".to_string(), "bob".to_string());
-
-        let options = handle.parse_groups_options(&args, &target).unwrap();
-
-        assert_eq!(options.backend, UserBackend::Mock);
-        assert!(!options.ignore_if_missing);
-        assert!(!options.include_primary);
-        assert!(options.include_supplementary);
-        assert!(!options.include_system_groups);
-        assert_eq!(options.min_gid_for_system, 500);
-        assert_eq!(options.group_name_filter, Some("dev".to_string()));
-        assert_eq!(options.format, OutputFormat::Text);
-        assert_eq!(options.username, Some("bob".to_string()));
-    }
-
-    #[test]
-    fn test_exists_verb_user_exists_username_only() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-        let options = UserExistsOptions {
-            backend: UserBackend::Mock,
-            format: OutputFormat::Json,
-            username: Some("alice".to_string()),
-            uid: None,
-        };
-
-        // Create backend with test user
-        let backend = MockBackend::new();
-        {
-            let mut users = backend.users.lock().unwrap();
-            users.insert(
-                "alice".to_string(),
-                UserInfo {
-                    username: "alice".to_string(),
-                    uid: 1001,
-                    primary_group: "alice".to_string(),
-                    supplementary_groups: Vec::new(),
-                    home: Some("/home/alice".to_string()),
-                    shell: Some("/bin/bash".to_string()),
-                    gecos: None,
-                    created: false,
-                    existed: true,
-                },
-            );
-        }
-
-        let response = handle.exists_user(&target, &options, &backend).unwrap();
-
-        assert!(response.ok);
-        assert_eq!(response.backend, "mock");
-        assert_eq!(response.query.username, Some("alice".to_string()));
-        assert_eq!(response.query.uid, None);
-        assert!(response.user.exists);
-        assert_eq!(response.user.username, Some("alice".to_string()));
-        assert_eq!(response.user.uid, Some(1001));
-        assert!(response.warnings.is_empty());
-    }
-
-    #[test]
-    fn test_exists_verb_user_does_not_exist_username_only() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "bob".to_string(),
-        };
-        let options = UserExistsOptions {
-            backend: UserBackend::Mock,
-            format: OutputFormat::Json,
-            username: Some("bob".to_string()),
-            uid: None,
-        };
-
-        let backend = MockBackend::new();
-        let response = handle.exists_user(&target, &options, &backend).unwrap();
-
-        assert!(response.ok);
-        assert_eq!(response.backend, "mock");
-        assert_eq!(response.query.username, Some("bob".to_string()));
-        assert_eq!(response.query.uid, None);
-        assert!(!response.user.exists);
-        assert_eq!(response.user.username, None);
-        assert_eq!(response.user.uid, None);
-        assert!(!response.warnings.is_empty());
-        assert!(response.warnings[0].contains("bob does not exist"));
-    }
-
-    #[test]
-    fn test_exists_verb_user_exists_uid_only() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "".to_string(),
-        }; // Empty path so no username is extracted
-        let options = UserExistsOptions {
-            backend: UserBackend::Mock,
-            format: OutputFormat::Json,
-            username: None,
-            uid: Some(1001),
-        };
-
-        // Create backend with test user
-        let backend = MockBackend::new();
-        {
-            let mut users = backend.users.lock().unwrap();
-            users.insert(
-                "alice".to_string(),
-                UserInfo {
-                    username: "alice".to_string(),
-                    uid: 1001,
-                    primary_group: "alice".to_string(),
-                    supplementary_groups: Vec::new(),
-                    home: Some("/home/alice".to_string()),
-                    shell: Some("/bin/bash".to_string()),
-                    gecos: None,
-                    created: false,
-                    existed: true,
-                },
-            );
-        }
-
-        let response = handle.exists_user(&target, &options, &backend).unwrap();
-
-        assert!(response.ok);
-        assert_eq!(response.backend, "mock");
-        assert_eq!(response.query.username, None);
-        assert_eq!(response.query.uid, Some(1001));
-        assert!(response.user.exists);
-        assert_eq!(response.user.username, Some("alice".to_string()));
-        assert_eq!(response.user.uid, Some(1001));
-        assert!(response.warnings.is_empty());
-    }
-
-    #[test]
-    fn test_exists_verb_user_does_not_exist_uid_only() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "".to_string(),
-        }; // Empty path so no username is extracted
-        let options = UserExistsOptions {
-            backend: UserBackend::Mock,
-            format: OutputFormat::Json,
-            username: None,
-            uid: Some(2000),
-        };
-
-        let backend = MockBackend::new();
-        let response = handle.exists_user(&target, &options, &backend).unwrap();
-
-        assert!(response.ok);
-        assert_eq!(response.backend, "mock");
-        assert_eq!(response.query.username, None);
-        assert_eq!(response.query.uid, Some(2000));
-        assert!(!response.user.exists);
-        assert_eq!(response.user.username, None);
-        assert_eq!(response.user.uid, None);
-        assert!(!response.warnings.is_empty());
-        assert!(response.warnings[0].contains("uid 2000 does not exist"));
-    }
-
-    #[test]
-    fn test_exists_verb_username_uid_consistent() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-        let options = UserExistsOptions {
-            backend: UserBackend::Mock,
-            format: OutputFormat::Json,
-            username: Some("alice".to_string()),
-            uid: Some(1001),
-        };
-
-        // Create backend with test user
-        let backend = MockBackend::new();
-        {
-            let mut users = backend.users.lock().unwrap();
-            users.insert(
-                "alice".to_string(),
-                UserInfo {
-                    username: "alice".to_string(),
-                    uid: 1001,
-                    primary_group: "alice".to_string(),
-                    supplementary_groups: Vec::new(),
-                    home: Some("/home/alice".to_string()),
-                    shell: Some("/bin/bash".to_string()),
-                    gecos: None,
-                    created: false,
-                    existed: true,
-                },
-            );
-        }
-
-        let response = handle.exists_user(&target, &options, &backend).unwrap();
-
-        assert!(response.ok);
-        assert_eq!(response.backend, "mock");
-        assert_eq!(response.query.username, Some("alice".to_string()));
-        assert_eq!(response.query.uid, Some(1001));
-        assert!(response.user.exists);
-        assert_eq!(response.user.username, Some("alice".to_string()));
-        assert_eq!(response.user.uid, Some(1001));
-        assert!(response.warnings.is_empty());
-    }
-
-    #[test]
-    fn test_exists_verb_username_uid_mismatch() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-        let options = UserExistsOptions {
-            backend: UserBackend::Mock,
-            format: OutputFormat::Json,
-            username: Some("alice".to_string()),
-            uid: Some(2000),
-        };
-
-        // Create backend with test user
-        let backend = MockBackend::new();
-        {
-            let mut users = backend.users.lock().unwrap();
-            users.insert(
-                "alice".to_string(),
-                UserInfo {
-                    username: "alice".to_string(),
-                    uid: 1001,
-                    primary_group: "alice".to_string(),
-                    supplementary_groups: Vec::new(),
-                    home: Some("/home/alice".to_string()),
-                    shell: Some("/bin/bash".to_string()),
-                    gecos: None,
-                    created: false,
-                    existed: true,
-                },
-            );
-        }
-
-        let result = handle.exists_user(&target, &options, &backend);
-
-        assert!(result.is_err());
-        let error = result.unwrap_err().downcast::<UserError>().unwrap();
-        match error {
-            UserError::ExistsMismatch(username, actual_uid, requested_uid) => {
-                assert_eq!(username, "alice");
-                assert_eq!(actual_uid, 1001);
-                assert_eq!(requested_uid, 2000);
-            }
-            _ => panic!("Expected ExistsMismatch error, got: {:?}", error),
-        }
-    }
-
-    #[test]
-    fn test_exists_verb_no_identity_provided() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "".to_string(),
-        }; // Empty path so no username is extracted
-        let options = UserExistsOptions {
-            backend: UserBackend::Mock,
-            format: OutputFormat::Json,
-            username: None,
-            uid: None,
-        };
-
-        let backend = MockBackend::new();
-        let result = handle.exists_user(&target, &options, &backend);
-
-        assert!(result.is_err());
-        let error = result.unwrap_err().downcast::<UserError>().unwrap();
-        match error {
-            UserError::IdentityRequired => {}
-            _ => panic!("Expected IdentityRequired error, got: {:?}", error),
-        }
-    }
-
-    #[test]
-    fn test_exists_verb_text_format() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-
-        let response = UserExistsResponse {
-            ok: true,
-            backend: "mock".to_string(),
-            query: UserExistsQuery {
-                username: Some("alice".to_string()),
-                uid: None,
-            },
-            user: UserExistsResult {
-                exists: true,
-                username: Some("alice".to_string()),
-                uid: Some(1001),
-            },
-            warnings: vec![],
-        };
-
-        let text_output = handle.format_exists_text_response(&response);
-
-        assert!(text_output.contains("Backend : mock"));
-        assert!(text_output.contains("Query   : username=alice, uid=(none)"));
-        assert!(text_output.contains("Exists   : yes"));
-        assert!(text_output.contains("Username : alice"));
-        assert!(text_output.contains("UID      : 1001"));
-        assert!(text_output.contains("Warnings:\n  (none)"));
-    }
-
-    #[test]
-    fn test_exists_verb_text_format_not_exists() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-
-        let response = UserExistsResponse {
-            ok: true,
-            backend: "mock".to_string(),
-            query: UserExistsQuery {
-                username: Some("bob".to_string()),
-                uid: None,
-            },
-            user: UserExistsResult {
-                exists: false,
-                username: None,
-                uid: None,
-            },
-            warnings: vec!["User bob does not exist in backend mock.".to_string()],
-        };
-
-        let text_output = handle.format_exists_text_response(&response);
-
-        assert!(text_output.contains("Backend : mock"));
-        assert!(text_output.contains("Query   : username=bob, uid=(none)"));
-        assert!(text_output.contains("Exists   : no"));
-        assert!(text_output.contains("Username : (none)"));
-        assert!(text_output.contains("UID      : (none)"));
-        assert!(text_output.contains("User bob does not exist"));
-    }
-
-    #[test]
-    fn test_exists_verb_includes_exists() {
-        let url = Url::parse("user://default").unwrap();
-        let handle = UserHandle::from_url(url).unwrap();
-        let verbs = handle.verbs();
-
-        assert!(verbs.contains(&"exists"), "Verbs should include 'exists'");
-        assert_eq!(
-            verbs.len(),
-            7,
-            "Should have 7 verbs: add, delete, passwd, lock, unlock, groups, exists"
-        );
-    }
-
-    #[test]
-    fn test_parse_exists_options() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let mut args = HashMap::new();
-        args.insert("backend".to_string(), "mock".to_string());
-        args.insert("format".to_string(), "text".to_string());
-        args.insert("username".to_string(), "bob".to_string());
-        args.insert("uid".to_string(), "1001".to_string());
-
-        let options = handle.parse_exists_options(&args, &target).unwrap();
-
-        assert_eq!(options.backend, UserBackend::Mock);
-        assert_eq!(options.format, OutputFormat::Text);
-        assert_eq!(options.username, Some("bob".to_string()));
-        assert_eq!(options.uid, Some(1001));
-    }
-
-    #[test]
-    fn test_parse_exists_options_defaults() {
-        let handle = UserHandle {
-            alias: "test".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-
-        let args = HashMap::new();
-        let options = handle.parse_exists_options(&args, &target).unwrap();
-
-        assert_eq!(options.backend, UserBackend::System);
-        assert_eq!(options.format, OutputFormat::Json);
-        assert_eq!(options.username, Some("alice".to_string())); // from target
-        assert_eq!(options.uid, None);
-    }
-
-    // ---- H6: system backend command construction (never executed) ----
-
-    fn sample_user_info() -> UserInfo {
-        UserInfo {
-            username: "alice".to_string(),
-            uid: 1001,
-            primary_group: "alice".to_string(),
-            supplementary_groups: vec![],
-            home: Some("/home/alice".to_string()),
-            shell: Some("/bin/zsh".to_string()),
-            gecos: None,
-            created: false,
-            existed: false,
-        }
-    }
-
-    fn argv(op: BackendOp) -> Vec<Vec<String>> {
-        system_commands(&op)
-            .unwrap()
-            .into_iter()
-            .map(|c| c.argv)
-            .collect()
-    }
-
-    #[test]
-    fn test_system_commands_argv() {
-        let info = sample_user_info();
-        assert_eq!(
-            argv(BackendOp::CreateUser(&info)),
-            vec![vec![
-                "useradd",
-                "-u",
-                "1001",
-                "-g",
-                "alice",
-                "-d",
-                "/home/alice",
-                "-m",
-                "-s",
-                "/bin/zsh",
-                "--",
-                "alice"
-            ]]
-        );
-        let g = GroupInfo {
-            name: "devs".into(),
-            gid: 2000,
-            created: false,
-            existed: false,
-        };
-        assert_eq!(
-            argv(BackendOp::CreateGroup(&g)),
-            vec![vec!["groupadd", "-g", "2000", "--", "devs"]]
-        );
-        assert_eq!(
-            argv(BackendOp::AddMembership {
-                username: "alice",
-                group: "devs"
-            }),
-            vec![vec!["usermod", "-a", "-G", "devs", "--", "alice"]]
-        );
-        assert_eq!(
-            argv(BackendOp::RemoveMembership {
-                username: "alice",
-                group: "devs"
-            }),
-            vec![vec!["gpasswd", "-d", "alice", "devs"]]
-        );
-        assert_eq!(
-            argv(BackendOp::DeleteGroup("devs")),
-            vec![vec!["groupdel", "devs"]]
-        );
-        assert_eq!(
-            argv(BackendOp::DeleteUser {
-                username: "alice",
-                remove_home: false,
-                remove_mail: false
-            }),
-            vec![vec!["userdel", "alice"]]
-        );
-        assert_eq!(
-            argv(BackendOp::DeleteUser {
-                username: "alice",
-                remove_home: true,
-                remove_mail: true
-            }),
-            vec![vec!["userdel", "-r", "alice"]]
-        );
-        assert_eq!(
-            argv(BackendOp::Lock("alice")),
-            vec![vec!["usermod", "-L", "alice"]]
-        );
-        assert_eq!(
-            argv(BackendOp::Unlock("alice")),
-            vec![vec!["usermod", "-U", "alice"]]
-        );
-    }
-
-    #[test]
-    fn test_system_password_commands_use_stdin_and_redact() {
-        let cmds = system_commands(&BackendOp::SetPasswordPlain {
-            username: "alice",
-            password: "S3cr3t",
-            scheme: &HashScheme::Sha512Crypt,
-        })
-        .unwrap();
-        assert_eq!(cmds[0].argv, vec!["chpasswd", "-c", "SHA512"]);
-        assert_eq!(cmds[0].stdin.as_deref(), Some("alice:S3cr3t\n"));
-        assert!(!cmds[0].display().contains("S3cr3t"));
-
-        let cmds = system_commands(&BackendOp::SetPasswordHash {
-            username: "alice",
-            hash: "$6$salt$hash",
-        })
-        .unwrap();
-        assert_eq!(cmds[0].argv, vec!["chpasswd", "-e"]);
-        assert_eq!(cmds[0].stdin.as_deref(), Some("alice:$6$salt$hash\n"));
-        assert!(!cmds[0].display().contains("$6$"));
-
-        // Values that would inject extra chpasswd lines are rejected.
-        assert!(
-            system_commands(&BackendOp::SetPasswordPlain {
-                username: "alice",
-                password: "a\nroot:x",
-                scheme: &HashScheme::Sha512Crypt,
-            })
-            .is_err()
-        );
-        assert!(
-            system_commands(&BackendOp::SetPasswordHash {
-                username: "alice",
-                hash: "$6$a:b"
-            })
-            .is_err()
-        );
-        // argon2id cannot be produced by chpasswd.
-        assert!(
-            system_commands(&BackendOp::SetPasswordPlain {
-                username: "alice",
-                password: "pw",
-                scheme: &HashScheme::Argon2id,
-            })
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn test_system_command_display_quotes() {
-        let c = SystemCommand::new(&["useradd", "-c", "Alice Smith", "alice"]);
-        assert_eq!(c.display(), "useradd -c 'Alice Smith' alice");
-    }
-
-    #[test]
-    fn test_shadow_and_passwd_status_parsing() {
-        let shadow =
-            "root:*:19000:0:99999:7:::\nalice:!$6$x$y:19000:0:99999:7:::\nbob:$6$x$y:19000::::::\n";
-        assert_eq!(
-            shadow_password_field(shadow, "alice").as_deref(),
-            Some("!$6$x$y")
-        );
-        assert_eq!(shadow_password_field(shadow, "carol"), None);
-        assert!(shadow_field_is_locked("!$6$x$y"));
-        assert!(shadow_field_is_locked("*"));
-        assert!(!shadow_field_is_locked("$6$x$y"));
-
-        assert_eq!(
-            parse_passwd_status("alice L 2025-01-26 -1 99999 7 -1\n", "alice"),
-            Some(true)
-        );
-        assert_eq!(
-            parse_passwd_status(
-                "alice LK 2025-01-26 0 99999 7 -1 (Password locked.)",
-                "alice"
-            ),
-            Some(true)
-        );
-        assert_eq!(
-            parse_passwd_status("alice P 2025-01-26 -1 99999 7 -1", "alice"),
-            Some(false)
-        );
-        assert_eq!(
-            parse_passwd_status("alice PS 2025-01-26 0 99999 7 -1", "alice"),
-            Some(false)
-        );
-        assert_eq!(
-            parse_passwd_status("alice NP 2025-01-26 0 99999 7 -1", "alice"),
-            Some(false)
-        );
-        assert_eq!(parse_passwd_status("garbage", "alice"), None);
-    }
-
-    fn current_user() -> Option<String> {
-        let name = nix::unistd::User::from_uid(nix::unistd::getuid())
-            .ok()??
-            .name;
-        Some(name)
-    }
-
-    #[test]
-    fn test_system_is_locked_reads_shadow_file() {
-        let Some(user) = current_user() else { return };
-        let dir = tempfile::tempdir().unwrap();
-        let shadow = dir.path().join("shadow");
-        std::fs::write(&shadow, format!("{}:!$6$x$y:19000:0:99999:7:::\n", user)).unwrap();
-        let (backend, _log) = SystemBackend::recording();
-        let backend = backend.with_shadow_path(&shadow);
-        assert!(backend.is_locked(&user).unwrap());
-
-        std::fs::write(&shadow, format!("{}:$6$x$y:19000:0:99999:7:::\n", user)).unwrap();
-        assert!(!backend.is_locked(&user).unwrap());
-    }
-
-    #[test]
-    fn test_system_is_locked_unreadable_is_error_not_false() {
-        let Some(user) = current_user() else { return };
-        let (backend, _log) = SystemBackend::recording();
-        let backend = backend.with_shadow_path("/nonexistent/resh-test-shadow");
-        // Shadow file unreadable and passwd -S is never run in tests.
-        assert!(backend.is_locked(&user).is_err());
-    }
-
-    #[test]
-    fn test_system_verify_password_unsupported_hash() {
-        let Some(user) = current_user() else { return };
-        let dir = tempfile::tempdir().unwrap();
-        let shadow = dir.path().join("shadow");
-        std::fs::write(&shadow, format!("{}:$6$salt$hash:19000::::::\n", user)).unwrap();
-        let (backend, _log) = SystemBackend::recording();
-        let backend = backend.with_shadow_path(&shadow);
-        let err = backend.verify_password(&user, "pw").unwrap_err();
-        assert!(matches!(
-            err.downcast_ref::<UserError>(),
-            Some(UserError::OldPasswordVerificationUnsupported)
-        ));
-
-        let hash = bcrypt::hash("pw", 4).unwrap();
-        std::fs::write(&shadow, format!("{}:{}:19000::::::\n", user, hash)).unwrap();
-        assert!(backend.verify_password(&user, "pw").unwrap());
-        assert!(!backend.verify_password(&user, "other").unwrap());
-    }
-
-    #[test]
-    fn test_system_backend_lock_and_passwd_record_commands() {
-        let Some(user) = current_user() else { return };
-        let handle = UserHandle {
-            alias: String::new(),
-        };
-        let target = UserTarget { path: user.clone() };
-        let dir = tempfile::tempdir().unwrap();
-        let shadow = dir.path().join("shadow");
-        std::fs::write(&shadow, format!("{}:$6$x$y:19000::::::\n", user)).unwrap();
-
-        // lock (not a dry run): the recording backend captures usermod -L.
-        let (backend, log) = SystemBackend::recording();
-        let mut backend = backend.with_shadow_path(&shadow);
-        let opts = UserLockOptions {
-            username: Some(user.clone()),
-            force: true,
-            ..Default::default()
-        };
-        let resp = handle.lock_user(&target, &opts, &mut backend).unwrap();
-        assert!(resp.lock.changed);
-        assert_eq!(
-            log.lock().unwrap()[0].argv,
-            vec!["usermod".to_string(), "-L".into(), user.clone()]
-        );
-
-        // passwd with a plain password goes to chpasswd on stdin.
-        let (mut backend, log) = SystemBackend::recording();
-        let opts = UserPasswdOptions {
-            username: Some(user.clone()),
-            new_password_plain: Some("S3cr3t".into()),
-            ..Default::default()
-        };
-        let resp = handle.passwd_user(&target, &opts, &mut backend).unwrap();
-        assert!(resp.password.changed);
-        assert_eq!(resp.password.scheme.as_deref(), Some("sha512_crypt"));
-        let cmd = log.lock().unwrap()[0].clone();
-        assert_eq!(cmd.argv, vec!["chpasswd", "-c", "SHA512"]);
-        assert_eq!(cmd.stdin, Some(format!("{}:S3cr3t\n", user)));
-    }
-
-    #[test]
-    fn test_system_dry_run_reports_planned_commands_without_running() {
-        let Some(user) = current_user() else { return };
-        let handle = UserHandle {
-            alias: String::new(),
-        };
-        let target = UserTarget { path: user.clone() };
-        let (mut backend, log) = SystemBackend::recording();
-        let opts = UserLockOptions {
-            username: Some(user.clone()),
-            force: true,
-            dry_run: true,
-            ..Default::default()
-        };
-        // The real shadow file is normally unreadable here; a dry run then
-        // reports an unknown state instead of failing.
-        let resp = handle.lock_user(&target, &opts, &mut backend).unwrap();
-        assert!(!resp.lock.changed);
-        assert!(
-            log.lock().unwrap().is_empty(),
-            "dry run must not record or run commands"
-        );
-        if resp.lock.was_locked != Some(true) {
-            assert_eq!(resp.planned_commands, vec![format!("usermod -L {}", user)]);
-        }
-
-        let (mut backend, log) = SystemBackend::recording();
-        let opts = UserPasswdOptions {
-            username: Some(user.clone()),
-            new_password_plain: Some("S3cr3t".into()),
-            dry_run: true,
-            ..Default::default()
-        };
-        let resp = handle.passwd_user(&target, &opts, &mut backend).unwrap();
-        assert!(!resp.password.changed);
-        assert!(log.lock().unwrap().is_empty());
-        assert_eq!(
-            resp.planned_commands,
-            vec!["chpasswd -c SHA512 <<< (redacted)".to_string()]
-        );
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(!json.contains("S3cr3t"));
-    }
-
-    #[test]
-    fn test_add_user_dry_run_planned_commands() {
-        let handle = UserHandle {
-            alias: String::new(),
-        };
-        let target = UserTarget {
-            path: "reshtestnouser".to_string(),
-        };
-        let (mut backend, log) = SystemBackend::recording();
-        let opts = UserAddOptions {
-            username: Some("reshtestnouser".into()),
-            uid: Some(54321),
-            shell: Some("/bin/sh".into()),
-            dry_run: true,
-            ..Default::default()
-        };
-        let resp = handle.add_user(&target, &opts, &mut backend).unwrap();
-        assert!(log.lock().unwrap().is_empty());
-        assert_eq!(
-            resp.planned_commands,
-            vec![
-                "groupadd -g 54321 -- reshtestnouser".to_string(),
-                "useradd -u 54321 -g reshtestnouser -d /home/reshtestnouser -m -s /bin/sh -- reshtestnouser".to_string(),
-            ]
-        );
-        let json = serde_json::to_value(&resp).unwrap();
-        assert!(json.get("planned_commands").is_some());
-    }
-
-    #[test]
-    fn test_system_backend_new_never_executes_in_tests() {
-        // Even the real backend refuses to run commands in test builds.
-        let Some(user) = current_user() else { return };
-        let mut backend = SystemBackend::new();
-        let err = backend.lock_user(&user).unwrap_err();
-        assert!(err.to_string().contains("refusing to run"));
-    }
-
-    #[test]
-    fn test_system_list_groups_includes_supplementary() {
-        let Some(user) = current_user() else { return };
-        let backend = SystemBackend::new();
-        let groups = backend.list_groups_for_user(&user).unwrap();
-        let record = backend.lookup_user(&user).unwrap().unwrap();
-        assert_eq!(groups[0], record.primary_group);
-        // Every group reported by getgroups for this process (which is
-        // running as this user) should be listed.
-        for gid in nix::unistd::getgroups().unwrap_or_default() {
-            if let Ok(Some(g)) = nix::unistd::Group::from_gid(gid) {
-                if g.mem.contains(&user) {
-                    assert!(
-                        groups.contains(&g.name),
-                        "missing supplementary group {}",
-                        g.name
-                    );
-                }
-            }
-        }
-    }
-
-    // ---- H6: URL target forms ----
-
-    #[test]
-    fn test_from_url_host_and_path_forms() {
-        let alias = |u: &str| UserHandle::from_url(Url::parse(u).unwrap()).unwrap().alias;
-        assert_eq!(alias("user://alice"), "alice");
-        assert_eq!(alias("user:///alice"), "alice");
-        assert_eq!(alias("user://group/admins"), "group/admins");
-        assert_eq!(alias("user:///group/admins"), "group/admins");
-        assert_eq!(alias("user://membership/alice"), "membership/alice");
-        assert_eq!(alias("user:///membership/alice"), "membership/alice");
-
-        let t = UserTarget {
-            path: alias("user://group/admins"),
-        };
-        assert_eq!(t.extract_group_name().as_deref(), Some("admins"));
-        assert_eq!(t.extract_username(), None);
-        let t = UserTarget {
-            path: alias("user://alice"),
-        };
-        assert_eq!(t.extract_username().as_deref(), Some("alice"));
-    }
-
-    #[test]
-    fn test_add_accepts_groups_alias_in_user_mode() {
-        let handle = UserHandle {
-            alias: "alice".to_string(),
-        };
-        let target = UserTarget {
-            path: "alice".to_string(),
-        };
-        let mut args = HashMap::new();
-        args.insert("groups".to_string(), "wheel,audio".to_string());
-        let o = handle.parse_add_options(&args, &target).unwrap();
-        assert_eq!(o.supplementary_groups, vec!["wheel", "audio"]);
-        assert!(o.groups.is_empty());
-
-        args.insert("supplementary_groups".to_string(), "video".to_string());
-        let o = handle.parse_add_options(&args, &target).unwrap();
-        assert_eq!(o.supplementary_groups, vec!["video"]);
-
-        let mut args = HashMap::new();
-        args.insert("mode".to_string(), "membership".to_string());
-        args.insert("groups".to_string(), "wheel".to_string());
-        let o = handle.parse_add_options(&args, &target).unwrap();
-        assert_eq!(o.groups, vec!["wheel"]);
-        assert!(o.supplementary_groups.is_empty());
-    }
-
-    // ---- L1: legacy help forms render the approved help ----
-
-    fn call_capture(handle: &UserHandle, verb: &str, args: &Args) -> (Status, String, String) {
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let st = {
-            let mut stdin = std::io::empty();
-            let mut io = IoStreams {
-                stdin: &mut stdin,
-                stdout: &mut out,
-                stderr: &mut err,
-            };
-            handle.call(verb, args, &mut io).unwrap()
-        };
-        (
-            st,
-            String::from_utf8(out).unwrap(),
-            String::from_utf8(err).unwrap(),
-        )
-    }
-
-    #[test]
-    fn test_legacy_help_renders_approved_help() {
-        let handle = UserHandle::from_url(Url::parse("user://--help").unwrap()).unwrap();
-        let (st, out, _) = call_capture(&handle, "help", &Args::new());
-        assert!(st.ok);
-        assert!(out.starts_with("Handle: user"), "{}", out);
-        assert!(!out.contains("simulated"));
-
-        let mut args = Args::new();
-        args.insert("verb".to_string(), "lock".to_string());
-        let (_, out, _) = call_capture(&handle, "--help", &args);
-        assert!(out.starts_with("Handle: user\nVerb: lock"), "{}", out);
-    }
-
-    #[test]
-    fn test_mock_json_output_is_clean() {
-        // stdout must be exactly one JSON document.
-        let handle = UserHandle::from_url(Url::parse("user://alice").unwrap()).unwrap();
-        let mut args = Args::new();
-        args.insert("backend".to_string(), "mock".to_string());
-        args.insert("dry_run".to_string(), "true".to_string());
-        let (st, out, _) = call_capture(&handle, "add", &args);
-        assert!(st.ok);
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["user"]["username"], "alice");
-    }
-}
-
-// SEC-05: user changes requested as a dry run must leave the account
-// database untouched. Everything runs against MockBackend; no system
-// command is reachable from unit tests.
-#[cfg(test)]
-mod dry_run_tests {
-    use super::*;
-
-    const TRUE: &[&str] = &["true", "1", "yes", "on", "TRUE", "Yes"];
-    const BAD: &[&str] = &["maybe", "", "2", "y", "tru"];
-
-    fn args(pairs: &[(&str, &str)]) -> Args {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    fn handle() -> UserHandle {
-        UserHandle {
-            alias: "bob".into(),
-        }
-    }
-
-    fn target(name: &str) -> UserTarget {
-        UserTarget { path: name.into() }
-    }
-
-    fn mock() -> MockBackend {
-        MockBackend::new()
-            .with_existing_user("bob", 1500, "bob")
-            .with_existing_group("bob", 1500)
-    }
-
-    /// SEC-08: `force` (which overrides the system-account protections) is
-    /// read by the shared parser in all five option parsers. A malformed
-    /// value is an error, never a silent `false`/`true`.
-    #[test]
-    fn force_parses_consistently_and_rejects_garbage() {
-        let h = handle();
-        let t = target("bob");
-        for v in TRUE {
-            let a = args(&[("force", v)]);
-            assert!(h.parse_add_options(&a, &t).unwrap().force, "{v}");
-            assert!(h.parse_delete_options(&a, &t).unwrap().force, "{v}");
-            assert!(
-                h.parse_passwd_options(&args(&[("force", v), ("password", "Secret-Pass-123")]), &t)
-                    .unwrap()
-                    .force,
-                "{v}"
-            );
-            assert!(h.parse_lock_options(&a, &t).unwrap().force, "{v}");
-            assert!(h.parse_unlock_options(&a, &t).unwrap().force, "{v}");
-        }
-        for v in ["false", "0", "no", "off"] {
-            assert!(
-                !h.parse_unlock_options(&args(&[("force", v)]), &t)
-                    .unwrap()
-                    .force,
-                "{v}"
-            );
-        }
-        for v in BAD {
-            let a = args(&[("force", v)]);
-            assert!(h.parse_add_options(&a, &t).is_err(), "{v:?}");
-            assert!(h.parse_delete_options(&a, &t).is_err(), "{v:?}");
-            assert!(h.parse_lock_options(&a, &t).is_err(), "{v:?}");
-            assert!(h.parse_unlock_options(&a, &t).is_err(), "{v:?}");
-        }
-    }
-
-    #[test]
-    fn delete_dry_run_keeps_the_user() {
-        let h = handle();
-        for v in TRUE {
-            let mut b = mock();
-            let o = h
-                .parse_delete_options(&args(&[("dry_run", v)]), &target("bob"))
-                .unwrap();
-            assert!(o.dry_run, "{v}");
-            let r = h.delete_user(&target("bob"), &o, &mut b).unwrap();
-            assert!(r.dry_run);
-            assert!(
-                b.lookup_user("bob").unwrap().is_some(),
-                "dry_run={v} deleted the user"
-            );
-        }
-        // Normal execution still deletes.
-        for args_ in [
-            args(&[("dry_run", "false")]),
-            args(&[("dry_run", "0")]),
-            args(&[]),
-        ] {
-            let mut b = mock();
-            let o = h.parse_delete_options(&args_, &target("bob")).unwrap();
-            h.delete_user(&target("bob"), &o, &mut b).unwrap();
-            assert!(b.lookup_user("bob").unwrap().is_none());
-        }
-    }
-
-    #[test]
-    fn add_dry_run_creates_nothing() {
-        let h = handle();
-        for v in TRUE {
-            let mut b = MockBackend::new();
-            let o = h
-                .parse_add_options(&args(&[("dry_run", v)]), &target("newbie"))
-                .unwrap();
-            h.add_user(&target("newbie"), &o, &mut b).unwrap();
-            assert!(
-                b.lookup_user("newbie").unwrap().is_none(),
-                "dry_run={v} created the user"
-            );
-        }
-        let mut b = MockBackend::new();
-        let o = h
-            .parse_add_options(&args(&[("dry_run", "no")]), &target("newbie"))
-            .unwrap();
-        h.add_user(&target("newbie"), &o, &mut b).unwrap();
-        assert!(b.lookup_user("newbie").unwrap().is_some());
-    }
-
-    #[test]
-    fn lock_dry_run_leaves_account_unlocked() {
-        let h = handle();
-        for v in TRUE {
-            let mut b = mock();
-            let o = h
-                .parse_lock_options(&args(&[("dry_run", v)]), &target("bob"))
-                .unwrap();
-            h.lock_user(&target("bob"), &o, &mut b).unwrap();
-            assert!(
-                !b.is_locked("bob").unwrap(),
-                "dry_run={v} locked the account"
-            );
-        }
-        let mut b = mock();
-        let o = h
-            .parse_lock_options(&args(&[("dry_run", "off")]), &target("bob"))
-            .unwrap();
-        h.lock_user(&target("bob"), &o, &mut b).unwrap();
-        assert!(b.is_locked("bob").unwrap());
-    }
-
-    #[test]
-    fn every_user_parser_accepts_spellings_and_rejects_garbage() {
-        let h = handle();
-        let t = target("bob");
-        for v in TRUE {
-            let a = args(&[("dry_run", v)]);
-            assert!(h.parse_add_options(&a, &t).unwrap().dry_run);
-            assert!(h.parse_delete_options(&a, &t).unwrap().dry_run);
-            assert!(h.parse_passwd_options(&a, &t).unwrap().dry_run);
-            assert!(h.parse_lock_options(&a, &t).unwrap().dry_run);
-            assert!(h.parse_unlock_options(&a, &t).unwrap().dry_run);
-        }
-        for v in BAD {
-            let a = args(&[("dry_run", v)]);
-            assert!(h.parse_add_options(&a, &t).is_err(), "add {v:?}");
-            assert!(h.parse_delete_options(&a, &t).is_err(), "delete {v:?}");
-            assert!(h.parse_passwd_options(&a, &t).is_err(), "passwd {v:?}");
-            assert!(h.parse_lock_options(&a, &t).is_err(), "lock {v:?}");
-            assert!(h.parse_unlock_options(&a, &t).is_err(), "unlock {v:?}");
-        }
-    }
-
-    /// Through `call`: a malformed dry_run fails before any backend exists.
-    #[test]
-    fn malformed_dry_run_fails_the_verb() {
-        for verb in ["add", "delete", "passwd", "lock", "unlock"] {
-            let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
-            let mut io = IoStreams {
-                stdin: &mut i,
-                stdout: &mut o,
-                stderr: &mut e,
-            };
-            let ok = handle()
-                .call(verb, &args(&[("dry_run", "maybe")]), &mut io)
-                .map(|s| s.ok)
-                .unwrap_or(false);
-            assert!(!ok, "{verb} accepted dry_run=maybe");
-        }
-    }
-}
-
-// v1.0.5-beta: `primary_group` cannot be read as an option by groupadd, and
-// the shadow-utils commands of `user add` take their operands after `--`.
-#[cfg(test)]
-mod primary_group_tests {
-    use super::*;
-
-    fn add(primary_group: Option<&str>, dry_run: bool) -> (Result<UserAddResponse>, usize) {
-        let handle = UserHandle {
-            alias: String::new(),
-        };
-        let target = UserTarget {
-            path: "reshtest7a".to_string(),
-        };
-        let (mut backend, log) = SystemBackend::recording();
-        let opts = UserAddOptions {
-            username: Some("reshtest7a".into()),
-            uid: Some(54321),
-            primary_group: primary_group.map(str::to_string),
-            dry_run,
-            ..Default::default()
-        };
-        let r = handle.add_user(&target, &opts, &mut backend);
-        let calls = log.lock().unwrap().len();
-        (r, calls)
-    }
-
-    #[test]
-    fn option_shaped_primary_group_is_refused_before_anything_runs() {
-        for dry_run in [false, true] {
-            for pg in ["-probe", "--probe", "-", "-o"] {
-                let (r, calls) = add(Some(pg), dry_run);
-                let err = r.expect_err(pg);
-                let ue = err.downcast_ref::<UserError>().unwrap();
-                assert_eq!(ue.code(), "user.group_name_invalid", "{pg}");
-                assert!(err.to_string().contains("primary_group"), "{err}");
-                assert_eq!(calls, 0, "{pg}: a command was run");
-            }
-        }
-    }
-
-    #[test]
-    fn new_primary_group_names_keep_working_and_follow_a_separator() {
-        // Names validate_group_name would refuse are still passed on, so
-        // groupadd's own rules decide as before.
-        for pg in ["reshtest7a-devs", "reshtest7a.team", "ReshTest7a_Ops"] {
-            let (r, calls) = add(Some(pg), true);
-            let resp = r.unwrap();
-            assert_eq!(calls, 0);
-            let groupadd = &resp.planned_commands[0];
-            assert!(groupadd.starts_with("groupadd -g "), "{groupadd}");
-            assert!(groupadd.ends_with(&format!(" -- {pg}")), "{groupadd}");
-            let useradd = &resp.planned_commands[1];
-            assert!(useradd.contains(&format!(" -g {pg} ")), "{useradd}");
-            assert!(useradd.ends_with(" -- reshtest7a"), "{useradd}");
-        }
-    }
-
-    #[test]
-    fn default_primary_group_is_the_username() {
-        let (r, _) = add(None, true);
-        let resp = r.unwrap();
-        assert_eq!(
-            resp.planned_commands,
-            vec![
-                "groupadd -g 54321 -- reshtest7a".to_string(),
-                "useradd -u 54321 -g reshtest7a -d /home/reshtest7a -m -s /bin/bash -- reshtest7a"
-                    .to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn shadow_utils_argv_puts_operands_after_a_separator() {
-        let info = GroupInfo {
-            name: "-x".into(),
-            gid: 2000,
-            created: false,
-            existed: false,
-        };
-        let cmds = system_commands(&BackendOp::CreateGroup(&info)).unwrap();
-        assert_eq!(cmds[0].argv, vec!["groupadd", "-g", "2000", "--", "-x"]);
-        let cmds = system_commands(&BackendOp::AddMembership {
-            username: "alice",
-            group: "devs",
-        })
-        .unwrap();
-        assert_eq!(
-            cmds[0].argv,
-            vec!["usermod", "-a", "-G", "devs", "--", "alice"]
-        );
-    }
-}
+mod tests;

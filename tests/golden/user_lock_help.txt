@@ -1,0 +1,38 @@
+Handle: user
+Verb: lock
+Definition: Locks a user account so its password can no longer be used to log
+  in.
+
+Usage:
+  resh user://<username>.lock [username=<name>]
+    [protect_system_users=true|false] [min_uid_for_lock=<n>]
+    [force=true|false] [ignore_if_missing=true|false]
+    [dry_run=true|false] [backend=system|mock] [format=json|text]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty user://alice.lock
+
+Example Output:
+  {
+    "backend": "system",
+    "dry_run": false,
+    "lock": {
+      "changed": true,
+      "is_locked": true,
+      "requested": true,
+      "was_locked": false
+    },
+    "ok": true,
+    "user": {
+      "existed": true,
+      "missing": false,
+      "uid": 1001,
+      "username": "alice"
+    }
+  }
+
+  Shown for the system backend with --json-pretty, which runs usermod -L
+  and needs root, then checks the account is locked. The current state
+  comes from /etc/shadow or passwd -S; if neither can be read the verb
+  fails, except that a dry run reports was_locked null with a warning.

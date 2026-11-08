@@ -1,0 +1,54 @@
+Handle: user
+Verb: add
+Definition: Creates a user, a group, or a user's group memberships according to
+  mode, which defaults to user.
+
+Usage:
+  resh user://<name>.add [mode=user|group|membership]
+    [username=<name>] [uid=<n>] [primary_group=<group>]
+    [supplementary_groups=<g1,g2>] [groups=<g1,g2>] [home=<path>]
+    [create_home=true|false] [shell=<path>] [gecos=<text>]
+    [password_hash=<hash>] [group_name=<group>] [gid=<n>]
+    [member=<user>] [ignore_if_exists=true|false] [force=true|false]
+    [dry_run=true|false] [backend=system|mock] [format=json|text]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty user://alice.add mode=user shell=/bin/zsh dry_run=true
+
+Example Output:
+  {
+    "backend": "system",
+    "dry_run": true,
+    "groups": [
+      {
+        "created": false,
+        "existed": false,
+        "gid": 1001,
+        "name": "alice"
+      }
+    ],
+    "mode": "user",
+    "ok": true,
+    "planned_commands": [
+      "groupadd -g 1001 -- alice",
+      "useradd -u 1001 -g alice -d /home/alice -m -s /bin/zsh -- alice"
+    ],
+    "user": {
+      "created": false,
+      "existed": false,
+      "gecos": null,
+      "home": "/home/alice",
+      "primary_group": "alice",
+      "shell": "/bin/zsh",
+      "supplementary_groups": [],
+      "uid": 1001,
+      "username": "alice"
+    }
+  }
+
+  Shown for mode=user with --json-pretty. Without dry_run the commands are
+  run and need root; timeout_ms (default 60000) bounds them. In mode=user,
+  groups= is another name for supplementary_groups=; in mode=membership it
+  lists the groups to join. mode=group reports a group object, and
+  mode=membership reports member and memberships.

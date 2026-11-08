@@ -1,0 +1,29 @@
+Handle: user
+Verb: exists
+Definition: Reports whether a user account exists, looked up by username, and
+  checks that its UID matches when uid is also given.
+
+Usage:
+  resh user://<username>.exists [username=<name>] [uid=<n>]
+    [backend=system|mock] [format=json|text]
+
+Example:
+  resh --json-pretty user://root.exists
+
+Example Output:
+  {
+    "backend": "system",
+    "ok": true,
+    "query": {
+      "uid": null,
+      "username": "root"
+    },
+    "user": {
+      "exists": true,
+      "uid": 0,
+      "username": "root"
+    }
+  }
+
+  Shown with --json-pretty. A missing user reports exists false with null
+  username and uid, plus a warnings array.

@@ -1,0 +1,37 @@
+Handle: user
+Verb: unlock
+Definition: Unlocks a previously locked user account.
+
+Usage:
+  resh user://<username>.unlock [username=<name>]
+    [protect_system_users=true|false] [min_uid_for_unlock=<n>]
+    [force=true|false] [ignore_if_missing=true|false]
+    [dry_run=true|false] [backend=system|mock] [format=json|text]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty user://alice.unlock
+
+Example Output:
+  {
+    "backend": "system",
+    "dry_run": false,
+    "ok": true,
+    "unlock": {
+      "changed": true,
+      "is_locked": false,
+      "requested": true,
+      "was_locked": true
+    },
+    "user": {
+      "existed": true,
+      "missing": false,
+      "uid": 1001,
+      "username": "alice"
+    }
+  }
+
+  Shown for the system backend with --json-pretty, which runs usermod -U
+  and needs root, then checks the account is unlocked. An account that is
+  already unlocked is left unchanged with a warning; one without a
+  password cannot be unlocked.

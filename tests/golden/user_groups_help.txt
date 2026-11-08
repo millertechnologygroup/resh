@@ -1,0 +1,38 @@
+Handle: user
+Verb: groups
+Definition: Lists the groups a user belongs to, marking each as primary,
+  supplementary, or a system group.
+
+Usage:
+  resh user://<username>.groups [username=<name>]
+    [include_primary=true|false] [include_supplementary=true|false]
+    [include_system_groups=true|false] [min_gid_for_system=<n>]
+    [group_name_filter=<group>] [ignore_if_missing=true|false]
+    [backend=system|mock] [format=json|text]
+
+Example:
+  resh --json-pretty user://root.groups
+
+Example Output:
+  {
+    "backend": "system",
+    "groups": [
+      {
+        "gid": 0,
+        "name": "root",
+        "primary": true,
+        "supplementary": false,
+        "system_group": true
+      }
+    ],
+    "ok": true,
+    "user": {
+      "existed": true,
+      "missing": false,
+      "uid": 0,
+      "username": "root"
+    }
+  }
+
+  Shown for the system backend with --json-pretty. The primary group is
+  listed first, then the supplementary groups from getgrouplist.

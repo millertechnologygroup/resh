@@ -1,0 +1,58 @@
+Handle: user
+Verb: delete
+Definition: Removes a user, a group, or a user's group memberships according to
+  mode, which defaults to user.
+
+Usage:
+  resh user://<name>.delete [mode=user|group|membership]
+    [username=<name>] [remove_home=true|false] [remove_mail=true|false]
+    [remove_from_all_groups=true|false] [protect_system_users=true|false]
+    [min_uid_for_delete=<n>] [group_name=<group>] [only_if_empty=true|false]
+    [protect_system_groups=true|false] [min_gid_for_delete=<n>]
+    [member=<user>] [groups=<g1,g2>] [all_groups=true|false]
+    [ignore_if_missing=true|false] [force=true|false]
+    [dry_run=true|false] [backend=system|mock] [format=json|text]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty user://alice.delete remove_home=true dry_run=true
+
+Example Output:
+  {
+    "backend": "system",
+    "dry_run": true,
+    "home": {
+      "path": "/home/alice",
+      "removed": false,
+      "was_present": true
+    },
+    "mail": {
+      "path": "/var/mail/alice",
+      "removed": false,
+      "was_present": false
+    },
+    "memberships": [
+      {
+        "group": "alice",
+        "missing_group": false,
+        "removed": false,
+        "was_member": true
+      }
+    ],
+    "mode": "user",
+    "ok": true,
+    "planned_commands": [
+      "userdel -r -- alice"
+    ],
+    "user": {
+      "deleted": false,
+      "existed": true,
+      "missing": false,
+      "uid": 1001,
+      "username": "alice"
+    }
+  }
+
+  Shown for mode=user on the system backend with --json-pretty. Without
+  dry_run the commands are run and need root; timeout_ms (default 60000)
+  bounds them. userdel removes the account from every group.
