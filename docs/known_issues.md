@@ -14,7 +14,8 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (backup, plugin) still print their own formats until they are.
+  `<handle>.invalid_argument`. Handles not yet aligned (plugin) still print their own formats until
+  they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
 - Stage output is streamed as it is written (`--json-pretty` still buffers).
@@ -430,6 +431,26 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   `repository`.
 - Tested end to end in Docker against apt (Debian 13, Ubuntu 24.04), dnf
   (Fedora 42), yum (Rocky 9), pacman (Arch) and apk (Alpine).
+
+### backup
+
+- Every verb refuses unknown arguments and invalid values (exit 2,
+  `backup.invalid_argument`); errors are `[backup.<code>]` and the envelope
+  has `error.code` (the old `error.kind` is kept). Exit codes are 0/1/2/124:
+  a backend failure now exits 1 (was the backend's own code) with that code
+  in `error.details.exit_code`; a missing required argument exits 2 with an
+  envelope.
+- `timeout_ms` is one deadline for the whole verb and stops the backend's
+  whole process tree (was: the direct child only); malformed values are
+  refused. A create stopped or failed removes its partial tar archive or
+  rsync directory.
+- Repositories, archives and restore destinations created by resh are
+  owner-only (0700/0600); a second backup in the same second no longer
+  overwrites the first; a symlink `dest` is refused. Passwords reach
+  restic/borg only through their environment; `password=` warns on stderr.
+- `restore include=` works for tar, rsync and borg; files and bytes restored
+  are counted. `verify snapshot_id=` checks one borg/tar/rsync snapshot;
+  `mode` is validated; `keep_*` must be at least 1.
 
 ### http and https
 
@@ -872,7 +893,8 @@ These were found during the fixes, or are Medium items that were not fixed:
   local libgit2 call is reported as outcome unknown, exit 124.)
 - **cert:** revocation (CRL/OCSP) is not checked; webpki does not accept a
   CA certificate as the end-entity of `verify`.
-- **backup `schedule`:** installs nothing.
+- **backup `schedule`:** reports the job and its `cron://` install command
+  but installs nothing (see backup.md 4.6).
 - **Pre-existing test failures (15):** all fixed. `archiveh::test_path_sanitization`
   in Stage 1; the 11 `userh` and 3 `gith` tests in Stage 3 (details in
   `docs/reviews/resh-cli-stage3-build-test-security.md`). Tests that need a
@@ -1160,12 +1182,9 @@ typed structs:
 
 ### Automation
 
-- **backup.**
-  - `schedule` installs nothing (`backuph.rs:1359-1425`).
-  - A `prune` dry run never calls the backend, so `would_prune` is always 0
-    (`:1308-1326`).
-  - restic snapshots without tags or paths are dropped from `list`
-    (`:1794-1808`).
+- **backup.** `schedule` installs nothing (it reports the cron install
+  command); `restore` has no dry run; output is one envelope at the end, not
+  streamed events.
 - **plugin.**
   - `enable` and `disable` cannot target a named plugin: `plugin://aws.enable`
     parses as verb `aws.enable`.
