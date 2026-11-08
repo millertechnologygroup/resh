@@ -1,0 +1,77 @@
+Handle: backup
+Verb: prune
+Definition: Removes snapshots outside the keep_daily, keep_weekly, and
+  keep_monthly limits, or reports what would be removed when dry_run is true.
+
+Usage:
+  resh backup://<profile>.prune
+    [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]
+    [password=<secret>|password_file=<path>]
+    [keep_daily=<n>] [keep_weekly=<n>] [keep_monthly=<n>]
+    [dry_run=true|false] [timeout_ms=<ms>] [json_pretty=true|false]
+    at least one keep_* (n >= 1). timeout_ms default 3600000
+
+Example:
+  resh backup://db.prune backend=borg repo_url=/srv/b keep_daily=7 dry_run=true
+
+Example Output:
+  {
+    "backend": {
+      "command": [
+        "borg",
+        "prune",
+        "--list",
+        "--keep-daily",
+        "7",
+        "--dry-run",
+        "--",
+        "/srv/b"
+      ],
+      "env_redacted": {},
+      "id": "borg",
+      "simulated": false,
+      "timeout_ms": 3600000
+    },
+    "dry_run": true,
+    "duration_ms": 0,
+    "events": [],
+    "handle": "backup",
+    "ok": true,
+    "result": {
+      "capabilities": {
+        "cloud_targets": [
+          "file"
+        ],
+        "dedup": true,
+        "encryption": true,
+        "incremental": true,
+        "retention": true,
+        "verify": true
+      },
+      "dry_run": true,
+      "dry_run_mode": "backend",
+      "policy": {
+        "keep_daily": 7,
+        "keep_monthly": null,
+        "keep_weekly": null
+      },
+      "would_prune": {
+        "bytes_freed": null,
+        "snapshots_removed": 3,
+        "success": true
+      }
+    },
+    "target": "backup://db",
+    "ts": "2026-10-16T09:12:44.931277+00:00",
+    "verb": "prune",
+    "warnings": [
+      "Dry run: borg ran in its own --dry-run mode; nothing was removed"
+    ]
+  }
+
+  Shown for borg, indented as with --json-pretty, with BORG_PASSPHRASE set
+  in the environment. A restic or borg dry run runs the backend's own dry
+  run, which leaves snapshots alone but takes a repository lock (exclusive
+  for borg), writes the backend's local cache and needs the repository
+  credentials. tar and rsync apply the policy to archives or snapshot
+  directories by modification time (UTC days) and report bytes_freed.

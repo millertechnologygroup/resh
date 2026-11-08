@@ -1,0 +1,75 @@
+Handle: backup
+Verb: create
+Definition: Backs up one or more source paths with the selected backend and
+  reports the new snapshot id and sizes read from the backend's output.
+
+Usage:
+  resh backup://<profile>.create src=<path>[;<path>...]
+    [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]
+    [password=<secret>|password_file=<path>] [tag=<tag>;...]
+    [label=<text>] [exclude=<pattern>;...] [dry_run=true|false]
+    [timeout_ms=<ms>] [json_pretty=true|false]
+    tag: restic only. timeout_ms default 1800000
+
+Example:
+  resh backup://db.create src=/etc backend=tar repo_url=/srv/backup dry_run=true
+
+Example Output:
+  {
+    "backend": {
+      "command": [
+        "tar",
+        "--force-local",
+        "-czf",
+        "/srv/backup/backup_20261016_091244.tar.gz",
+        "--",
+        "/etc"
+      ],
+      "env_redacted": {},
+      "id": "tar",
+      "simulated": true,
+      "timeout_ms": 1800000
+    },
+    "dry_run": true,
+    "duration_ms": 0,
+    "events": [],
+    "handle": "backup",
+    "ok": true,
+    "result": {
+      "backend_raw": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "capabilities": {
+        "cloud_targets": [
+          "file"
+        ],
+        "dedup": false,
+        "encryption": false,
+        "incremental": true,
+        "retention": true,
+        "verify": true
+      },
+      "dry_run_mode": "plan",
+      "snapshot": {
+        "created_at": "2026-10-16T09:12:44.930811+00:00",
+        "id": "dry-run-id",
+        "sources": [
+          "/etc"
+        ],
+        "tags": []
+      }
+    },
+    "target": "backup://db",
+    "ts": "2026-10-16T09:12:44.931277+00:00",
+    "verb": "create",
+    "warnings": [
+      "Dry run: no backup was created"
+    ]
+  }
+
+  Shown for a tar dry run, indented as with --json-pretty. A real run
+  reports the archive, directory or restic snapshot id, such as
+  backup_20261016_091244, and the raw output. tar, rsync and borg need
+  repo_url (there is no default repository); a missing tar or rsync
+  repository is created owner-only (0700) and archives are written 0600.

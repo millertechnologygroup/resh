@@ -15,7 +15,7 @@ This page covers the **Automation Utilities** handles:
 
 | Handle        | Purpose | Verbs |
 | ------------- | ------- | ----- |
-| `backup://`   | Run restic, borg, rsync or tar to create, list, restore, verify and prune snapshots | `create`, `list`, `restore`, `verify`, `prune`, `schedule` (reports only) |
+| `backup://`   | Run restic, borg, rsync or tar to create, list, restore, verify and prune snapshots | `create`, `list`, `restore`, `verify`, `prune`, `schedule` (reports the job and the `cron://` command that installs it; installs nothing) |
 | `plugin://`   | Manage the local resh plugin store and read plugin catalogs | `install`, `update`, `remove`, `enable`, `disable`, `installed.list`, `available.list`, `available.search`, `available.info` |
 | `template://` | Render, validate and test Tera templates | `render`, `validate`, `test` |
 
@@ -35,7 +35,7 @@ Detailed pages: [backup](backup.md), [plugin](plugin.md), [template](template.md
 
 | Handle   | `dry_run` |
 | -------- | --------- |
-| backup   | Honored by `create` and `prune`. `restore` has no dry run and refuses `dry_run=true`; `list`, `verify` and `schedule` have no dry-run mode either, so `dry_run=true` is refused for them too. An unrecognised value (such as `dry_run=maybe`) is an error for `create`, `prune` and `restore` |
+| backup   | Honored by `create` and `prune`. `restore`, `list`, `verify` and `schedule` have no dry-run mode and refuse `dry_run` in any spelling (exit 2, `backup.invalid_argument`). An unrecognised value (such as `dry_run=maybe`) is refused |
 | plugin   | Honored by `install`, `update`, `remove`, `enable`, `disable`. Values other than true/false/1/0/yes/no/on/off are errors |
 | template | Not read (no verb writes anything) |
 
@@ -43,7 +43,7 @@ Detailed pages: [backup](backup.md), [plugin](plugin.md), [template](template.md
 
 | Handle   | Enforced | Accepted but not used | Notes |
 | -------- | -------- | --------------------- | ----- |
-| backup   | `create`, `restore`; `list`, `verify`, `prune` when they run a backend (restic, borg; tar `verify` per archive) | `schedule`; tar/rsync `list` and `prune`; rsync `verify` | At the deadline the backend process is killed and the verb fails with `TIMEOUT`. Only the direct child is killed. Malformed values silently fall back to the default |
+| backup   | every verb except `schedule`, as a deadline for the whole verb (backend runs and in-process tar/rsync work) | none (`schedule` refuses it, exit 2) | At the deadline the backend's whole process tree is stopped and the verb fails with `backup.timeout`, exit 124. Malformed values are refused (exit 2) |
 | plugin   | `install`, `update` (per HTTPS request, not a total deadline); `available.search`; `available.info` | `remove`, `enable`, `disable`; not read by `available.list`, `installed.list` | `available.search` rejects values outside 100-60000; `available.info` rejects non-integers and clamps to 100-30000; the other verbs silently use their default for a malformed value |
 | template | none | all verbs ignore it | |
 
@@ -51,7 +51,7 @@ Detailed pages: [backup](backup.md), [plugin](plugin.md), [template](template.md
 
 ## 3. Examples
 
-Backup (restic and borg also need a password source: `password_file=`, `password=`, or their usual environment variables; otherwise they fail with `MISSING_PASSWORD`):
+Backup (restic and borg also need a password source: `password_file=`, `password=`, or their usual environment variables; otherwise they fail with `backup.missing_password`, exit 2):
 
 ```bash
 resh backup://mydata.create src=/srv/app/data backend=tar repo_url=/srv/backups dry_run=true

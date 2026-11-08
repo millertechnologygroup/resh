@@ -46,9 +46,12 @@ pub struct BackupEvent {
     pub phase: String,
 }
 
-/// Error information
+/// Error information. `code` is the stable `backup.<name>` error code
+/// (the project-wide format); `kind` is the earlier upper-case kind, kept
+/// for compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupError {
+    pub code: String,
     pub kind: String,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -157,8 +160,10 @@ impl BackendInfo {
 }
 
 impl BackupError {
+    /// An error of upper-case `kind`; the code is `backup.<kind in lower case>`.
     pub fn new(kind: &str, message: &str) -> Self {
         Self {
+            code: format!("backup.{}", kind.to_ascii_lowercase()),
             kind: kind.to_string(),
             message: message.to_string(),
             details: None,
@@ -167,31 +172,9 @@ impl BackupError {
 
     pub fn with_details(kind: &str, message: &str, details: serde_json::Value) -> Self {
         Self {
-            kind: kind.to_string(),
-            message: message.to_string(),
             details: Some(details),
+            ..Self::new(kind, message)
         }
-    }
-
-    /// Map common exit codes to error kinds
-    pub fn from_exit_code(code: i32, stderr: &str) -> Self {
-        let (kind, message) = match code {
-            1 => ("backend_error", "Generic backend failure"),
-            2 => ("invalid_args", "Input validation error"),
-            5 => ("not_found", "Backend not installed or not found"),
-            124 => ("timeout", "Operation timed out"),
-            126 => ("permission", "Permission or execution failure"),
-            127 => ("backend_error", "Backend invocation error"),
-            _ => ("backend_error", "Unknown backend error"),
-        };
-
-        let full_message = if stderr.is_empty() {
-            message.to_string()
-        } else {
-            format!("{}: {}", message, stderr.lines().next().unwrap_or(stderr))
-        };
-
-        Self::new(kind, &full_message)
     }
 }
 
@@ -313,7 +296,7 @@ mod tests {
     #[test]
     fn test_envelope_error() {
         let backend = BackendInfo::new("restic", 600000);
-        let error = BackupError::new("timeout", "Operation timed out after 10 minutes");
+        let error = BackupError::new("TIMEOUT", "Operation timed out after 10 minutes");
         let envelope =
             BackupEnvelope::error("create", "backup://test", backend, error, false, 10000);
 
@@ -359,13 +342,15 @@ mod tests {
     }
 
     #[test]
-    fn test_error_from_exit_code() {
-        let error = BackupError::from_exit_code(124, "Command timed out");
-        assert_eq!(error.kind, "timeout");
-        assert!(error.message.contains("timed out"));
-
-        let error = BackupError::from_exit_code(2, "Invalid arguments provided");
-        assert_eq!(error.kind, "invalid_args");
+    fn error_code_follows_the_kind() {
+        let error = BackupError::new("VERIFY_FAILED", "problems");
+        assert_eq!(error.code, "backup.verify_failed");
+        assert!(crate::core::status::is_valid_error_code(&error.code));
+        let error = BackupError::with_details("IO", "x", serde_json::json!({"a": 1}));
+        assert_eq!(
+            (error.code.as_str(), error.kind.as_str()),
+            ("backup.io", "IO")
+        );
     }
 
     #[test]

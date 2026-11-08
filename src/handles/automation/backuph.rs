@@ -1,3 +1,8 @@
+//! `backup://` — creates, lists, restores, verifies and prunes backup
+//! snapshots by running restic, borg, rsync or tar, and reports a schedule
+//! definition. Every verb prints one JSON envelope (`BackupEnvelope`), and
+//! every failure has a stable `backup.<code>` error code (see `Code`).
+
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, Utc};
 use percent_encoding::percent_decode_str;
@@ -5,25 +10,31 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::io::Read;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, Instant};
 use url::Url;
 
 use crate::core::{
     envelope::{BackendInfo, BackupEnvelope, BackupError},
     help::{self, HandleHelp, VerbDetail, VerbHelp},
+    process,
     registry::{Args, Handle, IoStreams},
-    status::Status,
+    status::{self, Status, exit},
 };
 
 /// Backup handle implementing all required verbs with JSON envelope per specification
 #[derive(Debug)]
 pub struct BackupHandle {
-    /// Repository identifier from URL
+    /// Profile name from the URL
     pub repo: String,
     /// Target URL for JSON responses
     pub target: String,
+    /// Directory the backend programs are taken from instead of `PATH`
+    /// (unit tests only; `None` in the binary).
+    bin_dir: Option<PathBuf>,
 }
 
 /// Backend capabilities for backup operations per specification
@@ -41,20 +52,24 @@ pub struct BackupCapabilities {
 static BACKUP_HELP: HandleHelp = HandleHelp {
     description: "The backup handle creates, lists, restores, verifies, and prunes backup \
         snapshots by running restic, borg, rsync, or tar, using the first one installed \
-        unless backend is given. The stage URL names a backup profile, such as \
-        backup://db, and the repository location is passed with repo_url. restic and \
-        borg take the repository password from password or password_file, or from \
-        their usual environment variables, and every verb prints a JSON envelope.",
+        unless backend is given, and reports schedule definitions. The stage URL names a \
+        backup profile, such as backup://db, and the repository location is passed with \
+        repo_url, and restic and borg take the repository password from password or \
+        password_file, or from their usual environment variables; every verb prints a \
+        JSON envelope, and failures carry a backup.<code> error code.",
     usage: "resh backup://<profile>.<verb>[(key=value,...)]",
     verbs: &[
         VerbHelp {
             name: "list",
             definition: "Lists the snapshots in a repository by running the backend's listing \
-                command, such as restic snapshots or borg list.",
+                command, such as restic snapshots or borg list, or by reading a tar or rsync \
+                repository directory.",
             detail: Some(VerbDetail {
-                usage: "resh backup://<profile>.list [backend=restic|borg|rsync|tar]\n  \
-                    [repo_url=<repo>] [password=<secret>|password_file=<path>]\n  \
-                    [tag=<tag>;...] [timeout_ms=<ms>]",
+                usage: "resh backup://<profile>.list\n  \
+                    [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]\n  \
+                    [password=<secret>|password_file=<path>] [tag=<tag>;...]\n  \
+                    [timeout_ms=<ms>] [json_pretty=true|false]\n  \
+                    tag: restic only. timeout_ms default 10000",
                 example: "resh --json-pretty backup://db.list backend=restic \
                     repo_url=/srv/restic",
                 example_output: Some(
@@ -112,22 +127,26 @@ static BACKUP_HELP: HandleHelp = HandleHelp {
   "warnings": []
 }
 
-Shown for restic with --json-pretty and RESTIC_PASSWORD_FILE set in the
-environment; password=<secret> would add a redacted RESTIC_PASSWORD. The
+Shown for restic with RESTIC_PASSWORD_FILE set in the environment. The
 label field holds the restic hostname. tar and rsync read the repository
 directory directly, so their command is empty. Without a password, restic
-and borg fail with MISSING_PASSWORD before running."#,
+and borg fail with backup.missing_password (exit 2) before running."#,
                 ),
             }),
         },
         VerbHelp {
             name: "verify",
-            definition: "Checks repository integrity with the backend's check command, reading \
-                all data when mode is thorough or data.",
+            definition: "Checks repository integrity with the backend's check command, or \
+                reads every tar archive or rsync snapshot, reading all data when mode is \
+                thorough or data.",
             detail: Some(VerbDetail {
-                usage: "resh backup://<profile>.verify [backend=restic|borg|rsync|tar]\n  \
-                    [repo_url=<repo>] [password=<secret>|password_file=<path>]\n  \
-                    [mode=quick|thorough|data] [snapshot_id=<id>] [timeout_ms=<ms>]",
+                usage: "resh backup://<profile>.verify\n  \
+                    [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]\n  \
+                    [password=<secret>|password_file=<path>]\n  \
+                    [mode=quick|thorough|data] [snapshot_id=<id>]\n  \
+                    [timeout_ms=<ms>] [json_pretty=true|false]\n  \
+                    snapshot_id: borg, tar and rsync only.\n  \
+                    timeout_ms default 3600000, for the whole verb",
                 example: "resh --json-pretty backup://db.verify backend=restic \
                     repo_url=/srv/restic",
                 example_output: Some(
@@ -167,7 +186,7 @@ and borg fail with MISSING_PASSWORD before running."#,
     "snapshot_id": null,
     "verification": {
       "errors": [],
-      "files_checked": 6,
+      "files_checked": null,
       "issues": [],
       "success": true
     }
@@ -178,10 +197,10 @@ and borg fail with MISSING_PASSWORD before running."#,
   "warnings": []
 }
 
-Shown for restic with --json-pretty and RESTIC_PASSWORD_FILE set in the
-environment. files_checked counts restic
-output lines, and snapshot_id is only echoed back. tar runs tar -tzf on each
-archive, rsync opens every file, and problems give a VERIFY_FAILED error."#,
+Shown for restic with RESTIC_PASSWORD_FILE set in the environment.
+files_checked counts tar archive members or rsync files (null for restic
+and borg). Problems found by tar or rsync give backup.verify_failed; a
+failing restic or borg check gives backup.backend_failed."#,
                 ),
             }),
         },
@@ -191,10 +210,11 @@ archive, rsync opens every file, and problems give a VERIFY_FAILED error."#,
                 reports the new snapshot id and sizes read from the backend's output.",
             detail: Some(VerbDetail {
                 usage: "resh backup://<profile>.create src=<path>[;<path>...]\n  \
-                    [backend=restic|borg|rsync|tar] [repo_url=<repo>]\n  \
+                    [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]\n  \
                     [password=<secret>|password_file=<path>] [tag=<tag>;...]\n  \
                     [label=<text>] [exclude=<pattern>;...] [dry_run=true|false]\n  \
-                    [timeout_ms=<ms>]",
+                    [timeout_ms=<ms>] [json_pretty=true|false]\n  \
+                    tag: restic only. timeout_ms default 1800000",
                 example: "resh backup://db.create src=/etc backend=tar repo_url=/srv/backup \
                     dry_run=true",
                 example_output: Some(
@@ -253,36 +273,37 @@ archive, rsync opens every file, and problems give a VERIFY_FAILED error."#,
 
 Shown for a tar dry run, indented as with --json-pretty. A real run
 reports the archive, directory or restic snapshot id, such as
-backup_20261016_091244, and the raw output. restic and borg need password,
-password_file, RESTIC_PASSWORD(_FILE) or BORG_PASSPHRASE/BORG_PASSCOMMAND,
-else they fail with MISSING_PASSWORD.
-tar, rsync and borg need repo_url (there is no default repository), else
-every verb fails with INVALID_ARGS; use a directory only you can write."#,
+backup_20261016_091244, and the raw output. tar, rsync and borg need
+repo_url (there is no default repository); a missing tar or rsync
+repository is created owner-only (0700) and archives are written 0600."#,
                 ),
             }),
         },
         VerbHelp {
             name: "restore",
             definition: "Restores a snapshot into a destination directory with the selected \
-                backend.",
+                backend, optionally only the paths matching include patterns.",
             detail: Some(VerbDetail {
                 usage: "resh backup://<profile>.restore snapshot_id=<id> dest=<path>\n  \
-                    [backend=restic|borg|rsync|tar] [repo_url=<repo>]\n  \
+                    [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]\n  \
                     [password=<secret>|password_file=<path>] [include=<pattern>,...]\n  \
-                    [exclude=<pattern>;...] [timeout_ms=<ms>]",
-                example: "resh --json-pretty backup://db.restore snapshot_id=4f2a9c1e \
-                    dest=/tmp/restore",
+                    [exclude=<pattern>;...] [timeout_ms=<ms>] [json_pretty=true|false]\n  \
+                    no dry run. timeout_ms default 1800000",
+                example: "resh backup://db.restore repo_url=/srv/r \
+                    snapshot_id=4f2a9c1e dest=restore",
                 example_output: Some(
                     r#"{
   "backend": {
     "command": [
       "restic",
       "restore",
-      "4f2a9c1e",
-      "--target",
-      "/tmp/restore"
+      "--target=restore",
+      "--",
+      "4f2a9c1e"
     ],
-    "env_redacted": {},
+    "env_redacted": {
+      "RESTIC_REPOSITORY": "/srv/r"
+    },
     "id": "restic",
     "simulated": false,
     "timeout_ms": 1800000
@@ -306,10 +327,10 @@ every verb fails with INVALID_ARGS; use a directory only you can write."#,
       "retention": true,
       "verify": true
     },
-    "destination": "/tmp/restore",
+    "destination": "restore",
     "restored": {
-      "bytes_restored": 0,
-      "files_restored": 1,
+      "bytes_restored": null,
+      "files_restored": 12,
       "success": true
     },
     "snapshot_id": "4f2a9c1e"
@@ -320,10 +341,11 @@ every verb fails with INVALID_ARGS; use a directory only you can write."#,
   "warnings": []
 }
 
-Shown for restic, the first backend tried when none is given, with
---json-pretty and RESTIC_PASSWORD_FILE set in the environment. The
-files_restored field counts backend output lines that mention restoring,
-and bytes_restored is always 0. include is used only by restic."#,
+Shown for restic, the first backend tried when backend is not given,
+indented as with --json-pretty, with RESTIC_PASSWORD_FILE set in the
+environment. files_restored and bytes_restored count the regular files
+written (restic reports files and directories and no exact size). A
+missing dest is created owner-only (0700); a symlink dest is refused."#,
                 ),
             }),
         },
@@ -332,25 +354,29 @@ and bytes_restored is always 0. include is used only by restic."#,
             definition: "Removes snapshots outside the keep_daily, keep_weekly, and \
                 keep_monthly limits, or reports what would be removed when dry_run is true.",
             detail: Some(VerbDetail {
-                usage: "resh backup://<profile>.prune [backend=restic|borg|rsync|tar]\n  \
-                    [repo_url=<repo>] [password=<secret>|password_file=<path>]\n  \
+                usage: "resh backup://<profile>.prune\n  \
+                    [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]\n  \
+                    [password=<secret>|password_file=<path>]\n  \
                     [keep_daily=<n>] [keep_weekly=<n>] [keep_monthly=<n>]\n  \
-                    [dry_run=true|false] [timeout_ms=<ms>]",
-                example: "resh --json-pretty backup://db.prune backend=restic \
+                    [dry_run=true|false] [timeout_ms=<ms>] [json_pretty=true|false]\n  \
+                    at least one keep_* (n >= 1). timeout_ms default 3600000",
+                example: "resh backup://db.prune backend=borg repo_url=/srv/b \
                     keep_daily=7 dry_run=true",
                 example_output: Some(
                     r#"{
   "backend": {
     "command": [
-      "restic",
-      "forget",
-      "--json",
+      "borg",
+      "prune",
+      "--list",
       "--keep-daily",
       "7",
-      "--dry-run"
+      "--dry-run",
+      "--",
+      "/srv/b"
     ],
     "env_redacted": {},
-    "id": "restic",
+    "id": "borg",
     "simulated": false,
     "timeout_ms": 3600000
   },
@@ -362,9 +388,6 @@ and bytes_restored is always 0. include is used only by restic."#,
   "result": {
     "capabilities": {
       "cloud_targets": [
-        "s3",
-        "azure",
-        "gcs",
         "file"
       ],
       "dedup": true,
@@ -374,6 +397,7 @@ and bytes_restored is always 0. include is used only by restic."#,
       "verify": true
     },
     "dry_run": true,
+    "dry_run_mode": "backend",
     "policy": {
       "keep_daily": 7,
       "keep_monthly": null,
@@ -388,39 +412,41 @@ and bytes_restored is always 0. include is used only by restic."#,
   "target": "backup://db",
   "ts": "2026-10-16T09:12:44.931277+00:00",
   "verb": "prune",
-  "warnings": []
+  "warnings": [
+    "Dry run: borg ran in its own --dry-run mode; nothing was removed"
+  ]
 }
 
-Shown for a restic dry run with --json-pretty and RESTIC_PASSWORD_FILE set
-in the environment. A dry run runs the backend's
-own dry run, which leaves snapshots alone but takes a repository lock
-(exclusive for borg), writes the backend's local cache and needs the
-repository credentials. A real run reports pruned instead of would_prune.
-tar and rsync apply the policy to archives or snapshot directories by
-modification time (UTC days) and report bytes_freed. At least one keep_* is
-required."#,
+Shown for borg, indented as with --json-pretty, with BORG_PASSPHRASE set
+in the environment. A restic or borg dry run runs the backend's own dry
+run, which leaves snapshots alone but takes a repository lock (exclusive
+for borg), writes the backend's local cache and needs the repository
+credentials. tar and rsync apply the policy to archives or snapshot
+directories by modification time (UTC days) and report bytes_freed."#,
                 ),
             }),
         },
         VerbHelp {
             name: "schedule",
-            definition: "Reports a backup schedule definition and the detected scheduler \
-                without installing a timer or cron job or writing any file.",
+            definition: "Reports the backup command for a schedule, the cron handle command \
+                that installs it, and the detected scheduler, without installing a timer or \
+                cron job or writing any file.",
             detail: Some(VerbDetail {
-                usage: "resh backup://<profile>.schedule when=<cron> src=<path>\n  \
-                    [backend=restic|borg|rsync|tar] [enabled=true|false] [timeout_ms=<ms>]",
-                example: "resh --json-pretty backup://db.schedule 'when=0 2 * * *' \
-                    src=/etc backend=tar",
+                usage: "resh backup://<profile>.schedule when=<cron> src=<path>[;<path>...]\n  \
+                    [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]\n  \
+                    [password_file=<path>] [enabled=true|false]\n  \
+                    [json_pretty=true|false]\n  \
+                    when: five crontab fields or an @ keyword",
+                example: "resh backup://db.schedule when=@daily \
+                    src=/etc backend=tar repo_url=/srv/b",
                 example_output: Some(
                     r#"{
   "backend": {
-    "command": [
-      "tar"
-    ],
+    "command": [],
     "env_redacted": {},
     "id": "tar",
     "simulated": false,
-    "timeout_ms": 10000
+    "timeout_ms": 0
   },
   "dry_run": false,
   "duration_ms": 0,
@@ -439,10 +465,23 @@ required."#,
       "verify": true
     },
     "schedule": {
-      "definition_path": "/home/alice/resh-backup-default.json",
+      "command": [
+        "resh",
+        "backup://db.create",
+        "src=/etc",
+        "backend=tar",
+        "repo_url=/srv/b"
+      ],
+      "definition_path": "/home/alice/resh-backup-db.json",
       "enabled": true,
+      "install_command": [
+        "resh",
+        "cron://backup-db.add",
+        "schedule=@daily",
+        "command=resh backup://db.create src=/etc backend=tar repo_url=/srv/b"
+      ],
       "runner": "systemd",
-      "when": "0 2 * * *"
+      "when": "@daily"
     }
   },
   "target": "backup://db",
@@ -451,8 +490,11 @@ required."#,
   "warnings": []
 }
 
-Shown on a systemd host with --json-pretty. The runner is cron when only
-crontab is found, and none (with a warning) when neither is found."#,
+Shown on a systemd host, indented as with --json-pretty. Nothing is
+installed: run install_command to add the job with the cron handle.
+runner is cron when only crontab is found, and none (with a warning)
+when neither is found. definition_path is not created. enabled=false
+reports install_command as null."#,
                 ),
             }),
         },
@@ -479,6 +521,12 @@ impl std::fmt::Display for BackendType {
     }
 }
 
+impl BackendType {
+    fn is_local(&self) -> bool {
+        matches!(self, BackendType::Tar | BackendType::Rsync)
+    }
+}
+
 /// Snapshot information for list/create operations per specification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotInfo {
@@ -497,101 +545,40 @@ pub struct SnapshotInfo {
 /// Backend command execution result (full, untruncated output)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendResult {
-    pub exit_code: i32,
+    /// Exit status, or None when the backend was killed by a signal.
+    pub exit_code: Option<i32>,
+    /// The signal that ended the backend, if any.
+    pub signal: Option<i32>,
     pub stdout: String,
     pub stderr: String,
     pub duration_ms: u64,
 }
 
-/// Retention policy configuration per specification
+impl BackendResult {
+    fn success(&self) -> bool {
+        self.exit_code == Some(0)
+    }
+}
+
+/// Retention policy (`keep_daily`, `keep_weekly`, `keep_monthly`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RetentionPolicy {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub keep_last: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_daily: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_weekly: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_monthly: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub keep_yearly: Option<u32>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub keep_tags: Vec<String>,
 }
 
-/// Verification check result per specification
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct VerificationCheck {
-    pub name: String,
-    pub ok: bool,
-    pub detail: String,
-}
-
-/// Schedule configuration per specification
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct ScheduleConfig {
-    pub when: String,
-    pub enabled: bool,
-    pub runner: String,
-    pub definition_path: String,
-}
-
-/// Waits for `child` to exit, collecting its stdout and stderr, for at most
-/// `timeout`. Returns `Ok(None)` after killing and reaping the child when the
-/// deadline passes. Output pipes are drained on separate threads so a
-/// chatty child cannot block on a full pipe. Also used by the firewall
-/// handle for its command timeouts.
-pub(crate) fn wait_with_deadline(
-    mut child: std::process::Child,
-    timeout: Duration,
-) -> Result<Option<std::process::Output>> {
-    use std::io::Read;
-
-    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut p) = pipe {
-                let _ = p.read_to_end(&mut buf);
-            }
-            buf
-        })
-    }
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
-
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .context("Failed to wait for backend process")?
-        {
-            return Ok(Some(std::process::Output {
-                status,
-                stdout: stdout.join().unwrap_or_default(),
-                stderr: stderr.join().unwrap_or_default(),
-            }));
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait(); // reap; no zombie is left behind
-            // The readers finish when the pipes close; they are not joined
-            // because a grandchild may still hold the pipes open.
-            return Ok(None);
-        }
-        std::thread::sleep(Duration::from_millis(10).min(deadline - Instant::now()));
-    }
-}
-
-/// Constants for default timeouts per specification (in milliseconds)
+/// Default timeouts in milliseconds; each is the deadline of the whole verb.
 const DEFAULT_CREATE_TIMEOUT_MS: u64 = 1_800_000; // 30 minutes
 const DEFAULT_LIST_TIMEOUT_MS: u64 = 10_000; // 10 seconds
 const DEFAULT_RESTORE_TIMEOUT_MS: u64 = 1_800_000; // 30 minutes
 const DEFAULT_VERIFY_TIMEOUT_MS: u64 = 3_600_000; // 60 minutes
 const DEFAULT_PRUNE_TIMEOUT_MS: u64 = 3_600_000; // 60 minutes
-const DEFAULT_SCHEDULE_TIMEOUT_MS: u64 = 10_000; // 10 seconds
+/// Largest accepted `timeout_ms` (30 days).
+const MAX_TIMEOUT_MS: u64 = 2_592_000_000;
 
 /// Maximum output capture size per specification (256KB)
 const MAX_OUTPUT_SIZE: usize = 256 * 1024;
@@ -619,6 +606,9 @@ const RESTIC_SECRET_ENV: &[&str] = &[
     "RESTIC_PASSWORD_COMMAND",
 ];
 
+/// Environment variables through which restic already has a repository.
+const RESTIC_REPO_ENV: &[&str] = &["RESTIC_REPOSITORY", "RESTIC_REPOSITORY_FILE"];
+
 /// Environment variables through which borg already has a repository passphrase.
 const BORG_SECRET_ENV: &[&str] = &["BORG_PASSPHRASE", "BORG_PASSCOMMAND", "BORG_PASSPHRASE_FD"];
 
@@ -627,6 +617,225 @@ const REDACTED: &str = "***REDACTED***";
 fn is_secret_key(key: &str) -> bool {
     let key = key.to_lowercase();
     SECRET_PATTERNS.iter().any(|pattern| key.contains(pattern))
+}
+
+// ---------------------------------------------------------------------------
+// Error codes
+// ---------------------------------------------------------------------------
+
+/// Every failure the handle reports. `code()` is the stable
+/// `backup.<name>` code (stderr line and `error.code`), `kind()` the
+/// earlier upper-case `error.kind`, kept for compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Code {
+    InvalidArgument,
+    UnknownVerb,
+    BackendNotFound,
+    MissingPassword,
+    PasswordFileUnreadable,
+    BackendFailed,
+    Timeout,
+    ExecutionFailed,
+    Io,
+    Parse,
+    VerifyFailed,
+    SnapshotNotFound,
+}
+
+impl Code {
+    #[cfg(test)]
+    pub(crate) const ALL: [Code; 12] = [
+        Code::InvalidArgument,
+        Code::UnknownVerb,
+        Code::BackendNotFound,
+        Code::MissingPassword,
+        Code::PasswordFileUnreadable,
+        Code::BackendFailed,
+        Code::Timeout,
+        Code::ExecutionFailed,
+        Code::Io,
+        Code::Parse,
+        Code::VerifyFailed,
+        Code::SnapshotNotFound,
+    ];
+
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Code::InvalidArgument => "backup.invalid_argument",
+            Code::UnknownVerb => "backup.unknown_verb",
+            Code::BackendNotFound => "backup.backend_not_found",
+            Code::MissingPassword => "backup.missing_password",
+            Code::PasswordFileUnreadable => "backup.password_file_unreadable",
+            Code::BackendFailed => "backup.backend_failed",
+            Code::Timeout => "backup.timeout",
+            Code::ExecutionFailed => "backup.execution_failed",
+            Code::Io => "backup.io",
+            Code::Parse => "backup.parse",
+            Code::VerifyFailed => "backup.verify_failed",
+            Code::SnapshotNotFound => "backup.snapshot_not_found",
+        }
+    }
+
+    pub(crate) fn kind(self) -> &'static str {
+        match self {
+            Code::InvalidArgument | Code::UnknownVerb => "INVALID_ARGS",
+            Code::BackendNotFound => "BACKEND_NOT_FOUND",
+            Code::MissingPassword | Code::PasswordFileUnreadable => "MISSING_PASSWORD",
+            Code::BackendFailed => "BACKEND_FAILED",
+            Code::Timeout => "TIMEOUT",
+            Code::ExecutionFailed => "EXECUTION_FAILED",
+            Code::Io => "IO",
+            Code::Parse => "PARSE",
+            Code::VerifyFailed => "VERIFY_FAILED",
+            Code::SnapshotNotFound => "NOT_FOUND",
+        }
+    }
+
+    /// The process exit status: 2 when the request itself is invalid and
+    /// nothing was done, 124 for a timeout, otherwise 1.
+    pub(crate) fn exit(self) -> i32 {
+        match self {
+            Code::InvalidArgument | Code::UnknownVerb | Code::MissingPassword => exit::USAGE,
+            Code::Timeout => exit::TIMEOUT,
+            _ => exit::FAILED,
+        }
+    }
+}
+
+/// A failure of a verb: its code, message and optional details.
+#[derive(Debug)]
+pub(crate) struct Fail {
+    pub code: Code,
+    pub message: String,
+    pub details: Option<Value>,
+}
+
+impl Fail {
+    fn new(code: Code, message: impl Into<String>) -> Self {
+        Fail {
+            code,
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    fn with(mut self, details: Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
+    /// An invalid argument value; `details.field` names the argument.
+    fn invalid(field: &str, message: impl Into<String>) -> Self {
+        Fail::new(Code::InvalidArgument, message).with(json!({ "field": field }))
+    }
+}
+
+type VResult<T> = std::result::Result<T, Fail>;
+
+// ---------------------------------------------------------------------------
+// Accepted arguments (one list per verb; the help usage lists exactly these)
+// ---------------------------------------------------------------------------
+
+/// Arguments every verb except schedule accepts.
+const COMMON_ARGS: &[&str] = &[
+    "backend",
+    "repo_url",
+    "password",
+    "password_file",
+    "timeout_ms",
+    "json_pretty",
+];
+
+/// The arguments `verb` accepts, or None for an unknown verb.
+pub(crate) fn accepted_args(verb: &str) -> Option<Vec<&'static str>> {
+    let own: &[&'static str] = match verb {
+        "create" => &["src", "tag", "label", "exclude", "dry_run"],
+        "list" => &["tag"],
+        "restore" => &["snapshot_id", "dest", "include", "exclude"],
+        "verify" => &["mode", "snapshot_id"],
+        "prune" => &["keep_daily", "keep_weekly", "keep_monthly", "dry_run"],
+        "schedule" => {
+            return Some(vec![
+                "when",
+                "src",
+                "backend",
+                "repo_url",
+                "password_file",
+                "enabled",
+                "json_pretty",
+            ]);
+        }
+        _ => return None,
+    };
+    Some(COMMON_ARGS.iter().chain(own).copied().collect())
+}
+
+/// Levenshtein distance between two strings (by `char`).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j] + usize::from(ca != *cb))
+                .min(prev[j + 1] + 1)
+                .min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// The accepted name `bad` is most likely a typo of, if any.
+pub(crate) fn suggest<'a>(bad: &str, allowed: &[&'a str]) -> Option<&'a str> {
+    let bad = bad.to_ascii_lowercase();
+    // An unambiguous prefix is the strongest hint (`timeout` -> `timeout_ms`).
+    let prefixed: Vec<&&str> = allowed.iter().filter(|a| a.starts_with(&bad)).collect();
+    if prefixed.len() == 1 && bad.chars().count() >= 2 {
+        return Some(prefixed[0]);
+    }
+    let limit = (bad.chars().count() / 3).max(2);
+    allowed
+        .iter()
+        .map(|a| (edit_distance(&bad, a), *a))
+        .filter(|(d, _)| *d <= limit && *d < bad.chars().count())
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, a)| a)
+}
+
+/// Refuses an argument `verb` does not accept (exit 2, before anything runs).
+fn check_known_args(verb: &str, args: &Args) -> VResult<()> {
+    let Some(allowed) = accepted_args(verb) else {
+        return Ok(());
+    };
+    let mut keys: Vec<&String> = args.keys().collect();
+    keys.sort();
+    for key in keys {
+        if allowed.contains(&key.as_str()) {
+            continue;
+        }
+        if key == "dry_run" {
+            let what = if verb == "restore" {
+                "nothing was restored"
+            } else {
+                "nothing was done"
+            };
+            return Err(Fail::invalid(
+                key,
+                format!("backup {verb} does not support dry_run; {what}"),
+            ));
+        }
+        let mut msg = format!("unknown argument {key:?} for backup {verb}");
+        if let Some(s) = suggest(key, &allowed) {
+            msg.push_str(&format!("; did you mean {s}?"));
+        }
+        msg.push_str(&format!(
+            " (accepted: {}); nothing was done",
+            allowed.join(", ")
+        ));
+        return Err(Fail::invalid(key, msg));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -697,7 +906,6 @@ fn rsync_local(path: &str) -> String {
 }
 
 /// Local repository directory for tar/rsync, accepting `file://` URLs.
-/// `repo_or_return!` has already rejected a missing `repo_url`.
 fn local_repo_path(repo_url: Option<&String>) -> String {
     repo_url
         .map(|u| u.strip_prefix("file://").unwrap_or(u).to_string())
@@ -761,6 +969,12 @@ pub(crate) fn snapshot_name(label: Option<&str>, timestamp: &str) -> String {
 pub(crate) struct UnsafeArg {
     pub field: &'static str,
     pub message: String,
+}
+
+impl From<UnsafeArg> for Fail {
+    fn from(e: UnsafeArg) -> Self {
+        Fail::invalid(e.field, e.message)
+    }
 }
 
 fn unsafe_arg(field: &'static str, reason: impl std::fmt::Display) -> UnsafeArg {
@@ -859,8 +1073,11 @@ pub(crate) fn validate_request(
     for pattern in list("exclude", ';') {
         check_option_value("exclude", &pattern)?;
     }
+    if let Some(f) = args.get("password_file") {
+        check_positional("password_file", f)?;
+    }
     match verb {
-        "create" => {
+        "create" | "schedule" => {
             let sources = list("src", ';');
             if sources.is_empty() {
                 return Err(unsafe_arg("src", "must name at least one path"));
@@ -872,7 +1089,7 @@ pub(crate) fn validate_request(
                 check_option_value("label", label)?;
             }
         }
-        "restore" => {
+        "restore" | "verify" => {
             if let Some(id) = args.get("snapshot_id") {
                 match backend {
                     BackendType::Tar | BackendType::Rsync => {
@@ -998,33 +1215,64 @@ pub(crate) fn build_restic_restore(
 }
 
 /// borg extracts into its working directory, so the destination is the cwd.
+/// `--list` names every extracted item; include patterns are borg PATH
+/// arguments after the archive.
 pub(crate) fn build_borg_restore(
     repo: &str,
     snapshot_id: &str,
     dest: &str,
+    include: &[String],
     exclude: &[String],
 ) -> CmdSpec {
     let mut c = CmdSpec::new("borg")
-        .arg("extract")
+        .args(["extract", "--list"])
         .args(repeat_flag("--exclude", exclude))
         .arg("--")
-        .arg(format!("{}::{}", repo, snapshot_id));
+        .arg(format!("{}::{}", repo, snapshot_id))
+        .args(include.iter().cloned());
     c.cwd = Some(dest.to_string());
     c
 }
 
-pub(crate) fn build_tar_restore(archive: &str, dest: &str, exclude: &[String]) -> CmdSpec {
-    CmdSpec::new("tar")
-        .args(["--force-local", "-xzf", archive])
+/// `-v` names every extracted member. Include patterns are shell-style
+/// member patterns (`*` does not match `/`) after `--`.
+pub(crate) fn build_tar_restore(
+    archive: &str,
+    dest: &str,
+    include: &[String],
+    exclude: &[String],
+) -> CmdSpec {
+    let c = CmdSpec::new("tar")
+        .args(["--force-local", "-v", "-xzf", archive])
         .args(repeat_flag("--exclude", exclude))
-        .args(["-C", dest])
+        .args(["-C", dest]);
+    if include.is_empty() {
+        c
+    } else {
+        c.args(["--wildcards", "--no-wildcards-match-slash", "--"])
+            .args(include.iter().cloned())
+    }
 }
 
-pub(crate) fn build_rsync_restore(snapshot_dir: &str, dest: &str, exclude: &[String]) -> CmdSpec {
-    CmdSpec::new("rsync")
-        .arg("-av")
-        .args(repeat_flag("--exclude", exclude))
-        .arg("--")
+/// Excludes come first (the first matching rsync rule wins); include
+/// patterns then select files, every directory is traversed, everything
+/// else is excluded and directories left empty are not created.
+pub(crate) fn build_rsync_restore(
+    snapshot_dir: &str,
+    dest: &str,
+    include: &[String],
+    exclude: &[String],
+) -> CmdSpec {
+    let mut c = CmdSpec::new("rsync")
+        .args(["-a", "--stats"])
+        .args(repeat_flag("--exclude", exclude));
+    if !include.is_empty() {
+        c = c
+            .arg("--include=*/")
+            .args(repeat_flag("--include", include))
+            .args(["--exclude=*", "--prune-empty-dirs"]);
+    }
+    c.arg("--")
         .args([rsync_local(snapshot_dir), rsync_local(dest)])
 }
 
@@ -1033,14 +1281,18 @@ pub(crate) fn build_restic_verify(repo_url: Option<&String>, read_data: bool) ->
     if read_data { c.arg("--read-data") } else { c }
 }
 
-pub(crate) fn build_borg_verify(repo: &str, verify_data: bool) -> CmdSpec {
+/// `archive`: check only that archive (`<repo>::<archive>`).
+pub(crate) fn build_borg_verify(repo: &str, archive: Option<&str>, verify_data: bool) -> CmdSpec {
     let c = CmdSpec::new("borg").arg("check");
     let c = if verify_data {
         c.arg("--verify-data")
     } else {
         c
     };
-    c.args(["--", repo])
+    match archive {
+        Some(a) => c.args(["--".to_string(), format!("{}::{}", repo, a)]),
+        None => c.args(["--", repo]),
+    }
 }
 
 pub(crate) fn build_tar_verify(archive: &str) -> CmdSpec {
@@ -1067,10 +1319,11 @@ pub(crate) fn build_borg_prune(repo: &str, policy: &RetentionPolicy, dry_run: bo
 }
 
 // ---------------------------------------------------------------------------
-// Repository password (C1)
+// Repository password
 // ---------------------------------------------------------------------------
 
 /// Environment changes that give the backend its repository password.
+/// Passwords reach the backend through its environment, never its argv.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct RepoSecret {
     pub set: HashMap<String, String>,
@@ -1084,16 +1337,24 @@ impl RepoSecret {
     }
 }
 
+/// Why no repository password could be provided.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SecretError {
+    /// No password source at all.
+    Missing(String),
+    /// `password_file` cannot be read.
+    Unreadable(String),
+}
+
 /// Resolves the restic/borg repository password from `password=` or
 /// `password_file=`, else from the backend's usual environment variables.
-/// tar and rsync need none. Returns an error message (never containing the
-/// secret) when restic or borg has no password source.
+/// tar and rsync need none. The error message never contains the secret.
 pub(crate) fn resolve_repo_secret(
     backend: &BackendType,
     args: &Args,
     env_has: impl Fn(&str) -> bool,
     read_file: impl Fn(&str) -> std::io::Result<String>,
-) -> std::result::Result<RepoSecret, String> {
+) -> std::result::Result<RepoSecret, SecretError> {
     let mut secret = RepoSecret::default();
     match backend {
         BackendType::Restic => {
@@ -1105,36 +1366,53 @@ pub(crate) fn resolve_repo_secret(
                     "RESTIC_PASSWORD_COMMAND".to_string(),
                 ];
             } else if let Some(f) = args.get("password_file") {
+                // Checked here so an unreadable file is reported before
+                // anything runs; restic reads it again itself.
+                read_file(f).map_err(|e| {
+                    SecretError::Unreadable(format!("cannot read password_file {}: {}", f, e))
+                })?;
                 secret
                     .set
                     .insert("RESTIC_PASSWORD_FILE".to_string(), f.clone());
                 // restic refuses both a password file and a password command.
-                secret.remove = vec!["RESTIC_PASSWORD_COMMAND".to_string()];
+                secret.remove = vec![
+                    "RESTIC_PASSWORD".to_string(),
+                    "RESTIC_PASSWORD_COMMAND".to_string(),
+                ];
             } else if !RESTIC_SECRET_ENV.iter().any(|k| env_has(k)) {
-                return Err(
+                return Err(SecretError::Missing(
                     "restic needs a repository password: pass password=<secret> or \
                     password_file=<path>, or set RESTIC_PASSWORD or RESTIC_PASSWORD_FILE"
                         .to_string(),
-                );
+                ));
             }
         }
         BackendType::Borg => {
             if let Some(p) = args.get("password") {
                 secret.set.insert("BORG_PASSPHRASE".to_string(), p.clone());
+                secret.remove = vec![
+                    "BORG_PASSCOMMAND".to_string(),
+                    "BORG_PASSPHRASE_FD".to_string(),
+                ];
             } else if let Some(f) = args.get("password_file") {
-                let content =
-                    read_file(f).map_err(|e| format!("cannot read password_file {}: {}", f, e))?;
+                let content = read_file(f).map_err(|e| {
+                    SecretError::Unreadable(format!("cannot read password_file {}: {}", f, e))
+                })?;
                 secret.set.insert(
                     "BORG_PASSPHRASE".to_string(),
                     content.trim_end_matches(['\r', '\n']).to_string(),
                 );
+                secret.remove = vec![
+                    "BORG_PASSCOMMAND".to_string(),
+                    "BORG_PASSPHRASE_FD".to_string(),
+                ];
             } else if !BORG_SECRET_ENV.iter().any(|k| env_has(k)) {
-                return Err(
+                return Err(SecretError::Missing(
                     "borg needs a repository passphrase: pass password=<secret> or \
                     password_file=<path>, or set BORG_PASSPHRASE or BORG_PASSCOMMAND \
                     (BORG_PASSPHRASE may be empty for an unencrypted repository)"
                         .to_string(),
-                );
+                ));
             }
         }
         BackendType::Rsync | BackendType::Tar => {}
@@ -1306,28 +1584,33 @@ pub(crate) fn parse_list_output(backend: &BackendType, output: &str) -> Result<V
     }
 }
 
-fn parse_restore_output(backend: &BackendType, output: &str) -> Value {
-    let files_count = match backend {
-        BackendType::Restic => output
-            .lines()
-            .filter(|line| line.contains("restoring"))
-            .count(),
-        BackendType::Borg => output.lines().filter(|line| line.contains("files")).count(),
-        BackendType::Tar => output.lines().count(),
-        BackendType::Rsync => output
-            .lines()
-            .filter(|line| {
-                !line.trim().is_empty()
-                    && !line.contains("receiving incremental")
-                    && !line.contains("sending incremental")
-            })
-            .count(),
-    };
-    json!({
-        "files_restored": files_count,
-        "bytes_restored": 0,
-        "success": true
+/// The number in restic's `Summary: Restored <n> files/dirs (...)` line.
+pub(crate) fn parse_restic_restored(output: &str) -> Option<u64> {
+    output.lines().find_map(|l| {
+        let rest = l.trim().strip_prefix("Summary: Restored ")?;
+        rest.split_whitespace().next()?.parse().ok()
     })
+}
+
+/// Regular files (count, bytes) under `dest` among the relative paths a
+/// backend listed as extracted. Symlinks are not followed.
+fn count_listed_files(dest: &Path, listed: &str) -> (u64, u64) {
+    let mut seen = std::collections::HashSet::new();
+    let (mut files, mut bytes) = (0, 0);
+    for line in listed.lines() {
+        let rel = line.trim_end().trim_start_matches("./");
+        let rel = rel.trim_start_matches('/');
+        if rel.is_empty() || !seen.insert(rel.to_string()) {
+            continue;
+        }
+        if let Ok(meta) = fs::symlink_metadata(dest.join(rel))
+            && meta.is_file()
+        {
+            files += 1;
+            bytes += meta.len();
+        }
+    }
+    (files, bytes)
 }
 
 /// Number of snapshots removed (or that would be removed) by a prune run.
@@ -1371,16 +1654,29 @@ pub(crate) fn parse_prune_count(
 #[derive(Debug, Clone)]
 pub(crate) struct LocalSnapshot {
     pub id: String,
-    pub path: std::path::PathBuf,
+    pub path: PathBuf,
     pub modified: DateTime<Utc>,
     pub bytes: Option<u64>,
 }
 
+/// The deadline passed during in-process work.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DeadlinePassed;
+
+fn check_deadline(deadline: Instant) -> std::result::Result<(), DeadlinePassed> {
+    if Instant::now() >= deadline {
+        Err(DeadlinePassed)
+    } else {
+        Ok(())
+    }
+}
+
 /// Total size of the regular files under `path`, not following symlinks.
-fn dir_size(path: &Path) -> u64 {
+fn dir_size(path: &Path, deadline: Instant) -> std::result::Result<u64, DeadlinePassed> {
     let mut total = 0;
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        check_deadline(deadline)?;
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
@@ -1393,7 +1689,14 @@ fn dir_size(path: &Path) -> u64 {
             }
         }
     }
-    total
+    Ok(total)
+}
+
+/// Why a local repository could not be scanned.
+#[derive(Debug)]
+pub(crate) enum ScanError {
+    Io(std::io::Error),
+    Deadline,
 }
 
 /// tar: `*.tar.gz` files (id is the name without `.tar.gz`); rsync: snapshot
@@ -1402,14 +1705,16 @@ pub(crate) fn scan_local_snapshots(
     backend: &BackendType,
     repo: &Path,
     with_sizes: bool,
-) -> std::io::Result<Vec<LocalSnapshot>> {
+    deadline: Instant,
+) -> std::result::Result<Vec<LocalSnapshot>, ScanError> {
     let mut out = Vec::new();
-    for entry in fs::read_dir(repo)? {
-        let entry = entry?;
+    for entry in fs::read_dir(repo).map_err(ScanError::Io)? {
+        check_deadline(deadline).map_err(|_| ScanError::Deadline)?;
+        let entry = entry.map_err(ScanError::Io)?;
         let name = entry.file_name().to_string_lossy().into_owned();
         // DirEntry::metadata does not follow symlinks.
-        let meta = entry.metadata()?;
-        let modified: DateTime<Utc> = meta.modified()?.into();
+        let meta = entry.metadata().map_err(ScanError::Io)?;
+        let modified: DateTime<Utc> = meta.modified().map_err(ScanError::Io)?.into();
         match backend {
             BackendType::Tar if meta.is_file() => {
                 if let Some(id) = name.strip_suffix(".tar.gz") {
@@ -1422,7 +1727,11 @@ pub(crate) fn scan_local_snapshots(
                 }
             }
             BackendType::Rsync if meta.is_dir() => {
-                let bytes = with_sizes.then(|| dir_size(&entry.path()));
+                let bytes = if with_sizes {
+                    Some(dir_size(&entry.path(), deadline).map_err(|_| ScanError::Deadline)?)
+                } else {
+                    None
+                };
                 out.push(LocalSnapshot {
                     id: name,
                     path: entry.path(),
@@ -1481,13 +1790,19 @@ pub(crate) fn select_prune(
         .collect()
 }
 
-/// Opens every regular file under `root` for reading. Returns
-/// (files checked, errors).
-fn check_files_readable(root: &Path) -> (usize, Vec<String>) {
+/// Opens (quick) or reads completely (`read_data`) every regular file under
+/// `root`. Returns (files checked, errors), or the deadline.
+fn check_files_readable(
+    root: &Path,
+    read_data: bool,
+    deadline: Instant,
+) -> std::result::Result<(usize, Vec<String>), DeadlinePassed> {
     let mut checked = 0;
     let mut errors = Vec::new();
     let mut stack = vec![root.to_path_buf()];
+    let mut buf = vec![0u8; 64 * 1024];
     while let Some(dir) = stack.pop() {
+        check_deadline(deadline)?;
         let entries = match fs::read_dir(&dir) {
             Ok(e) => e,
             Err(e) => {
@@ -1501,13 +1816,51 @@ fn check_files_readable(root: &Path) -> (usize, Vec<String>) {
                 stack.push(entry.path());
             } else if meta.is_file() {
                 checked += 1;
-                if let Err(e) = fs::File::open(entry.path()) {
-                    errors.push(format!("{}: {}", entry.path().display(), e));
+                match fs::File::open(entry.path()) {
+                    Err(e) => errors.push(format!("{}: {}", entry.path().display(), e)),
+                    Ok(mut f) if read_data => loop {
+                        check_deadline(deadline)?;
+                        match f.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(_) => {}
+                            Err(e) => {
+                                errors.push(format!("{}: {}", entry.path().display(), e));
+                                break;
+                            }
+                        }
+                    },
+                    Ok(_) => {}
                 }
             }
         }
     }
-    (checked, errors)
+    Ok((checked, errors))
+}
+
+/// Creates `path` and missing parents owner-only (0700). An existing
+/// directory is left as it is.
+fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+}
+
+/// True if anything (including a dangling symlink) exists at `path`.
+fn entry_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+/// A snapshot name not yet used in `repo` (`<name>`, then `<name>_2`, ...),
+/// so a second backup in the same second never overwrites the first.
+fn unique_local_name(repo: &Path, name: &str, suffix: &str) -> String {
+    let mut candidate = name.to_string();
+    let mut n = 2;
+    while entry_exists(&repo.join(format!("{candidate}{suffix}"))) {
+        candidate = format!("{name}_{n}");
+        n += 1;
+    }
+    candidate
 }
 
 // ---------------------------------------------------------------------------
@@ -1521,30 +1874,54 @@ fn split_list(s: &str, sep: char) -> Vec<String> {
         .collect()
 }
 
-/// Boolean argument; accepts true/false, 1/0, yes/no.
-fn arg_flag(args: &Args, key: &str, default: bool) -> bool {
-    match args.get(key).map(|s| s.trim().to_ascii_lowercase()) {
-        Some(v) if matches!(v.as_str(), "true" | "1" | "yes" | "on") => true,
-        Some(v) if matches!(v.as_str(), "false" | "0" | "no" | "off") => false,
-        _ => default,
+/// A strict boolean argument (`core::lenient::bool_arg`); absent is `default`.
+fn bool_arg(args: &Args, key: &str, default: bool) -> VResult<bool> {
+    crate::core::lenient::bool_arg(args, key)
+        .map(|v| v.unwrap_or(default))
+        .map_err(|e| Fail::invalid(key, format!("{e}; nothing was done")))
+}
+
+/// `timeout_ms`: an integer from 1 to MAX_TIMEOUT_MS, or `default`.
+fn arg_timeout(args: &Args, default: u64) -> VResult<u64> {
+    match args.get("timeout_ms") {
+        None => Ok(default),
+        Some(v) => match v.trim().parse::<u64>() {
+            Ok(n) if (1..=MAX_TIMEOUT_MS).contains(&n) => Ok(n),
+            _ => Err(Fail::invalid(
+                "timeout_ms",
+                format!(
+                    "timeout_ms must be an integer from 1 to {MAX_TIMEOUT_MS} (milliseconds), \
+                     got {v:?}; nothing was done"
+                ),
+            )),
+        },
     }
 }
 
-fn arg_timeout(args: &Args, default: u64) -> u64 {
-    args.get("timeout_ms")
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(default)
-}
-
-fn arg_u32(args: &Args, key: &str) -> std::result::Result<Option<u32>, String> {
+/// A `keep_*` count: absent, or an integer of at least 1.
+fn arg_keep(args: &Args, key: &str) -> VResult<Option<u32>> {
     match args.get(key) {
         None => Ok(None),
-        Some(v) => v
-            .trim()
-            .parse()
-            .map(Some)
-            .map_err(|_| format!("{} must be a non-negative integer, got {:?}", key, v)),
+        Some(v) => match v.trim().parse::<u32>() {
+            Ok(n) if n >= 1 => Ok(Some(n)),
+            _ => Err(Fail::invalid(
+                key,
+                format!(
+                    "{key} must be an integer of at least 1 (omit it to not keep by this \
+                     rule), got {v:?}; nothing was pruned"
+                ),
+            )),
+        },
     }
+}
+
+fn required<'a>(args: &'a Args, key: &str) -> VResult<&'a String> {
+    args.get(key).ok_or_else(|| {
+        Fail::invalid(
+            key,
+            format!("missing required argument {key}; nothing was done"),
+        )
+    })
 }
 
 fn truncate_output(s: &str) -> String {
@@ -1558,27 +1935,91 @@ fn truncate_output(s: &str) -> String {
     format!("{}...[TRUNCATED]", &s[..end])
 }
 
-/// Per-call envelope settings.
-struct Reply {
-    verb: &'static str,
+fn stderr_tail(stderr: &str) -> String {
+    if stderr.len() <= ERROR_TAIL_SIZE {
+        return stderr.to_string();
+    }
+    let mut start = stderr.len() - ERROR_TAIL_SIZE;
+    while !stderr.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("...{}", &stderr[start..])
+}
+
+/// A word as a POSIX shell would read it back: unchanged when it holds only
+/// safe characters, else single-quoted.
+fn shell_quote(word: &str) -> String {
+    let safe = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-=:,@+%".contains(c));
+    if safe {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+/// Per-call state: what the envelope reports, also on failure.
+struct Ctx {
+    verb: String,
     pretty: bool,
     dry_run: bool,
     start: Instant,
+    timeout_ms: u64,
+    deadline: Instant,
+    info: BackendInfo,
+    warnings: Vec<String>,
 }
 
-impl Reply {
-    fn new(verb: &'static str, args: &Args, dry_run: bool) -> Self {
-        Reply {
-            verb,
-            pretty: arg_flag(args, "json_pretty", false),
-            dry_run,
-            start: Instant::now(),
+impl Ctx {
+    fn new(verb: &str) -> Self {
+        let now = Instant::now();
+        Ctx {
+            verb: verb.to_string(),
+            pretty: false,
+            dry_run: false,
+            start: now,
+            timeout_ms: 0,
+            deadline: now,
+            info: BackendInfo {
+                id: "unknown".to_string(),
+                version: None,
+                command: vec![],
+                env_redacted: HashMap::new(),
+                cwd: None,
+                timeout_ms: 0,
+                simulated: false,
+            },
+            warnings: Vec::new(),
         }
     }
 
-    fn elapsed_ms(&self) -> u64 {
-        self.start.elapsed().as_millis() as u64
+    /// Starts the verb's deadline: `timeout_ms` covers the whole verb.
+    fn set_timeout(&mut self, timeout_ms: u64) {
+        self.timeout_ms = timeout_ms;
+        self.info.timeout_ms = timeout_ms;
+        let limit = Duration::from_millis(timeout_ms);
+        // This verb's deadline replaces any earlier one in this thread.
+        process::clear_limit();
+        self.deadline = self.start + process::limit(limit);
     }
+
+    fn timeout_fail(&self, what: &str) -> Fail {
+        Fail::new(
+            Code::Timeout,
+            format!(
+                "{what} did not finish within timeout_ms={}",
+                self.timeout_ms
+            ),
+        )
+    }
+}
+
+/// The repository-related arguments every backend verb shares.
+struct Common {
+    backend: BackendType,
+    repo_url: Option<String>,
 }
 
 impl BackupHandle {
@@ -1614,6 +2055,7 @@ impl BackupHandle {
         Ok(BackupHandle {
             repo,
             target: url.to_string(),
+            bin_dir: None,
         })
     }
 
@@ -1660,55 +2102,148 @@ impl BackupHandle {
         }
     }
 
-    /// Auto-select backend based on availability per specification
-    fn select_backend(&self, requested: &str) -> Result<BackendType> {
-        if requested != "auto" {
-            return match requested {
-                "restic" => Ok(BackendType::Restic),
-                "borg" => Ok(BackendType::Borg),
-                "rsync" => Ok(BackendType::Rsync),
-                "tar" => Ok(BackendType::Tar),
-                _ => bail!("Unknown backend: {}", requested),
-            };
-        }
-
-        // Auto-selection order per specification: restic, borg, rsync, tar
-        for backend in &["restic", "borg", "rsync", "tar"] {
-            if which::which(backend).is_ok() {
-                return self.select_backend(backend);
+    /// The executable for `program`: from the test directory when one is
+    /// set, else from `PATH`.
+    fn program_path(&self, program: &str) -> Option<PathBuf> {
+        match &self.bin_dir {
+            Some(dir) => {
+                let p = dir.join(program);
+                p.is_file().then_some(p)
             }
+            None => which::which(program).ok(),
         }
-
-        bail!("No supported backend found. Install one of: restic, borg, rsync, tar")
     }
 
-    /// Repository password for restic/borg from args or the process environment.
-    fn repo_secret(
-        &self,
-        backend: &BackendType,
-        args: &Args,
-    ) -> std::result::Result<RepoSecret, String> {
-        resolve_repo_secret(
+    /// The backend named by `backend=` (default `auto`: the first of restic,
+    /// borg, rsync, tar that is installed).
+    fn select_backend(&self, args: &Args) -> VResult<BackendType> {
+        let requested = args.get("backend").map(String::as_str).unwrap_or("auto");
+        let parsed = match requested {
+            "restic" => Some(BackendType::Restic),
+            "borg" => Some(BackendType::Borg),
+            "rsync" => Some(BackendType::Rsync),
+            "tar" => Some(BackendType::Tar),
+            "auto" => None,
+            other => {
+                let mut msg =
+                    format!("backend must be auto, restic, borg, rsync or tar, got {other:?}");
+                if let Some(s) = suggest(other, &["auto", "restic", "borg", "rsync", "tar"]) {
+                    msg.push_str(&format!("; did you mean {s}?"));
+                }
+                msg.push_str("; nothing was done");
+                return Err(Fail::invalid("backend", msg));
+            }
+        };
+        if let Some(b) = parsed {
+            return Ok(b);
+        }
+        for b in [
+            BackendType::Restic,
+            BackendType::Borg,
+            BackendType::Rsync,
+            BackendType::Tar,
+        ] {
+            if self.program_path(&b.to_string()).is_some() {
+                return Ok(b);
+            }
+        }
+        Err(Fail::new(
+            Code::BackendNotFound,
+            "no supported backend found; install one of restic, borg, rsync, tar",
+        ))
+    }
+
+    /// Fails with backend_not_found when `program` is not installed.
+    fn require_program(&self, program: &str) -> VResult<()> {
+        if self.program_path(program).is_none() {
+            return Err(Fail::new(
+                Code::BackendNotFound,
+                format!("{program} is not installed (not found on PATH); nothing was done"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Backend, repository, password and value checks shared by the
+    /// repository verbs. Runs before anything is done.
+    fn common(&self, verb: &str, args: &Args, cx: &mut Ctx) -> VResult<Common> {
+        let backend = self.select_backend(args)?;
+        cx.info.id = backend.to_string();
+        if let Some(msg) = repo_url_required(&backend, args) {
+            return Err(Fail::invalid("repo_url", msg));
+        }
+        validate_request(&backend, verb, args)?;
+        if backend == BackendType::Restic
+            && args.get("repo_url").is_none()
+            && !RESTIC_REPO_ENV
+                .iter()
+                .any(|k| std::env::var_os(k).is_some())
+        {
+            return Err(Fail::invalid(
+                "repo_url",
+                "restic needs a repository: pass repo_url=<repo> or set RESTIC_REPOSITORY; \
+                 nothing was done",
+            ));
+        }
+        if backend.is_local() {
+            for key in ["password", "password_file"] {
+                if args.contains_key(key) {
+                    return Err(Fail::invalid(
+                        key,
+                        format!(
+                            "{key} is not used by the {backend} backend ({backend} \
+                             repositories are not encrypted); nothing was done"
+                        ),
+                    ));
+                }
+            }
+        } else if args.contains_key("password") && args.contains_key("password_file") {
+            return Err(Fail::invalid(
+                "password",
+                "pass either password or password_file, not both; nothing was done",
+            ));
+        }
+        if args.contains_key("tag") && backend != BackendType::Restic {
+            return Err(Fail::invalid(
+                "tag",
+                format!("tag is only supported by restic, not {backend}; nothing was done"),
+            ));
+        }
+        Ok(Common {
             backend,
+            repo_url: args.get("repo_url").cloned(),
+        })
+    }
+
+    /// Adds the repository password to `spec` (restic/borg), or fails before
+    /// anything runs.
+    fn apply_secret(&self, c: &Common, args: &Args, spec: &mut CmdSpec) -> VResult<()> {
+        let secret = resolve_repo_secret(
+            &c.backend,
             args,
             |k| std::env::var_os(k).is_some(),
             |p| fs::read_to_string(p),
         )
+        .map_err(|e| match e {
+            SecretError::Missing(m) => Fail::new(Code::MissingPassword, m),
+            SecretError::Unreadable(m) => Fail::new(Code::PasswordFileUnreadable, m),
+        })?;
+        secret.apply(spec);
+        Ok(())
     }
 
-    /// Execute a backend command with timeout and output capture per specification
-    fn execute_backend_command(&self, spec: &CmdSpec, timeout_ms: u64) -> Result<BackendResult> {
+    /// Runs `spec` under the verb's deadline. The whole process tree of the
+    /// backend is stopped at the deadline.
+    fn execute(&self, cx: &Ctx, spec: &CmdSpec) -> VResult<BackendResult> {
         let start = Instant::now();
-
-        if which::which(&spec.program).is_err() {
-            bail!("Backend binary '{}' not found in PATH", spec.program);
-        }
-
-        let mut cmd = Command::new(&spec.program);
-        cmd.args(&spec.args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let program = self.program_path(&spec.program).ok_or_else(|| {
+            Fail::new(
+                Code::BackendNotFound,
+                format!("{} is not installed (not found on PATH)", spec.program),
+            )
+        })?;
+        let mut cmd = Command::new(&program);
+        cmd.args(&spec.args);
         for key in &spec.env_remove {
             cmd.env_remove(key);
         }
@@ -1718,18 +2253,56 @@ impl BackupHandle {
         if let Some(cwd) = &spec.cwd {
             cmd.current_dir(cwd);
         }
-
-        let child = cmd.spawn().context("Failed to spawn backend process")?;
-        let output = wait_with_deadline(child, Duration::from_millis(timeout_ms))?
-            .ok_or_else(|| anyhow::anyhow!("Backend command timed out after {}ms", timeout_ms))?;
-        let duration = start.elapsed();
-
+        let limit = cx.deadline.saturating_duration_since(Instant::now());
+        let output = match process::run(&mut cmd, Some(limit)) {
+            Ok(o) => o,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                return Err(Fail::new(
+                    Code::Timeout,
+                    format!("{e} at the deadline (timeout_ms={})", cx.timeout_ms),
+                )
+                .with(json!({ "timeout_ms": cx.timeout_ms })));
+            }
+            Err(e) => {
+                return Err(Fail::new(
+                    Code::ExecutionFailed,
+                    format!("cannot run {}: {}", spec.program, e),
+                ));
+            }
+        };
+        use std::os::unix::process::ExitStatusExt;
         Ok(BackendResult {
-            exit_code: output.status.code().unwrap_or(-1),
+            exit_code: output.status.code(),
+            signal: output.status.signal(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            duration_ms: duration.as_millis() as u64,
+            duration_ms: start.elapsed().as_millis() as u64,
         })
+    }
+
+    /// backend_failed for a backend that exited non-zero or was killed.
+    fn exit_fail(&self, spec: &CmdSpec, res: &BackendResult) -> Fail {
+        let last = res
+            .stderr
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim();
+        let how = match (res.exit_code, res.signal) {
+            (Some(c), _) => format!("exited with status {c}"),
+            (None, Some(s)) => format!("was killed by signal {s}"),
+            (None, None) => "failed".to_string(),
+        };
+        let mut message = format!("{} {}", spec.program, how);
+        if !last.is_empty() {
+            message.push_str(&format!(": {last}"));
+        }
+        Fail::new(Code::BackendFailed, message).with(json!({
+            "exit_code": res.exit_code,
+            "signal": res.signal,
+            "stderr_tail": stderr_tail(&res.stderr),
+        }))
     }
 
     /// BackendInfo for the envelope; secret environment values are redacted.
@@ -1767,221 +2340,83 @@ impl BackupHandle {
         }
     }
 
-    fn unknown_backend_info(&self, timeout_ms: u64) -> BackendInfo {
-        BackendInfo {
-            id: "unknown".to_string(),
-            version: None,
-            command: vec![],
-            env_redacted: HashMap::new(),
-            cwd: None,
-            timeout_ms,
-            simulated: false,
-        }
+    fn set_info(&self, cx: &mut Ctx, backend: &BackendType, spec: Option<&CmdSpec>) {
+        cx.info = self.backend_info(backend, spec, cx.timeout_ms, cx.dry_run && spec.is_some());
     }
 
-    /// Write envelope to stdout per specification
-    fn write_envelope(
-        &self,
-        envelope: &BackupEnvelope,
-        io: &mut IoStreams,
-        pretty: bool,
-    ) -> Result<()> {
-        let json_str = if pretty {
-            serde_json::to_string_pretty(envelope)?
-        } else {
-            serde_json::to_string(envelope)?
-        };
-        writeln!(io.stdout, "{}", json_str)?;
-        Ok(())
-    }
-
-    fn ok(
-        &self,
-        r: &Reply,
-        io: &mut IoStreams,
-        info: BackendInfo,
-        result: Value,
-        warnings: Vec<String>,
-    ) -> Result<Status> {
-        let mut envelope = BackupEnvelope::success(
-            r.verb,
-            &self.target,
-            info,
-            result,
-            r.dry_run,
-            r.elapsed_ms(),
-        );
-        envelope.warnings = warnings;
-        self.write_envelope(&envelope, io, r.pretty)?;
-        Ok(Status::success())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn fail(
-        &self,
-        r: &Reply,
-        io: &mut IoStreams,
-        info: BackendInfo,
-        kind: &str,
-        message: &str,
-        details: Option<Value>,
-        warnings: Vec<String>,
-        code: i32,
-    ) -> Result<Status> {
-        let error = BackupError {
-            kind: kind.to_string(),
-            message: message.to_string(),
-            details,
-        };
-        let mut envelope =
-            BackupEnvelope::error(r.verb, &self.target, info, error, r.dry_run, r.elapsed_ms());
-        envelope.warnings = warnings;
-        self.write_envelope(&envelope, io, r.pretty)?;
-        Ok(Status::err(
-            if code == 0 { 1 } else { code },
-            message.to_string(),
-        ))
-    }
-
-    /// BACKEND_FAILED envelope for a non-zero exit.
-    fn fail_exit(
-        &self,
-        r: &Reply,
-        io: &mut IoStreams,
-        info: BackendInfo,
-        res: &BackendResult,
-        warnings: Vec<String>,
-    ) -> Result<Status> {
-        let details = json!({
-            "exit_code": res.exit_code,
-            "stderr_tail": self.get_stderr_tail(&res.stderr)
-        });
-        self.fail(
-            r,
-            io,
-            info,
-            "BACKEND_FAILED",
-            "Backend command failed",
-            Some(details),
-            warnings,
-            res.exit_code,
-        )
-    }
-
-    /// TIMEOUT or `kind` envelope for a command that could not be run.
-    fn fail_exec(
-        &self,
-        r: &Reply,
-        io: &mut IoStreams,
-        info: BackendInfo,
-        kind: &str,
-        e: anyhow::Error,
-        warnings: Vec<String>,
-    ) -> Result<Status> {
-        let msg = e.to_string();
-        let kind = if msg.contains("timed out") {
-            "TIMEOUT"
-        } else {
-            kind
-        };
-        self.fail(r, io, info, kind, &msg, None, warnings, 1)
-    }
-
-    /// Helper method to get stderr tail for error details per specification
-    fn get_stderr_tail(&self, stderr: &str) -> String {
-        if stderr.len() <= ERROR_TAIL_SIZE {
-            return stderr.to_string();
-        }
-        let mut start = stderr.len() - ERROR_TAIL_SIZE;
-        while !stderr.is_char_boundary(start) {
-            start += 1;
-        }
-        format!("...{}", &stderr[start..])
-    }
-}
-
-/// Resolves the backend, or writes a BACKEND_NOT_FOUND envelope and returns.
-macro_rules! select_or_return {
-    ($self:ident, $r:ident, $io:ident, $args:ident, $timeout:expr) => {{
-        let name = $args.get("backend").map(String::as_str).unwrap_or("auto");
-        match $self.select_backend(name) {
-            Ok(b) => b,
-            Err(e) => {
-                let info = $self.unknown_backend_info($timeout);
-                return $self.fail(
-                    &$r,
-                    $io,
-                    info,
-                    "BACKEND_NOT_FOUND",
-                    &e.to_string(),
-                    None,
-                    vec![],
-                    1,
-                );
-            }
-        }
-    }};
-}
-
-/// Writes an INVALID_ARGS envelope (before anything runs) and returns when
-/// the backend needs `repo_url` and none was given.
-macro_rules! repo_or_return {
-    ($self:ident, $r:ident, $io:ident, $args:ident, $backend:expr, $timeout:expr) => {{
-        if let Some(msg) = repo_url_required(&$backend, $args) {
-            let info = $self.backend_info(&$backend, None, $timeout, $r.dry_run);
-            return $self.fail(&$r, $io, info, "INVALID_ARGS", &msg, None, vec![], 1);
-        }
-    }};
-}
-
-/// Writes an INVALID_ARGS envelope (before anything runs or a dry-run plan
-/// is reported) and returns when a caller value is unsafe for the backend
-/// command line.
-macro_rules! validated_or_return {
-    ($self:ident, $r:ident, $io:ident, $args:ident, $backend:expr, $timeout:expr) => {{
-        if let Err(e) = validate_request(&$backend, $r.verb, $args) {
-            let info = $self.backend_info(&$backend, None, $timeout, $r.dry_run);
-            let details = json!({ "field": e.field });
-            return $self.fail(
-                &$r,
-                $io,
-                info,
-                "INVALID_ARGS",
-                &e.message,
-                Some(details),
-                vec![],
-                1,
+    /// Warns (stderr) when the password is given on the command line.
+    fn warn_plain_password(args: &Args, io: &mut IoStreams) {
+        if args.contains_key("password") {
+            let _ = writeln!(
+                io.stderr,
+                "Warning: password= puts the repository password on the command line, where \
+                 the process list and shell history can show it; use password_file=<path> or \
+                 the backend's password environment variables"
             );
         }
-    }};
-}
+    }
 
-/// Adds the repository password to `spec`, or writes a MISSING_PASSWORD
-/// envelope (before anything runs) and returns.
-macro_rules! secret_or_return {
-    ($self:ident, $r:ident, $io:ident, $args:ident, $backend:expr, $spec:expr, $timeout:expr) => {{
-        match $self.repo_secret(&$backend, $args) {
-            Ok(secret) => secret.apply(&mut $spec),
-            Err(msg) => {
-                let info = $self.backend_info(&$backend, Some(&$spec), $timeout, $r.dry_run);
-                return $self.fail(&$r, $io, info, "MISSING_PASSWORD", &msg, None, vec![], 1);
+    /// Writes the envelope for `outcome` and returns the status.
+    fn finish(&self, cx: Ctx, outcome: VResult<Value>, io: &mut IoStreams) -> Result<Status> {
+        let elapsed = cx.start.elapsed().as_millis() as u64;
+        let (envelope, status) = match outcome {
+            Ok(result) => {
+                let mut e = BackupEnvelope::success(
+                    &cx.verb,
+                    &self.target,
+                    cx.info,
+                    result,
+                    cx.dry_run,
+                    elapsed,
+                );
+                e.warnings = cx.warnings;
+                (e, Status::success())
             }
-        }
-    }};
+            Err(f) => {
+                let code = f.code.code();
+                let error = BackupError {
+                    code: code.to_string(),
+                    kind: f.code.kind().to_string(),
+                    message: f.message.clone(),
+                    details: f.details,
+                };
+                let mut e = BackupEnvelope::error(
+                    &cx.verb,
+                    &self.target,
+                    cx.info,
+                    error,
+                    cx.dry_run,
+                    elapsed,
+                );
+                e.warnings = cx.warnings;
+                // A backend lost to its deadline is reported by main
+                // (`[backup.timeout] outcome unknown ...`); every other
+                // failure is reported here, in the standard format.
+                if !(f.code == Code::Timeout && process::has_lost()) {
+                    let _ = writeln!(io.stderr, "{}", status::error_line(code, &f.message));
+                }
+                (e, Status::coded(f.code.exit(), code, &f.message))
+            }
+        };
+        let text = if cx.pretty {
+            serde_json::to_string_pretty(&envelope)?
+        } else {
+            serde_json::to_string(&envelope)?
+        };
+        writeln!(io.stdout, "{}", text)?;
+        io.stdout.flush()?;
+        Ok(status)
+    }
 }
 
-// Verb implementations per specification
+// Verb implementations
 impl BackupHandle {
-    /// Create backup snapshot per specification
-    fn verb_create(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let src = args
-            .get("src")
-            .ok_or_else(|| anyhow::anyhow!("Missing required argument: src"))?;
-        let timeout_ms = arg_timeout(args, DEFAULT_CREATE_TIMEOUT_MS);
-        let r = Reply::new("create", args, crate::core::lenient::dry_run(args)?);
-        let backend = select_or_return!(self, r, io, args, timeout_ms);
-        repo_or_return!(self, r, io, args, backend, timeout_ms);
-        validated_or_return!(self, r, io, args, backend, timeout_ms);
+    fn verb_create(&self, args: &Args, cx: &mut Ctx) -> VResult<Value> {
+        let src = required(args, "src")?;
+        cx.set_timeout(arg_timeout(args, DEFAULT_CREATE_TIMEOUT_MS)?);
+        let c = self.common("create", args, cx)?;
+        let backend = c.backend.clone();
+        let repo_url = c.repo_url.as_ref();
 
         let sources = split_list(src, ';');
         let mut tags = args
@@ -1994,22 +2429,23 @@ impl BackupHandle {
             .map(|e| split_list(e, ';'))
             .unwrap_or_default();
         let label = args.get("label").cloned();
-        let repo_url = args.get("repo_url");
         let name = snapshot_name(
             label.as_deref(),
             &Utc::now().format("%Y%m%d_%H%M%S").to_string(),
         );
 
-        // (command, snapshot id known in advance, repo dir to create, tar archive)
-        let (mut spec, known_id, repo_dir, archive) = match backend {
+        // (command, snapshot id known in advance, repo dir, tar archive, rsync dir)
+        let (mut spec, known_id, repo_dir, archive, snap_dir) = match backend {
             BackendType::Tar => {
                 let repo = local_repo_path(repo_url);
+                let name = unique_local_name(Path::new(&repo), &name, ".tar.gz");
                 let archive = format!("{}/{}.tar.gz", repo, name);
                 (
                     build_tar_create(&archive, &sources, &exclude),
-                    Some(name.clone()),
+                    Some(name),
                     Some(repo),
                     Some(archive),
+                    None,
                 )
             }
             BackendType::Restic => (
@@ -2017,31 +2453,35 @@ impl BackupHandle {
                 None,
                 None,
                 None,
+                None,
             ),
             BackendType::Borg => (
                 build_borg_create(&borg_repo(repo_url), &name, &sources, &exclude),
-                Some(name.clone()),
+                Some(name),
+                None,
                 None,
                 None,
             ),
             BackendType::Rsync => {
                 let repo = local_repo_path(repo_url);
-                let dest = format!("{}/{}/", repo, name);
+                let name = unique_local_name(Path::new(&repo), &name, "");
+                let dir = format!("{}/{}", repo, name);
                 (
-                    build_rsync_create(&dest, &sources, &exclude),
-                    Some(name.clone()),
+                    build_rsync_create(&format!("{dir}/"), &sources, &exclude),
+                    Some(name),
                     Some(repo),
                     None,
+                    Some(dir),
                 )
             }
         };
-        secret_or_return!(self, r, io, args, backend, spec, timeout_ms);
-
-        let mut warnings = Vec::new();
+        self.set_info(cx, &backend, Some(&spec));
+        self.apply_secret(&c, args, &mut spec)?;
+        self.set_info(cx, &backend, Some(&spec));
+        self.require_program(&spec.program)?;
         let capabilities = self.get_capabilities(&backend);
-        let info = self.backend_info(&backend, Some(&spec), timeout_ms, r.dry_run);
 
-        if r.dry_run {
+        if cx.dry_run {
             let snapshot = SnapshotInfo {
                 id: "dry-run-id".to_string(),
                 label: label.clone(),
@@ -2051,31 +2491,66 @@ impl BackupHandle {
                 bytes_sent: None,
                 bytes_total: None,
             };
-            let result = json!({
+            cx.warnings
+                .push("Dry run: no backup was created".to_string());
+            return Ok(json!({
                 "capabilities": capabilities,
                 "snapshot": snapshot,
                 "backend_raw": { "stdout": "", "stderr": "" },
                 "dry_run_mode": "plan"
-            });
-            warnings.push("Dry run: no backup was created".to_string());
-            return self.ok(&r, io, info, result, warnings);
+            }));
         }
 
+        // Local repositories and their snapshots are owner-only, and the
+        // snapshot is created new: nothing planted at its name is written
+        // through.
+        let mut created: Option<PathBuf> = None;
         if let Some(dir) = &repo_dir {
-            if let Err(e) = fs::create_dir_all(dir) {
-                let msg = format!("Failed to create repository directory {}: {}", dir, e);
-                return self.fail(&r, io, info, "IO", &msg, None, warnings, 1);
-            }
+            create_private_dir_all(Path::new(dir)).map_err(|e| {
+                Fail::new(
+                    Code::Io,
+                    format!("cannot create repository directory {dir}: {e}"),
+                )
+            })?;
         }
-
-        let res = match self.execute_backend_command(&spec, timeout_ms) {
-            Ok(res) => res,
-            Err(e) => return self.fail_exec(&r, io, info, "IO", e, warnings),
+        if let Some(archive) = &archive {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(archive)
+                .map_err(|e| Fail::new(Code::Io, format!("cannot create {archive}: {e}")))?;
+            created = Some(PathBuf::from(archive));
+        }
+        if let Some(dir) = &snap_dir {
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(dir)
+                .map_err(|e| Fail::new(Code::Io, format!("cannot create {dir}: {e}")))?;
+            created = Some(PathBuf::from(dir));
+        }
+        // A failed or stopped backup leaves no partial snapshot behind.
+        let clean_up = |f: Fail| -> Fail {
+            let Some(path) = &created else { return f };
+            let removed = if path.is_dir() {
+                fs::remove_dir_all(path)
+            } else {
+                fs::remove_file(path)
+            };
+            let mut details = f.details.clone().unwrap_or_else(|| json!({}));
+            details["partial_snapshot"] = json!(path.display().to_string());
+            details["partial_snapshot_removed"] = json!(removed.is_ok());
+            Fail {
+                details: Some(details),
+                ..f
+            }
         };
-        if res.exit_code != 0 {
-            match create_exit_warning(&backend, res.exit_code) {
-                Some(w) => warnings.push(w.to_string()),
-                None => return self.fail_exit(&r, io, info, &res, warnings),
+
+        let res = self.execute(cx, &spec).map_err(clean_up)?;
+        if !res.success() {
+            match res.exit_code.and_then(|c| create_exit_warning(&backend, c)) {
+                Some(w) => cx.warnings.push(w.to_string()),
+                None => return Err(clean_up(self.exit_fail(&spec, &res))),
             }
         }
 
@@ -2093,31 +2568,26 @@ impl BackupHandle {
             snap.bytes_total = fs::metadata(archive).ok().map(|m| m.len());
         }
         if snapshot.is_none() {
-            warnings.push(format!(
+            cx.warnings.push(format!(
                 "Backup completed, but no snapshot id was found in the {} output; see result.backend_raw",
                 backend
             ));
         }
-
-        let result = json!({
+        Ok(json!({
             "capabilities": capabilities,
             "snapshot": snapshot,
             "backend_raw": {
                 "stdout": truncate_output(&res.stdout),
                 "stderr": truncate_output(&res.stderr)
             }
-        });
-        self.ok(&r, io, info, result, warnings)
+        }))
     }
 
-    /// List backup snapshots per specification
-    fn verb_list(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let timeout_ms = arg_timeout(args, DEFAULT_LIST_TIMEOUT_MS);
-        let r = Reply::new("list", args, false);
-        let backend = select_or_return!(self, r, io, args, timeout_ms);
-        repo_or_return!(self, r, io, args, backend, timeout_ms);
-        validated_or_return!(self, r, io, args, backend, timeout_ms);
-        let repo_url = args.get("repo_url");
+    fn verb_list(&self, args: &Args, cx: &mut Ctx) -> VResult<Value> {
+        cx.set_timeout(arg_timeout(args, DEFAULT_LIST_TIMEOUT_MS)?);
+        let c = self.common("list", args, cx)?;
+        let backend = c.backend.clone();
+        let repo_url = c.repo_url.as_ref();
         let mut tags = args
             .get("tag")
             .map(|t| split_list(t, ';'))
@@ -2130,14 +2600,15 @@ impl BackupHandle {
             BackendType::Borg => build_borg_list(&borg_repo(repo_url)),
             BackendType::Tar | BackendType::Rsync => {
                 let repo = local_repo_path(repo_url);
-                let info = self.backend_info(&backend, None, timeout_ms, false);
-                let snaps = match scan_local_snapshots(&backend, Path::new(&repo), false) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let msg = format!("Cannot read repository directory {}: {}", repo, e);
-                        return self.fail(&r, io, info, "IO", &msg, None, vec![], 1);
-                    }
-                };
+                self.set_info(cx, &backend, None);
+                let snaps = scan_local_snapshots(&backend, Path::new(&repo), false, cx.deadline)
+                    .map_err(|e| match e {
+                        ScanError::Io(e) => Fail::new(
+                            Code::Io,
+                            format!("cannot read repository directory {repo}: {e}"),
+                        ),
+                        ScanError::Deadline => cx.timeout_fail("listing the repository"),
+                    })?;
                 let snapshots: Vec<SnapshotInfo> = snaps
                     .into_iter()
                     .map(|s| SnapshotInfo {
@@ -2150,58 +2621,38 @@ impl BackupHandle {
                         bytes_total: s.bytes,
                     })
                     .collect();
-                let result = json!({
+                return Ok(json!({
                     "snapshots": snapshots,
                     "total_count": snapshots.len(),
                     "capabilities": capabilities
-                });
-                return self.ok(&r, io, info, result, vec![]);
+                }));
             }
         };
-        secret_or_return!(self, r, io, args, backend, spec, timeout_ms);
-        let info = self.backend_info(&backend, Some(&spec), timeout_ms, false);
+        self.set_info(cx, &backend, Some(&spec));
+        self.apply_secret(&c, args, &mut spec)?;
+        self.set_info(cx, &backend, Some(&spec));
+        self.require_program(&spec.program)?;
 
-        let res = match self.execute_backend_command(&spec, timeout_ms) {
-            Ok(res) => res,
-            Err(e) => return self.fail_exec(&r, io, info, "EXECUTION_FAILED", e, vec![]),
-        };
-        if res.exit_code != 0 {
-            return self.fail_exit(&r, io, info, &res, vec![]);
+        let res = self.execute(cx, &spec)?;
+        if !res.success() {
+            return Err(self.exit_fail(&spec, &res));
         }
-        let snapshots = match parse_list_output(&backend, &res.stdout) {
-            Ok(s) => s,
-            Err(e) => {
-                return self.fail(&r, io, info, "PARSE", &format!("{:#}", e), None, vec![], 1);
-            }
-        };
-        let result = json!({
+        let snapshots = parse_list_output(&backend, &res.stdout)
+            .map_err(|e| Fail::new(Code::Parse, format!("{:#}", e)))?;
+        Ok(json!({
             "snapshots": snapshots,
             "total_count": snapshots.len(),
             "capabilities": capabilities
-        });
-        self.ok(&r, io, info, result, vec![])
+        }))
     }
 
-    /// Restore backup snapshot per specification
-    fn verb_restore(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let snapshot_id = args
-            .get("snapshot_id")
-            .ok_or_else(|| anyhow::anyhow!("Missing required argument: snapshot_id"))?;
-        let dest = args
-            .get("dest")
-            .ok_or_else(|| anyhow::anyhow!("Missing required argument: dest"))?;
-        let timeout_ms = arg_timeout(args, DEFAULT_RESTORE_TIMEOUT_MS);
-        // restore has no dry-run mode. A dry-run request must never become a
-        // real restore over `dest`, so it is refused before anything runs.
-        if crate::core::lenient::dry_run(args)? {
-            anyhow::bail!("backup restore does not support dry_run; nothing was restored");
-        }
-        let r = Reply::new("restore", args, false);
-        let backend = select_or_return!(self, r, io, args, timeout_ms);
-        repo_or_return!(self, r, io, args, backend, timeout_ms);
-        validated_or_return!(self, r, io, args, backend, timeout_ms);
-
-        let repo_url = args.get("repo_url");
+    fn verb_restore(&self, args: &Args, cx: &mut Ctx) -> VResult<Value> {
+        let snapshot_id = required(args, "snapshot_id")?;
+        let dest = required(args, "dest")?;
+        cx.set_timeout(arg_timeout(args, DEFAULT_RESTORE_TIMEOUT_MS)?);
+        let c = self.common("restore", args, cx)?;
+        let backend = c.backend.clone();
+        let repo_url = c.repo_url.as_ref();
         let include = args
             .get("include")
             .map(|i| split_list(i, ','))
@@ -2210,12 +2661,26 @@ impl BackupHandle {
             .get("exclude")
             .map(|e| split_list(e, ';'))
             .unwrap_or_default();
-        let mut warnings = Vec::new();
-        if !include.is_empty() && backend != BackendType::Restic {
-            warnings.push(format!(
-                "include is only supported by restic; {} restores the whole snapshot",
-                backend
-            ));
+
+        // Never restore through a symlink planted at dest.
+        let dest_path = Path::new(dest);
+        match fs::symlink_metadata(dest_path) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(Fail::invalid(
+                    "dest",
+                    format!(
+                        "dest {dest} is a symbolic link; pass the directory it points to; \
+                         nothing was restored"
+                    ),
+                ));
+            }
+            Ok(m) if !m.is_dir() => {
+                return Err(Fail::invalid(
+                    "dest",
+                    format!("dest {dest} exists and is not a directory; nothing was restored"),
+                ));
+            }
+            _ => {}
         }
 
         let mut spec = match backend {
@@ -2223,58 +2688,110 @@ impl BackupHandle {
                 build_restic_restore(repo_url, snapshot_id, dest, &include, &exclude)
             }
             BackendType::Borg => {
-                build_borg_restore(&borg_repo(repo_url), snapshot_id, dest, &exclude)
+                build_borg_restore(&borg_repo(repo_url), snapshot_id, dest, &include, &exclude)
             }
             BackendType::Tar => {
                 let repo = local_repo_path(repo_url);
-                build_tar_restore(&format!("{}/{}.tar.gz", repo, snapshot_id), dest, &exclude)
+                build_tar_restore(
+                    &format!("{}/{}.tar.gz", repo, snapshot_id),
+                    dest,
+                    &include,
+                    &exclude,
+                )
             }
             BackendType::Rsync => {
                 let repo = local_repo_path(repo_url);
-                build_rsync_restore(&format!("{}/{}/", repo, snapshot_id), dest, &exclude)
+                build_rsync_restore(
+                    &format!("{}/{}/", repo, snapshot_id),
+                    dest,
+                    &include,
+                    &exclude,
+                )
             }
         };
-        secret_or_return!(self, r, io, args, backend, spec, timeout_ms);
-        let info = self.backend_info(&backend, Some(&spec), timeout_ms, false);
+        self.set_info(cx, &backend, Some(&spec));
+        self.apply_secret(&c, args, &mut spec)?;
+        self.set_info(cx, &backend, Some(&spec));
+        self.require_program(&spec.program)?;
 
-        // borg extracts into its working directory and tar -C needs an
-        // existing directory.
-        if matches!(backend, BackendType::Borg | BackendType::Tar) {
-            if let Err(e) = fs::create_dir_all(dest) {
-                let msg = format!("Failed to create destination directory {}: {}", dest, e);
-                return self.fail(&r, io, info, "IO", &msg, None, warnings, 1);
+        // A missing destination is created owner-only; borg extracts into
+        // its working directory and tar -C needs an existing directory.
+        if !dest_path.exists() {
+            create_private_dir_all(dest_path).map_err(|e| {
+                Fail::new(
+                    Code::Io,
+                    format!("cannot create destination directory {dest}: {e}"),
+                )
+            })?;
+        }
+
+        let partial = |f: Fail| -> Fail {
+            let mut details = f.details.clone().unwrap_or_else(|| json!({}));
+            details["destination"] = json!(dest);
+            details["partial_restore_possible"] = json!(true);
+            Fail {
+                details: Some(details),
+                ..f
             }
-        }
-
-        let res = match self.execute_backend_command(&spec, timeout_ms) {
-            Ok(res) => res,
-            Err(e) => return self.fail_exec(&r, io, info, "EXECUTION_FAILED", e, warnings),
         };
-        if res.exit_code != 0 {
-            return self.fail_exit(&r, io, info, &res, warnings);
+        let res = self.execute(cx, &spec).map_err(partial)?;
+        if !res.success() {
+            return Err(partial(self.exit_fail(&spec, &res)));
         }
-        let result = json!({
-            "restored": parse_restore_output(&backend, &res.stdout),
+        let (files, bytes): (Option<u64>, Option<u64>) = match backend {
+            BackendType::Restic => (parse_restic_restored(&res.stdout), None),
+            BackendType::Tar => {
+                let (f, b) = count_listed_files(dest_path, &res.stdout);
+                (Some(f), Some(b))
+            }
+            BackendType::Borg => {
+                let listed = format!("{}\n{}", res.stdout, res.stderr);
+                let (f, b) = count_listed_files(dest_path, &listed);
+                (Some(f), Some(b))
+            }
+            BackendType::Rsync => (
+                rsync_stat(&res.stdout, "Number of regular files transferred:"),
+                rsync_stat(&res.stdout, "Total transferred file size:"),
+            ),
+        };
+        if files.is_none() {
+            cx.warnings.push(format!(
+                "the {backend} output did not say how many files were restored"
+            ));
+        }
+        Ok(json!({
+            "restored": {
+                "files_restored": files,
+                "bytes_restored": bytes,
+                "success": true
+            },
             "snapshot_id": snapshot_id,
             "destination": dest,
             "capabilities": self.get_capabilities(&backend)
-        });
-        self.ok(&r, io, info, result, warnings)
+        }))
     }
 
-    /// Verify backup integrity per specification
-    fn verb_verify(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let timeout_ms = arg_timeout(args, DEFAULT_VERIFY_TIMEOUT_MS);
-        let r = Reply::new("verify", args, false);
-        let backend = select_or_return!(self, r, io, args, timeout_ms);
-        repo_or_return!(self, r, io, args, backend, timeout_ms);
-        validated_or_return!(self, r, io, args, backend, timeout_ms);
-        let mode = args
-            .get("mode")
-            .cloned()
-            .unwrap_or_else(|| "quick".to_string());
-        let repo_url = args.get("repo_url");
-        let read_data = mode == "thorough" || mode == "data";
+    fn verb_verify(&self, args: &Args, cx: &mut Ctx) -> VResult<Value> {
+        cx.set_timeout(arg_timeout(args, DEFAULT_VERIFY_TIMEOUT_MS)?);
+        let mode = args.get("mode").map(String::as_str).unwrap_or("quick");
+        if !matches!(mode, "quick" | "thorough" | "data") {
+            return Err(Fail::invalid(
+                "mode",
+                format!("mode must be quick, thorough or data, got {mode:?}; nothing was done"),
+            ));
+        }
+        let c = self.common("verify", args, cx)?;
+        let backend = c.backend.clone();
+        let repo_url = c.repo_url.as_ref();
+        let snapshot_id = args.get("snapshot_id");
+        if snapshot_id.is_some() && backend == BackendType::Restic {
+            return Err(Fail::invalid(
+                "snapshot_id",
+                "restic check always checks the whole repository; snapshot_id is supported \
+                 for borg, tar and rsync; nothing was done",
+            ));
+        }
+        let read_data = mode != "quick";
         let capabilities = self.get_capabilities(&backend);
 
         let verification = match backend {
@@ -2282,194 +2799,208 @@ impl BackupHandle {
                 let mut spec = if backend == BackendType::Restic {
                     build_restic_verify(repo_url, read_data)
                 } else {
-                    build_borg_verify(&borg_repo(repo_url), read_data)
+                    build_borg_verify(
+                        &borg_repo(repo_url),
+                        snapshot_id.map(String::as_str),
+                        read_data,
+                    )
                 };
-                secret_or_return!(self, r, io, args, backend, spec, timeout_ms);
-                let info = self.backend_info(&backend, Some(&spec), timeout_ms, false);
-                let res = match self.execute_backend_command(&spec, timeout_ms) {
-                    Ok(res) => res,
-                    Err(e) => return self.fail_exec(&r, io, info, "EXECUTION_FAILED", e, vec![]),
-                };
-                if res.exit_code != 0 {
-                    return self.fail_exit(&r, io, info, &res, vec![]);
+                self.set_info(cx, &backend, Some(&spec));
+                self.apply_secret(&c, args, &mut spec)?;
+                self.set_info(cx, &backend, Some(&spec));
+                self.require_program(&spec.program)?;
+                let res = self.execute(cx, &spec)?;
+                if !res.success() {
+                    return Err(self.exit_fail(&spec, &res));
                 }
-                let files_checked = if backend == BackendType::Restic {
-                    res.stdout.lines().count()
-                } else {
-                    0
-                };
-                let verification = json!({
+                json!({
                     "success": true,
                     "issues": Vec::<String>::new(),
-                    "files_checked": files_checked,
+                    "files_checked": null,
                     "errors": Vec::<String>::new()
-                });
-                (info, verification)
+                })
             }
             BackendType::Tar => {
                 let repo = local_repo_path(repo_url);
-                let mut info = self.backend_info(&backend, None, timeout_ms, false);
-                let archives = match scan_local_snapshots(&backend, Path::new(&repo), false) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        let msg = format!("Cannot read repository directory {}: {}", repo, e);
-                        return self.fail(&r, io, info, "IO", &msg, None, vec![], 1);
+                self.set_info(cx, &backend, None);
+                self.require_program("tar")?;
+                let mut archives =
+                    scan_local_snapshots(&backend, Path::new(&repo), false, cx.deadline).map_err(
+                        |e| match e {
+                            ScanError::Io(e) => Fail::new(
+                                Code::Io,
+                                format!("cannot read repository directory {repo}: {e}"),
+                            ),
+                            ScanError::Deadline => cx.timeout_fail("reading the repository"),
+                        },
+                    )?;
+                if let Some(id) = snapshot_id {
+                    archives.retain(|a| &a.id == id);
+                    if archives.is_empty() {
+                        return Err(Fail::new(
+                            Code::SnapshotNotFound,
+                            format!("no archive {id}.tar.gz in {repo}"),
+                        ));
                     }
-                };
+                }
                 let mut files_checked = 0;
                 let mut issues = Vec::new();
                 let mut errors = Vec::new();
                 let mut checked = Vec::new();
                 for a in &archives {
                     let spec = build_tar_verify(&a.path.to_string_lossy());
-                    info.command = spec.argv();
-                    match self.execute_backend_command(&spec, timeout_ms) {
-                        Ok(res) if res.exit_code == 0 => {
-                            let members = res.stdout.lines().count();
-                            files_checked += members;
-                            checked.push(json!({ "id": a.id, "ok": true, "members": members }));
+                    cx.info.command = spec.argv();
+                    let res = self.execute(cx, &spec).map_err(|f| {
+                        let mut details = f.details.clone().unwrap_or_else(|| json!({}));
+                        details["archives"] = json!(checked);
+                        Fail {
+                            details: Some(details),
+                            ..f
                         }
-                        Ok(res) => {
-                            issues.push(format!("{}: tar exited with {}", a.id, res.exit_code));
-                            errors.push(self.get_stderr_tail(&res.stderr));
-                            checked.push(json!({ "id": a.id, "ok": false, "members": 0 }));
-                        }
-                        Err(e) => {
-                            return self.fail_exec(&r, io, info, "EXECUTION_FAILED", e, vec![]);
-                        }
+                    })?;
+                    if res.success() {
+                        let members = res.stdout.lines().count();
+                        files_checked += members;
+                        checked.push(json!({ "id": a.id, "ok": true, "members": members }));
+                    } else {
+                        issues.push(format!(
+                            "{}: tar exited with {}",
+                            a.id,
+                            res.exit_code
+                                .map_or("a signal".to_string(), |c| c.to_string())
+                        ));
+                        errors.push(stderr_tail(&res.stderr));
+                        checked.push(json!({ "id": a.id, "ok": false, "members": 0 }));
                     }
                 }
                 if archives.is_empty() {
                     issues.push(format!("no .tar.gz archives found in {}", repo));
                 }
-                let verification = json!({
+                json!({
                     "success": issues.is_empty(),
                     "issues": issues,
                     "files_checked": files_checked,
                     "errors": errors,
                     "archives": checked
-                });
-                (info, verification)
+                })
             }
             BackendType::Rsync => {
                 let repo = local_repo_path(repo_url);
-                let info = self.backend_info(&backend, None, timeout_ms, false);
+                self.set_info(cx, &backend, None);
                 if !Path::new(&repo).is_dir() {
-                    let msg = format!("Repository directory {} does not exist", repo);
-                    return self.fail(&r, io, info, "IO", &msg, None, vec![], 1);
+                    return Err(Fail::new(
+                        Code::Io,
+                        format!("repository directory {repo} does not exist"),
+                    ));
                 }
-                let (files_checked, errors) = check_files_readable(Path::new(&repo));
+                let root = match snapshot_id {
+                    Some(id) => {
+                        let p = Path::new(&repo).join(id);
+                        let is_dir = fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir());
+                        if !is_dir {
+                            return Err(Fail::new(
+                                Code::SnapshotNotFound,
+                                format!("no snapshot directory {id} in {repo}"),
+                            ));
+                        }
+                        p
+                    }
+                    None => PathBuf::from(&repo),
+                };
+                let (files_checked, errors) =
+                    check_files_readable(&root, read_data, cx.deadline)
+                        .map_err(|_| cx.timeout_fail("reading the repository"))?;
                 let issues: Vec<String> = if errors.is_empty() {
                     vec![]
                 } else {
                     vec!["File access issues found".to_string()]
                 };
-                let verification = json!({
+                json!({
                     "success": errors.is_empty(),
                     "issues": issues,
                     "files_checked": files_checked,
                     "errors": errors
-                });
-                (info, verification)
+                })
             }
         };
-        let (info, verification) = verification;
 
         if verification["success"] != json!(true) {
-            return self.fail(
-                &r,
-                io,
-                info,
-                "VERIFY_FAILED",
-                "Backup verification found problems",
-                Some(verification),
-                vec![],
-                1,
+            return Err(
+                Fail::new(Code::VerifyFailed, "Backup verification found problems")
+                    .with(verification),
             );
         }
-        let result = json!({
+        Ok(json!({
             "verification": verification,
             "mode": mode,
-            "snapshot_id": args.get("snapshot_id"),
+            "snapshot_id": snapshot_id,
             "capabilities": capabilities
-        });
-        self.ok(&r, io, info, result, vec![])
+        }))
     }
 
-    /// Prune old snapshots per specification
-    fn verb_prune(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let timeout_ms = arg_timeout(args, DEFAULT_PRUNE_TIMEOUT_MS);
-        let r = Reply::new("prune", args, crate::core::lenient::dry_run(args)?);
-        let backend = select_or_return!(self, r, io, args, timeout_ms);
-        repo_or_return!(self, r, io, args, backend, timeout_ms);
-        validated_or_return!(self, r, io, args, backend, timeout_ms);
-        let repo_url = args.get("repo_url");
-        let capabilities = self.get_capabilities(&backend);
-
-        let mut policy = RetentionPolicy::default();
-        for (key, slot) in [
-            ("keep_daily", &mut policy.keep_daily),
-            ("keep_weekly", &mut policy.keep_weekly),
-            ("keep_monthly", &mut policy.keep_monthly),
-        ] {
-            match arg_u32(args, key) {
-                Ok(v) => *slot = v,
-                Err(msg) => {
-                    let info = self.backend_info(&backend, None, timeout_ms, r.dry_run);
-                    return self.fail(&r, io, info, "INVALID_ARGS", &msg, None, vec![], 1);
-                }
-            }
+    fn verb_prune(&self, args: &Args, cx: &mut Ctx) -> VResult<Value> {
+        cx.set_timeout(arg_timeout(args, DEFAULT_PRUNE_TIMEOUT_MS)?);
+        let policy = RetentionPolicy {
+            keep_daily: arg_keep(args, "keep_daily")?,
+            keep_weekly: arg_keep(args, "keep_weekly")?,
+            keep_monthly: arg_keep(args, "keep_monthly")?,
+        };
+        if policy.keep_daily.is_none()
+            && policy.keep_weekly.is_none()
+            && policy.keep_monthly.is_none()
+        {
+            return Err(Fail::invalid(
+                "keep_daily",
+                "prune needs at least one of keep_daily, keep_weekly, keep_monthly; \
+                 nothing was pruned",
+            ));
         }
+        let c = self.common("prune", args, cx)?;
+        let backend = c.backend.clone();
+        let repo_url = c.repo_url.as_ref();
+        let capabilities = self.get_capabilities(&backend);
         let policy_json = json!({
             "keep_daily": policy.keep_daily,
             "keep_weekly": policy.keep_weekly,
             "keep_monthly": policy.keep_monthly
         });
-        if policy.keep_daily.is_none()
-            && policy.keep_weekly.is_none()
-            && policy.keep_monthly.is_none()
-        {
-            let info = self.backend_info(&backend, None, timeout_ms, r.dry_run);
-            let msg = "prune needs at least one of keep_daily, keep_weekly, keep_monthly";
-            return self.fail(&r, io, info, "INVALID_ARGS", msg, None, vec![], 1);
-        }
-        let stats_key = if r.dry_run { "would_prune" } else { "pruned" };
-        let mut warnings = Vec::new();
+        let stats_key = if cx.dry_run { "would_prune" } else { "pruned" };
 
         match backend {
             BackendType::Restic | BackendType::Borg => {
                 let mut spec = if backend == BackendType::Restic {
-                    build_restic_prune(repo_url, &policy, r.dry_run)
+                    build_restic_prune(repo_url, &policy, cx.dry_run)
                 } else {
-                    build_borg_prune(&borg_repo(repo_url), &policy, r.dry_run)
+                    build_borg_prune(&borg_repo(repo_url), &policy, cx.dry_run)
                 };
-                secret_or_return!(self, r, io, args, backend, spec, timeout_ms);
-                let info = self.backend_info(&backend, Some(&spec), timeout_ms, false);
-                let res = match self.execute_backend_command(&spec, timeout_ms) {
-                    Ok(res) => res,
-                    Err(e) => return self.fail_exec(&r, io, info, "EXECUTION_FAILED", e, warnings),
-                };
-                if res.exit_code != 0 {
-                    return self.fail_exit(&r, io, info, &res, warnings);
+                cx.info = self.backend_info(&backend, Some(&spec), cx.timeout_ms, false);
+                self.apply_secret(&c, args, &mut spec)?;
+                // The backend runs even in a dry run (its own --dry-run), so
+                // the command is not simulated.
+                cx.info = self.backend_info(&backend, Some(&spec), cx.timeout_ms, false);
+                self.require_program(&spec.program)?;
+                let res = self.execute(cx, &spec)?;
+                if !res.success() {
+                    return Err(self.exit_fail(&spec, &res));
                 }
                 let removed = parse_prune_count(&backend, &res.stdout, &res.stderr);
                 if removed.is_none() {
-                    warnings.push(format!(
+                    cx.warnings.push(format!(
                         "could not count removed snapshots in the {} output",
                         backend
                     ));
                 }
                 let mut result = json!({
-                    "dry_run": r.dry_run,
+                    "dry_run": cx.dry_run,
                     "policy": policy_json,
                     "capabilities": capabilities
                 });
-                if r.dry_run {
+                if cx.dry_run {
                     // Only the backend can apply its retention policy to its
                     // repository, so this dry run runs it with its own
                     // --dry-run flag (documented in backup.md 4.5).
                     result["dry_run_mode"] = json!("backend");
-                    warnings.push(format!(
+                    cx.warnings.push(format!(
                         "Dry run: {} ran in its own --dry-run mode; nothing was removed",
                         backend
                     ));
@@ -2479,18 +3010,19 @@ impl BackupHandle {
                     "bytes_freed": null,
                     "success": true
                 });
-                self.ok(&r, io, info, result, warnings)
+                Ok(result)
             }
             BackendType::Tar | BackendType::Rsync => {
                 let repo = local_repo_path(repo_url);
-                let info = self.backend_info(&backend, None, timeout_ms, false);
-                let snaps = match scan_local_snapshots(&backend, Path::new(&repo), true) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let msg = format!("Cannot read repository directory {}: {}", repo, e);
-                        return self.fail(&r, io, info, "IO", &msg, None, warnings, 1);
-                    }
-                };
+                self.set_info(cx, &backend, None);
+                let snaps = scan_local_snapshots(&backend, Path::new(&repo), true, cx.deadline)
+                    .map_err(|e| match e {
+                        ScanError::Io(e) => Fail::new(
+                            Code::Io,
+                            format!("cannot read repository directory {repo}: {e}"),
+                        ),
+                        ScanError::Deadline => cx.timeout_fail("reading the repository"),
+                    })?;
                 let pairs: Vec<(String, DateTime<Utc>)> =
                     snaps.iter().map(|s| (s.id.clone(), s.modified)).collect();
                 let to_remove = select_prune(&pairs, &policy);
@@ -2498,8 +3030,13 @@ impl BackupHandle {
                 let mut removed = Vec::new();
                 let mut bytes_freed = 0u64;
                 let mut errors = Vec::new();
+                let mut timed_out = false;
                 for s in snaps.iter().filter(|s| to_remove.contains(&s.id)) {
-                    let outcome = if r.dry_run {
+                    if check_deadline(cx.deadline).is_err() {
+                        timed_out = true;
+                        break;
+                    }
+                    let outcome = if cx.dry_run {
                         Ok(())
                     } else if backend == BackendType::Tar {
                         fs::remove_file(&s.path)
@@ -2518,76 +3055,135 @@ impl BackupHandle {
                     "snapshots_removed": removed.len(),
                     "bytes_freed": bytes_freed,
                     "removed": removed,
-                    "success": errors.is_empty()
+                    "success": errors.is_empty() && !timed_out
                 });
+                if timed_out {
+                    return Err(cx
+                        .timeout_fail("pruning")
+                        .with(json!({ stats_key: stats, "errors": errors })));
+                }
                 if !errors.is_empty() {
-                    let details = json!({ stats_key: stats, "errors": errors });
-                    return self.fail(
-                        &r,
-                        io,
-                        info,
-                        "IO",
-                        "Some snapshots could not be removed",
-                        Some(details),
-                        warnings,
-                        1,
-                    );
+                    return Err(Fail::new(Code::Io, "Some snapshots could not be removed")
+                        .with(json!({ stats_key: stats, "errors": errors })));
                 }
                 let mut result = json!({
-                    "dry_run": r.dry_run,
+                    "dry_run": cx.dry_run,
                     "policy": policy_json,
                     "capabilities": capabilities
                 });
-                if r.dry_run {
+                if cx.dry_run {
                     result["dry_run_mode"] = json!("plan");
                 }
                 result[stats_key] = stats;
-                self.ok(&r, io, info, result, warnings)
+                Ok(result)
             }
         }
     }
 
-    /// Schedule automated backups per specification
-    fn verb_schedule(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let when = args
-            .get("when")
-            .ok_or_else(|| anyhow::anyhow!("Missing required argument: when"))?;
-        let _src = args
-            .get("src")
-            .ok_or_else(|| anyhow::anyhow!("Missing required argument: src"))?;
-        let enabled = arg_flag(args, "enabled", true);
-        let timeout_ms = arg_timeout(args, DEFAULT_SCHEDULE_TIMEOUT_MS);
-        let r = Reply::new("schedule", args, false);
-        let backend = select_or_return!(self, r, io, args, timeout_ms);
+    /// Reports what to schedule: the backup command, the cron handle command
+    /// that installs it, and the detected scheduler. Installs nothing.
+    fn verb_schedule(&self, args: &Args, cx: &mut Ctx) -> VResult<Value> {
+        let when = required(args, "when")?;
+        let src = required(args, "src")?;
+        let enabled = bool_arg(args, "enabled", true)?;
+        if let Err(e) = crate::handles::processes::cronh::parse_schedule(when) {
+            return Err(Fail::invalid("when", format!("when {e}; nothing was done")));
+        }
+        let profile_ok = self
+            .repo
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/'));
+        if !profile_ok {
+            return Err(Fail::invalid(
+                "profile",
+                format!(
+                    "profile {:?} cannot be scheduled: use letters, digits, '-', '_' or '/'; \
+                     nothing was done",
+                    self.repo
+                ),
+            ));
+        }
+        let backend = self.select_backend(args)?;
+        cx.info.id = backend.to_string();
+        if let Some(msg) = repo_url_required(&backend, args) {
+            return Err(Fail::invalid("repo_url", msg));
+        }
+        validate_request(&backend, "schedule", args)?;
+        if backend.is_local() && args.contains_key("password_file") {
+            return Err(Fail::invalid(
+                "password_file",
+                format!(
+                    "password_file is not used by the {backend} backend ({backend} \
+                     repositories are not encrypted); nothing was done"
+                ),
+            ));
+        }
+        if self.program_path(&backend.to_string()).is_none() {
+            cx.warnings.push(format!(
+                "{backend} is not installed here; the scheduled backup needs it"
+            ));
+        }
+        if !backend.is_local() && !args.contains_key("password_file") {
+            cx.warnings.push(format!(
+                "no password_file: the scheduled job needs the {backend} password in its \
+                 environment"
+            ));
+        }
+        if backend == BackendType::Restic && !args.contains_key("repo_url") {
+            cx.warnings.push(
+                "no repo_url: the scheduled job needs RESTIC_REPOSITORY in its environment"
+                    .to_string(),
+            );
+        }
 
-        let mut warnings = Vec::new();
-
-        // Determine runner type per specification
-        let runner = if which::which("systemctl").is_ok() {
+        let runner = if self.program_path("systemctl").is_some() {
             "systemd"
-        } else if which::which("crontab").is_ok() {
+        } else if self.program_path("crontab").is_some() {
             "cron"
         } else {
-            warnings.push("No supported scheduler found (systemd/cron)".to_string());
+            cx.warnings
+                .push("No supported scheduler found (systemd/cron)".to_string());
             "none"
         };
+        let definition_path = std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .map(|h| format!("{}/resh-backup-{}.json", h.to_string_lossy(), self.repo));
 
-        // Generate schedule definition path per specification
-        let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let definition_path = format!("{}/resh-backup-{}.json", home_dir, &self.repo);
-
-        let spec = CmdSpec::new(&backend.to_string());
-        let info = self.backend_info(&backend, Some(&spec), timeout_ms, false);
-        let result = json!({
+        let mut command = vec![
+            "resh".to_string(),
+            format!("backup://{}.create", self.repo),
+            format!("src={src}"),
+            format!("backend={backend}"),
+        ];
+        for key in ["repo_url", "password_file"] {
+            if let Some(v) = args.get(key) {
+                command.push(format!("{key}={v}"));
+            }
+        }
+        let label: String = format!("backup-{}", self.repo)
+            .chars()
+            .map(|c| if c == '/' { '-' } else { c })
+            .collect();
+        let install_command = enabled.then(|| {
+            let line: Vec<String> = command.iter().map(|w| shell_quote(w)).collect();
+            vec![
+                "resh".to_string(),
+                format!("cron://{label}.add"),
+                format!("schedule={when}"),
+                format!("command={}", line.join(" ")),
+            ]
+        });
+        Ok(json!({
             "capabilities": self.get_capabilities(&backend),
             "schedule": {
                 "when": when,
                 "enabled": enabled,
                 "runner": runner,
-                "definition_path": definition_path
+                "definition_path": definition_path,
+                "command": command,
+                "install_command": install_command
             }
-        });
-        self.ok(&r, io, info, result, warnings)
+        }))
     }
 }
 
@@ -2603,10 +3199,48 @@ impl BackupHandle {
                 .any(|k| args.contains_key(*k))
     }
 
-    /// The verb a help request names (`--help=create`, or `verb=create`).
+    /// The verb a help request names (`--help=create`, `verb=create`, or
+    /// the verb itself in `backup://db.create help`).
     fn help_verb<'a>(verb: &'a str, args: &'a Args) -> Option<&'a str> {
         verb.strip_prefix("--help=")
             .or_else(|| args.get("verb").map(String::as_str))
+            .or_else(|| accepted_args(verb).is_some().then_some(verb))
+    }
+
+    /// Runs `verb` and writes its envelope.
+    fn run_verb(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let mut cx = Ctx::new(verb);
+        let outcome = (|| -> VResult<Value> {
+            if accepted_args(verb).is_none() {
+                let mut msg = format!("unknown verb {verb:?} for backup://");
+                if let Some(s) = suggest(verb, self.verbs()) {
+                    msg.push_str(&format!("; did you mean {s}?"));
+                }
+                msg.push_str(&format!(" (verbs: {})", self.verbs().join(", ")));
+                return Err(Fail::new(Code::UnknownVerb, msg));
+            }
+            cx.pretty = bool_arg(args, "json_pretty", false)?;
+            check_known_args(verb, args)?;
+            if matches!(verb, "create" | "prune") {
+                cx.dry_run = bool_arg(args, "dry_run", false)?;
+            }
+            match verb {
+                "create" => self.verb_create(args, &mut cx),
+                "list" => self.verb_list(args, &mut cx),
+                "restore" => self.verb_restore(args, &mut cx),
+                "verify" => self.verb_verify(args, &mut cx),
+                "prune" => self.verb_prune(args, &mut cx),
+                _ => self.verb_schedule(args, &mut cx),
+            }
+        })();
+        if outcome.is_ok()
+            || outcome
+                .as_ref()
+                .is_err_and(|f| f.code.exit() != exit::USAGE)
+        {
+            Self::warn_plain_password(args, io);
+        }
+        self.finish(cx, outcome, io)
     }
 }
 
@@ -2637,1103 +3271,10 @@ impl Handle for BackupHandle {
             write!(io.stdout, "{}", text)?;
             return Ok(Status::success());
         }
-
-        match verb {
-            "create" => self.verb_create(args, io),
-            "list" => self.verb_list(args, io),
-            "restore" => self.verb_restore(args, io),
-            "verify" => self.verb_verify(args, io),
-            "prune" => self.verb_prune(args, io),
-            "schedule" => self.verb_schedule(args, io),
-            _ => bail!("unknown verb for backup://: {}", verb),
-        }
+        self.run_verb(verb, args, io)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::TimeZone;
-
-    fn s(v: &[&str]) -> Vec<String> {
-        v.iter().map(|x| x.to_string()).collect()
-    }
-
-    fn args(kv: &[(&str, &str)]) -> Args {
-        kv.iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    fn handle(url: &str) -> BackupHandle {
-        BackupHandle::from_url(Url::parse(url).unwrap()).unwrap()
-    }
-
-    fn call(h: &BackupHandle, verb: &str, a: &Args) -> (Status, String) {
-        let mut stdin = std::io::empty();
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let status = {
-            let mut io = IoStreams {
-                stdin: &mut stdin,
-                stdout: &mut out,
-                stderr: &mut err,
-            };
-            h.call(verb, a, &mut io).unwrap()
-        };
-        (status, String::from_utf8(out).unwrap())
-    }
-
-    fn temp_dir(tag: &str) -> std::path::PathBuf {
-        let d =
-            std::env::temp_dir().join(format!("resh_backuph_test_{}_{}", tag, std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d
-    }
-
-    // ---- H4: exact argv for every backend command ----
-
-    #[test]
-    fn create_commands_argv() {
-        let src = s(&["/etc", "/home"]);
-        let ex = s(&["*.tmp"]);
-        assert_eq!(
-            build_tar_create("/r/backup_1.tar.gz", &src, &ex).argv(),
-            s(&[
-                "tar",
-                "--force-local",
-                "-czf",
-                "/r/backup_1.tar.gz",
-                "--exclude=*.tmp",
-                "--",
-                "/etc",
-                "/home"
-            ])
-        );
-        let repo = "/srv/restic".to_string();
-        let c = build_restic_create(Some(&repo), &src, &s(&["daily"]), Some("web01"), &ex);
-        assert_eq!(
-            c.argv(),
-            s(&[
-                "restic",
-                "backup",
-                "--tag=daily",
-                "--hostname=web01",
-                "--exclude=*.tmp",
-                "--json",
-                "--",
-                "/etc",
-                "/home"
-            ])
-        );
-        assert_eq!(c.env.get("RESTIC_REPOSITORY"), Some(&repo));
-        assert_eq!(
-            build_borg_create("/srv/borg", "backup_1", &src, &ex).argv(),
-            s(&[
-                "borg",
-                "create",
-                "--json",
-                "--compression",
-                "lz4",
-                "--exclude=*.tmp",
-                "--",
-                "/srv/borg::backup_1",
-                "/etc",
-                "/home"
-            ])
-        );
-        assert_eq!(
-            build_rsync_create("/r/backup_1/", &src, &ex).argv(),
-            s(&[
-                "rsync",
-                "-a",
-                "--stats",
-                "--exclude=*.tmp",
-                "--",
-                "/etc",
-                "/home",
-                "/r/backup_1/"
-            ])
-        );
-    }
-
-    #[test]
-    fn list_restore_verify_prune_argv() {
-        let repo = "/srv/restic".to_string();
-        assert_eq!(
-            build_restic_list(Some(&repo), &s(&["a"])).argv(),
-            s(&["restic", "snapshots", "--json", "--tag=a"])
-        );
-        assert_eq!(
-            build_borg_list("/b").argv(),
-            s(&["borg", "list", "--json", "--", "/b"])
-        );
-
-        assert_eq!(
-            build_restic_restore(None, "4f2a", "/tmp/r", &s(&["*.conf"]), &s(&["*.tmp"])).argv(),
-            s(&[
-                "restic",
-                "restore",
-                "--target=/tmp/r",
-                "--include=*.conf",
-                "--exclude=*.tmp",
-                "--",
-                "4f2a"
-            ])
-        );
-        let b = build_borg_restore("/b", "backup_1", "/tmp/r", &[]);
-        assert_eq!(b.argv(), s(&["borg", "extract", "--", "/b::backup_1"]));
-        assert_eq!(b.cwd.as_deref(), Some("/tmp/r"));
-        assert_eq!(
-            build_tar_restore("/r/backup_1.tar.gz", "/tmp/r", &[]).argv(),
-            s(&[
-                "tar",
-                "--force-local",
-                "-xzf",
-                "/r/backup_1.tar.gz",
-                "-C",
-                "/tmp/r"
-            ])
-        );
-        assert_eq!(
-            build_rsync_restore("/r/backup_1/", "/tmp/r", &[]).argv(),
-            s(&["rsync", "-av", "--", "/r/backup_1/", "/tmp/r"])
-        );
-
-        assert_eq!(
-            build_restic_verify(None, false).argv(),
-            s(&["restic", "check"])
-        );
-        assert_eq!(
-            build_restic_verify(None, true).argv(),
-            s(&["restic", "check", "--read-data"])
-        );
-        assert_eq!(
-            build_borg_verify("/b", true).argv(),
-            s(&["borg", "check", "--verify-data", "--", "/b"])
-        );
-        assert_eq!(
-            build_tar_verify("/r/a.tar.gz").argv(),
-            s(&["tar", "--force-local", "-tzf", "/r/a.tar.gz"])
-        );
-
-        let p = RetentionPolicy {
-            keep_daily: Some(7),
-            keep_monthly: Some(12),
-            ..Default::default()
-        };
-        assert_eq!(
-            build_restic_prune(None, &p, true).argv(),
-            s(&[
-                "restic",
-                "forget",
-                "--json",
-                "--keep-daily",
-                "7",
-                "--keep-monthly",
-                "12",
-                "--dry-run"
-            ])
-        );
-        assert_eq!(
-            build_restic_prune(None, &p, false).argv(),
-            s(&[
-                "restic",
-                "forget",
-                "--json",
-                "--keep-daily",
-                "7",
-                "--keep-monthly",
-                "12",
-                "--prune"
-            ])
-        );
-        assert_eq!(
-            build_borg_prune("/b", &p, true).argv(),
-            s(&[
-                "borg",
-                "prune",
-                "--list",
-                "--keep-daily",
-                "7",
-                "--keep-monthly",
-                "12",
-                "--dry-run",
-                "--",
-                "/b"
-            ])
-        );
-        assert_eq!(
-            build_borg_prune("/b", &p, false).argv(),
-            s(&[
-                "borg",
-                "prune",
-                "--list",
-                "--keep-daily",
-                "7",
-                "--keep-monthly",
-                "12",
-                "--stats",
-                "--",
-                "/b"
-            ])
-        );
-    }
-
-    #[test]
-    fn snapshot_name_sanitizes_label() {
-        assert_eq!(
-            snapshot_name(None, "20261016_091244"),
-            "backup_20261016_091244"
-        );
-        assert_eq!(snapshot_name(Some("daily run"), "T"), "daily_run_T");
-        assert_eq!(snapshot_name(Some("../etc"), "T"), ".._etc_T");
-    }
-
-    #[test]
-    fn local_repo_path_strips_file_scheme() {
-        assert_eq!(
-            local_repo_path(Some(&"file:///srv/b".to_string())),
-            "/srv/b"
-        );
-        assert_eq!(local_repo_path(Some(&"/srv/b".to_string())), "/srv/b");
-    }
-
-    // ---- C1: repository password ----
-
-    fn no_env(_: &str) -> bool {
-        false
-    }
-
-    fn no_file(_: &str) -> std::io::Result<String> {
-        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"))
-    }
-
-    #[test]
-    fn restic_password_sources() {
-        let r = resolve_repo_secret(
-            &BackendType::Restic,
-            &args(&[("password", "s3cr3t")]),
-            no_env,
-            no_file,
-        )
-        .unwrap();
-        assert_eq!(
-            r.set.get("RESTIC_PASSWORD").map(String::as_str),
-            Some("s3cr3t")
-        );
-        assert!(r.remove.contains(&"RESTIC_PASSWORD_FILE".to_string()));
-
-        let r = resolve_repo_secret(
-            &BackendType::Restic,
-            &args(&[("password_file", "/k")]),
-            no_env,
-            no_file,
-        )
-        .unwrap();
-        assert_eq!(
-            r.set.get("RESTIC_PASSWORD_FILE").map(String::as_str),
-            Some("/k")
-        );
-
-        let r = resolve_repo_secret(
-            &BackendType::Restic,
-            &args(&[]),
-            |k| k == "RESTIC_PASSWORD_FILE",
-            no_file,
-        )
-        .unwrap();
-        assert!(r.set.is_empty());
-
-        let e = resolve_repo_secret(&BackendType::Restic, &args(&[]), no_env, no_file).unwrap_err();
-        assert!(
-            e.contains("password=") && e.contains("RESTIC_PASSWORD"),
-            "{e}"
-        );
-    }
-
-    #[test]
-    fn borg_password_sources() {
-        let r = resolve_repo_secret(
-            &BackendType::Borg,
-            &args(&[("password", "pw")]),
-            no_env,
-            no_file,
-        )
-        .unwrap();
-        assert_eq!(r.set.get("BORG_PASSPHRASE").map(String::as_str), Some("pw"));
-
-        let r = resolve_repo_secret(
-            &BackendType::Borg,
-            &args(&[("password_file", "/k")]),
-            no_env,
-            |_| Ok("pw\n".to_string()),
-        )
-        .unwrap();
-        assert_eq!(r.set.get("BORG_PASSPHRASE").map(String::as_str), Some("pw"));
-
-        let e = resolve_repo_secret(
-            &BackendType::Borg,
-            &args(&[("password_file", "/k")]),
-            no_env,
-            no_file,
-        )
-        .unwrap_err();
-        assert!(e.contains("cannot read password_file /k"), "{e}");
-
-        let r = resolve_repo_secret(
-            &BackendType::Borg,
-            &args(&[]),
-            |k| k == "BORG_PASSCOMMAND",
-            no_file,
-        )
-        .unwrap();
-        assert!(r.set.is_empty());
-
-        assert!(resolve_repo_secret(&BackendType::Borg, &args(&[]), no_env, no_file).is_err());
-        assert_eq!(
-            resolve_repo_secret(&BackendType::Tar, &args(&[]), no_env, no_file).unwrap(),
-            RepoSecret::default()
-        );
-    }
-
-    #[test]
-    fn no_hard_coded_password_in_commands() {
-        let repo = "/r".to_string();
-        let p = RetentionPolicy {
-            keep_daily: Some(1),
-            ..Default::default()
-        };
-        for spec in [
-            build_restic_create(Some(&repo), &s(&["/etc"]), &[], None, &[]),
-            build_restic_list(Some(&repo), &[]),
-            build_restic_restore(Some(&repo), "x", "/d", &[], &[]),
-            build_restic_verify(Some(&repo), false),
-            build_restic_prune(Some(&repo), &p, true),
-            build_borg_create("/r", "a", &s(&["/etc"]), &[]),
-            build_borg_list("/r"),
-            build_borg_verify("/r", false),
-            build_borg_prune("/r", &p, true),
-        ] {
-            assert!(!spec.env.keys().any(|k| k.contains("PASS")), "{:?}", spec);
-        }
-    }
-
-    #[test]
-    fn backend_info_redacts_secrets() {
-        let h = handle("backup://db");
-        let mut spec = build_restic_list(Some(&"/r".to_string()), &[]);
-        spec.env.insert("RESTIC_PASSWORD".into(), "hunter2".into());
-        spec.env.insert("BORG_PASSPHRASE".into(), "hunter2".into());
-        spec.env
-            .insert("BORG_PASSCOMMAND".into(), "pass show hunter2".into());
-        let info = h.backend_info(&BackendType::Restic, Some(&spec), 1, false);
-        let text = serde_json::to_string(&info).unwrap();
-        assert!(!text.contains("hunter2"), "{text}");
-        assert_eq!(
-            info.env_redacted
-                .get("RESTIC_REPOSITORY")
-                .map(String::as_str),
-            Some("/r")
-        );
-        assert_eq!(
-            info.env_redacted
-                .get("BORG_PASSCOMMAND")
-                .map(String::as_str),
-            Some(REDACTED)
-        );
-    }
-
-    #[test]
-    fn restic_without_password_fails_before_running() {
-        if RESTIC_SECRET_ENV
-            .iter()
-            .any(|k| std::env::var_os(k).is_some())
-        {
-            return; // the test environment supplies a password
-        }
-        let h = handle("backup://db");
-        let a = args(&[
-            ("src", "/etc"),
-            ("backend", "restic"),
-            ("repo_url", "/nonexistent/resh-test"),
-        ]);
-        let (status, out) = call(&h, "create", &a);
-        assert!(!status.ok);
-        let v: Value = serde_json::from_str(out.trim()).unwrap();
-        assert_eq!(v["ok"], false);
-        assert_eq!(v["error"]["kind"], "MISSING_PASSWORD");
-        assert_eq!(v["backend"]["command"][0], "restic");
-    }
-
-    #[test]
-    fn password_arg_is_redacted_in_envelope() {
-        let h = handle("backup://db");
-        let a = args(&[
-            ("src", "/etc"),
-            ("backend", "restic"),
-            ("password", "hunter2"),
-            ("dry_run", "true"),
-        ]);
-        let (status, out) = call(&h, "create", &a);
-        assert!(status.ok);
-        assert!(!out.contains("hunter2"), "{out}");
-        let v: Value = serde_json::from_str(out.trim()).unwrap();
-        assert_eq!(v["backend"]["env_redacted"]["RESTIC_PASSWORD"], REDACTED);
-    }
-
-    // ---- H5: create output parsing ----
-
-    #[test]
-    fn parses_restic_summary() {
-        let out = concat!(
-            r#"{"message_type":"status","percent_done":0.5}"#,
-            "\n",
-            r#"{"message_type":"summary","files_new":3,"data_added":1200,"total_bytes_processed":5000,"snapshot_id":"4f2a9c1e0011"}"#,
-            "\n"
-        );
-        let snap =
-            parse_create_output(&BackendType::Restic, out, None, &s(&["/etc"]), &[], None).unwrap();
-        assert_eq!(snap.id, "4f2a9c1e0011");
-        assert_eq!(snap.bytes_sent, Some(1200));
-        assert_eq!(snap.bytes_total, Some(5000));
-        // Unparseable restic output yields no snapshot rather than an error.
-        assert!(
-            parse_create_output(&BackendType::Restic, "garbage", None, &[], &[], None).is_none()
-        );
-    }
-
-    #[test]
-    fn parses_borg_json() {
-        let out = r#"{"archive":{"name":"backup_1","start":"2026-10-16T02:00:04.000000","stats":{"original_size":9000,"deduplicated_size":100}},"repository":{}}"#;
-        let snap =
-            parse_create_output(&BackendType::Borg, out, Some("backup_1"), &[], &[], None).unwrap();
-        assert_eq!(snap.id, "backup_1");
-        assert_eq!(snap.created_at, "2026-10-16T02:00:04.000000");
-        assert_eq!((snap.bytes_total, snap.bytes_sent), (Some(9000), Some(100)));
-        // Non-JSON borg output still reports the known archive name.
-        let snap =
-            parse_create_output(&BackendType::Borg, "", Some("backup_1"), &[], &[], None).unwrap();
-        assert_eq!(snap.id, "backup_1");
-    }
-
-    #[test]
-    fn parses_rsync_stats() {
-        let out = "\nNumber of files: 3 (reg: 2, dir: 1)\nTotal file size: 1,234,567 bytes\nTotal transferred file size: 2,048 bytes\n";
-        assert_eq!(parse_rsync_stats(out), (Some(1_234_567), Some(2048)));
-        let snap = parse_create_output(&BackendType::Rsync, out, Some("backup_1"), &[], &[], None)
-            .unwrap();
-        assert_eq!(
-            (snap.id.as_str(), snap.bytes_total),
-            ("backup_1", Some(1_234_567))
-        );
-        assert_eq!(parse_rsync_stats("nothing"), (None, None));
-    }
-
-    #[test]
-    fn warning_exit_codes_count_as_success() {
-        assert!(create_exit_warning(&BackendType::Restic, 3).is_some());
-        assert!(create_exit_warning(&BackendType::Borg, 1).is_some());
-        assert!(create_exit_warning(&BackendType::Rsync, 24).is_some());
-        assert!(create_exit_warning(&BackendType::Restic, 1).is_none());
-        assert!(create_exit_warning(&BackendType::Borg, 2).is_none());
-    }
-
-    // ---- list / prune parsing ----
-
-    #[test]
-    fn restic_list_keeps_snapshots_without_tags_or_paths() {
-        let out = r#"[{"short_id":"aa","time":"t1","hostname":"h","tags":["x"],"paths":["/etc"]},{"short_id":"bb","time":"t2"}]"#;
-        let snaps = parse_list_output(&BackendType::Restic, out).unwrap();
-        assert_eq!(snaps.len(), 2);
-        assert!(snaps[1].tags.is_empty() && snaps[1].sources.is_empty());
-        assert!(
-            parse_list_output(&BackendType::Restic, "null")
-                .unwrap()
-                .is_empty()
-        );
-        assert!(parse_list_output(&BackendType::Restic, "not json").is_err());
-    }
-
-    #[test]
-    fn counts_pruned_snapshots() {
-        let restic = r#"[{"keep":[{}],"remove":[{},{}]},{"keep":[{}],"remove":null}]"#;
-        assert_eq!(parse_prune_count(&BackendType::Restic, restic, ""), Some(2));
-        assert_eq!(parse_prune_count(&BackendType::Restic, "text", ""), None);
-        let borg = "Keeping archive: a\nWould prune:     b\nWould prune:     c\n";
-        assert_eq!(parse_prune_count(&BackendType::Borg, "", borg), Some(2));
-    }
-
-    #[test]
-    fn select_prune_applies_policy() {
-        let t = |d: u32, h: u32| Utc.with_ymd_and_hms(2026, 10, d, h, 0, 0).unwrap();
-        let snaps = vec![
-            ("d16b".to_string(), t(16, 12)),
-            ("d16a".to_string(), t(16, 2)),
-            ("d15".to_string(), t(15, 2)),
-            ("d14".to_string(), t(14, 2)),
-            ("d01".to_string(), t(1, 2)),
-        ];
-        let daily2 = RetentionPolicy {
-            keep_daily: Some(2),
-            ..Default::default()
-        };
-        let mut removed = select_prune(&snaps, &daily2);
-        removed.sort();
-        assert_eq!(removed, s(&["d01", "d14", "d16a"]));
-
-        let monthly1 = RetentionPolicy {
-            keep_monthly: Some(1),
-            keep_daily: Some(1),
-            ..Default::default()
-        };
-        let mut removed = select_prune(&snaps, &monthly1);
-        removed.sort();
-        assert_eq!(removed, s(&["d01", "d14", "d15", "d16a"]));
-    }
-
-    #[test]
-    fn tar_list_and_prune_use_repository_directory() {
-        let dir = temp_dir("tar");
-        for name in ["backup_a.tar.gz", "backup_b.tar.gz", "notes.txt"] {
-            fs::write(dir.join(name), b"x").unwrap();
-        }
-        let h = handle("backup://db");
-        let repo = dir.to_string_lossy().to_string();
-
-        let (status, out) = call(
-            &h,
-            "list",
-            &args(&[("backend", "tar"), ("repo_url", &repo)]),
-        );
-        assert!(status.ok, "{out}");
-        let v: Value = serde_json::from_str(out.trim()).unwrap();
-        assert_eq!(v["result"]["total_count"], 2);
-        assert_eq!(v["backend"]["command"], json!([]));
-
-        // Dry run keeps both files and reports one removal.
-        let a = args(&[
-            ("backend", "tar"),
-            ("repo_url", &repo),
-            ("keep_daily", "1"),
-            ("dry_run", "true"),
-        ]);
-        let (status, out) = call(&h, "prune", &a);
-        assert!(status.ok, "{out}");
-        let v: Value = serde_json::from_str(out.trim()).unwrap();
-        assert_eq!(v["result"]["would_prune"]["snapshots_removed"], 1);
-        assert!(dir.join("backup_a.tar.gz").exists() && dir.join("backup_b.tar.gz").exists());
-
-        let (status, out) = call(
-            &h,
-            "prune",
-            &args(&[("backend", "tar"), ("repo_url", &repo)]),
-        );
-        assert!(!status.ok);
-        assert!(out.contains("INVALID_ARGS"));
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    // ---- L1 / H2: help ----
-
-    #[test]
-    fn help_detection_is_exact() {
-        let none = Args::new();
-        assert!(BackupHandle::should_show_help("help", &none));
-        assert!(BackupHandle::should_show_help("--help", &none));
-        assert!(BackupHandle::should_show_help("-h", &none));
-        assert!(BackupHandle::should_show_help("--help=create", &none));
-        assert!(!BackupHandle::should_show_help("create", &none));
-        assert!(!BackupHandle::should_show_help("my-host", &none));
-        assert!(!BackupHandle::should_show_help("pre-hotfix", &none));
-    }
-
-    #[test]
-    fn help_uses_approved_metadata() {
-        let h = handle("backup://db");
-        let (_, out) = call(&h, "help", &Args::new());
-        assert!(out.starts_with("Handle: backup"), "{out}");
-        let (_, out) = call(&h, "help", &args(&[("verb", "prune")]));
-        assert!(out.starts_with("Handle: backup\nVerb: prune"), "{out}");
-        let (_, out) = call(&h, "--help=create", &Args::new());
-        assert!(out.contains("Verb: create"), "{out}");
-    }
-}
-
-// H7: each documented `backup://<profile>` gets its own profile.
-#[cfg(test)]
-mod profile_tests {
-    use super::*;
-
-    fn repo(url: &str) -> String {
-        BackupHandle::from_url(Url::parse(url).unwrap())
-            .unwrap()
-            .repo
-    }
-
-    #[test]
-    fn profile_comes_from_the_url_host() {
-        assert_eq!(repo("backup://db"), "db");
-        assert_eq!(repo("backup://web"), "web");
-        // Unchanged forms.
-        assert_eq!(repo("backup://"), "default");
-        assert_eq!(repo("backup:///legacy"), "legacy");
-        assert_eq!(repo("backup://db/nightly"), "db/nightly");
-        assert_eq!(repo("backup://my%20db"), "my db");
-    }
-
-    #[test]
-    fn profile_survives_the_cli_parser() {
-        let parsed = crate::core::parse::parse_stage("backup://db.list").unwrap();
-        assert_eq!(repo(&parsed.target), "db");
-    }
-}
-
-// Stage 4: a dry-run request never performs a real backup, prune or
-// restore. Malformed dry_run values are errors (shared lenient parser), and
-// restore, which has no dry-run mode, refuses dry_run=true.
-// tar, rsync and borg have no default repository (v1.0.3-beta, release gate
-// RB-3: the former /tmp defaults leaked backups and accepted directories
-// planted by other users).
-#[cfg(test)]
-mod repo_url_required_tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    fn args(kv: &[(&str, &str)]) -> Args {
-        kv.iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    #[test]
-    fn local_backends_require_repo_url() {
-        for b in [BackendType::Tar, BackendType::Rsync, BackendType::Borg] {
-            assert!(repo_url_required(&b, &args(&[])).is_some(), "{b}");
-            assert!(
-                repo_url_required(&b, &args(&[("repo_url", " ")])).is_some(),
-                "{b}"
-            );
-            assert!(
-                repo_url_required(&b, &args(&[("repo_url", "file://")])).is_some(),
-                "{b}"
-            );
-            assert!(
-                repo_url_required(&b, &args(&[("repo_url", "/srv/b")])).is_none(),
-                "{b}"
-            );
-        }
-        // restic falls back to its own RESTIC_REPOSITORY.
-        assert!(repo_url_required(&BackendType::Restic, &args(&[])).is_none());
-    }
-
-    #[test]
-    fn tar_without_repo_url_fails_before_running() {
-        let tmp = TempDir::new().unwrap();
-        let src = tmp.path().join("src");
-        std::fs::create_dir(&src).unwrap();
-        let h = BackupHandle::from_url(Url::parse("backup://rb3").unwrap()).unwrap();
-        for (verb, extra) in [
-            ("create", vec![("src", src.to_str().unwrap())]),
-            (
-                "create",
-                vec![("src", src.to_str().unwrap()), ("dry_run", "true")],
-            ),
-            ("list", vec![]),
-            ("verify", vec![]),
-            ("prune", vec![("keep_daily", "1")]),
-            (
-                "restore",
-                vec![
-                    ("snapshot_id", "backup_1"),
-                    ("dest", tmp.path().to_str().unwrap()),
-                ],
-            ),
-        ] {
-            let mut kv = vec![("backend", "tar")];
-            kv.extend(extra);
-            let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
-            let mut io = IoStreams {
-                stdin: &mut i,
-                stdout: &mut o,
-                stderr: &mut e,
-            };
-            let st = h.call(verb, &args(&kv), &mut io).unwrap();
-            assert!(!st.ok, "{verb} {kv:?}");
-            let out = String::from_utf8_lossy(&o);
-            assert!(
-                out.contains("INVALID_ARGS") && out.contains("repo_url is required"),
-                "{verb}: {out}"
-            );
-        }
-        assert!(!Path::new("/tmp/resh_backup_rb3").exists());
-    }
-}
-
-#[cfg(test)]
-mod dry_run_tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    fn call(verb: &str, kv: &[(&str, &str)]) -> Result<Status> {
-        let h = BackupHandle::from_url(Url::parse("backup://t").unwrap()).unwrap();
-        let args: Args = kv
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
-        let mut io = IoStreams {
-            stdin: &mut i,
-            stdout: &mut o,
-            stderr: &mut e,
-        };
-        h.call(verb, &args, &mut io)
-    }
-
-    fn entries(p: &std::path::Path) -> usize {
-        std::fs::read_dir(p).map(|d| d.count()).unwrap_or(0)
-    }
-
-    #[test]
-    fn malformed_dry_run_is_refused_and_nothing_runs() {
-        let tmp = TempDir::new().unwrap();
-        let src = tmp.path().join("src");
-        std::fs::create_dir(&src).unwrap();
-        std::fs::write(src.join("a.txt"), "data").unwrap();
-        let repo = tmp.path().join("repo");
-        let (s, r) = (src.to_str().unwrap(), repo.to_str().unwrap());
-        for bad in ["maybe", "2", "", "y", "treu"] {
-            let base = [("backend", "tar"), ("repo_url", r), ("dry_run", bad)];
-            let mut create = base.to_vec();
-            create.push(("src", s));
-            assert!(call("create", &create).is_err(), "create dry_run={bad:?}");
-            assert!(call("prune", &base).is_err(), "prune dry_run={bad:?}");
-            assert_eq!(entries(&repo), 0, "dry_run={bad:?} wrote a backup");
-        }
-        // Real spellings still work: a dry run writes nothing, a real run does.
-        for yes in ["true", "1", "yes", "ON"] {
-            let st = call(
-                "create",
-                &[
-                    ("backend", "tar"),
-                    ("repo_url", r),
-                    ("src", s),
-                    ("dry_run", yes),
-                ],
-            )
-            .unwrap();
-            assert!(st.ok, "dry_run={yes}");
-            assert_eq!(entries(&repo), 0, "dry_run={yes} wrote a backup");
-        }
-        let st = call(
-            "create",
-            &[
-                ("backend", "tar"),
-                ("repo_url", r),
-                ("src", s),
-                ("dry_run", "off"),
-            ],
-        )
-        .unwrap();
-        assert!(st.ok);
-        assert_eq!(entries(&repo), 1);
-    }
-
-    #[test]
-    fn restore_refuses_dry_run_and_leaves_dest_untouched() {
-        let tmp = TempDir::new().unwrap();
-        let dest = tmp.path().join("dest");
-        std::fs::create_dir(&dest).unwrap();
-        std::fs::write(dest.join("keep.txt"), "original").unwrap();
-        let d = dest.to_str().unwrap();
-        let repo = tmp.path().join("repo");
-        let r = repo.to_str().unwrap();
-        for v in ["true", "1", "yes", "on", "maybe"] {
-            let res = call(
-                "restore",
-                &[
-                    ("backend", "tar"),
-                    ("repo_url", r),
-                    ("snapshot_id", "x"),
-                    ("dest", d),
-                    ("dry_run", v),
-                ],
-            );
-            let err = res
-                .expect_err(&format!("restore dry_run={v} must fail"))
-                .to_string();
-            if v != "maybe" {
-                assert!(err.contains("does not support dry_run"), "{err}");
-            }
-        }
-        assert_eq!(entries(&dest), 1);
-        assert_eq!(
-            std::fs::read_to_string(dest.join("keep.txt")).unwrap(),
-            "original"
-        );
-    }
-}
-
-// FUNC-08: backup timeouts are enforced: the backend is killed at the
-// deadline and the operation fails with a timeout error.
-#[cfg(test)]
-mod timeout_tests {
-    use super::*;
-
-    fn piped(program: &str, args: &[&str]) -> std::process::Child {
-        Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap()
-    }
-
-    #[test]
-    fn deadline_kills_and_reaps_a_hung_backend() {
-        let child = piped("sleep", &["5"]);
-        let pid = child.id() as libc::pid_t;
-        let start = Instant::now();
-        let out = wait_with_deadline(child, Duration::from_millis(200)).unwrap();
-        assert!(out.is_none(), "timed out");
-        assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "returned at the deadline"
-        );
-        // Killed and reaped: the pid no longer exists.
-        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
-    }
-
-    #[test]
-    fn fast_commands_are_unaffected() {
-        let child = piped("sh", &["-c", "echo out; echo err >&2; exit 3"]);
-        let out = wait_with_deadline(child, Duration::from_secs(10))
-            .unwrap()
-            .unwrap();
-        assert_eq!(out.status.code(), Some(3));
-        assert_eq!(out.stdout, b"out\n");
-        assert_eq!(out.stderr, b"err\n");
-    }
-
-    #[test]
-    fn large_output_does_not_deadlock() {
-        let child = piped("head", &["-c", "300000", "/dev/zero"]);
-        let out = wait_with_deadline(child, Duration::from_secs(10))
-            .unwrap()
-            .unwrap();
-        assert!(out.status.success());
-        assert_eq!(out.stdout.len(), 300000);
-    }
-
-    #[test]
-    fn backend_command_timeout_is_an_error() {
-        let h = BackupHandle {
-            repo: "t".into(),
-            target: "backup://t".into(),
-        };
-        let spec = CmdSpec {
-            program: "sleep".into(),
-            args: vec!["5".into()],
-            env: HashMap::new(),
-            env_remove: Vec::new(),
-            cwd: None,
-        };
-        let start = Instant::now();
-        let err = h.execute_backend_command(&spec, 150).unwrap_err();
-        assert!(err.to_string().contains("timed out after 150ms"), "{err}");
-        assert!(start.elapsed() < Duration::from_secs(2));
-
-        let quick = CmdSpec {
-            program: "true".into(),
-            args: vec![],
-            ..spec
-        };
-        let res = h.execute_backend_command(&quick, 5000).unwrap();
-        assert_eq!(res.exit_code, 0);
-    }
-}
-
-/// Stage 6B (B1-B3): caller values are checked before a backend command is
-/// built, and the command line keeps them out of option position.
-#[cfg(test)]
-mod argument_safety_tests {
-    use super::*;
-
-    fn args(kv: &[(&str, &str)]) -> Args {
-        kv.iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    fn field(backend: BackendType, verb: &str, kv: &[(&str, &str)]) -> Option<&'static str> {
-        validate_request(&backend, verb, &args(kv))
-            .err()
-            .map(|e| e.field)
-    }
-
-    #[test]
-    fn option_shaped_and_control_values_are_refused() {
-        use BackendType::*;
-        let repo = ("repo_url", "/srv/repo");
-        for b in [Tar, Rsync, Borg, Restic] {
-            for src in ["-v", "--probe", "/etc;-x", "a\nb", "a\0b", ""] {
-                assert_eq!(
-                    field(b.clone(), "create", &[repo, ("src", src)]),
-                    Some("src"),
-                    "{src:?}"
-                );
-            }
-            assert_eq!(
-                field(b.clone(), "create", &[("repo_url", "-r"), ("src", "/etc")]),
-                Some("repo_url")
-            );
-            assert_eq!(
-                field(
-                    b.clone(),
-                    "create",
-                    &[repo, ("src", "/etc"), ("exclude", "a\rb")]
-                ),
-                Some("exclude")
-            );
-            assert_eq!(
-                field(
-                    b.clone(),
-                    "create",
-                    &[repo, ("src", "/etc"), ("label", "a\nb")]
-                ),
-                Some("label")
-            );
-            assert_eq!(
-                field(b.clone(), "list", &[repo, ("tag", "a\nb")]),
-                Some("tag")
-            );
-            assert_eq!(
-                field(
-                    b.clone(),
-                    "restore",
-                    &[repo, ("snapshot_id", "-x"), ("dest", "/d")]
-                ),
-                Some("snapshot_id")
-            );
-            assert_eq!(
-                field(
-                    b.clone(),
-                    "restore",
-                    &[repo, ("snapshot_id", "s1"), ("dest", "-d")]
-                ),
-                Some("dest")
-            );
-            assert_eq!(
-                field(
-                    b.clone(),
-                    "restore",
-                    &[
-                        repo,
-                        ("snapshot_id", "s1"),
-                        ("dest", "/d"),
-                        ("include", "a\nb")
-                    ]
-                ),
-                Some("include")
-            );
-            // Legitimate values, including option-looking values that are
-            // attached to their option with `=`.
-            assert_eq!(
-                field(
-                    b.clone(),
-                    "create",
-                    &[
-                        repo,
-                        ("src", "/etc;rel/dir;a:b"),
-                        ("exclude", "-x;*.tmp"),
-                        ("label", "web 01")
-                    ]
-                ),
-                None
-            );
-            assert_eq!(
-                field(
-                    b.clone(),
-                    "restore",
-                    &[repo, ("snapshot_id", "backup_1"), ("dest", "./-d")]
-                ),
-                None
-            );
-        }
-    }
-
-    #[test]
-    fn local_snapshot_ids_stay_in_the_repository() {
-        use BackendType::*;
-        for b in [Tar, Rsync] {
-            for id in ["../x", "a/b", "..", "."] {
-                let kv = [("repo_url", "/r"), ("snapshot_id", id), ("dest", "/d")];
-                assert_eq!(
-                    field(b.clone(), "restore", &kv),
-                    Some("snapshot_id"),
-                    "{id}"
-                );
-            }
-        }
-        // restic `<id>:<subfolder>` and borg archive names are not paths.
-        let kv = [
-            ("repo_url", "/r"),
-            ("snapshot_id", "latest:/etc"),
-            ("dest", "/d"),
-        ];
-        assert_eq!(field(Restic, "restore", &kv), None);
-    }
-
-    #[test]
-    fn remote_repository_hosts_cannot_be_options() {
-        use BackendType::*;
-        for repo in [
-            "ssh://-oX/repo",
-            "ssh://user@-oX/repo",
-            "-oX:repo",
-            "user@-oX:repo",
-            "sftp:-oX:/repo",
-            "sftp:user@-oX:/repo",
-            "ssh://[-oX]/repo",
-        ] {
-            for b in [Borg, Restic] {
-                assert_eq!(
-                    field(b, "list", &[("repo_url", repo)]),
-                    Some("repo_url"),
-                    "{repo}"
-                );
-            }
-        }
-        for repo in [
-            "/srv/borg",
-            "/srv/a-b/-c",
-            "ssh://backup@host.example:2222/./repo",
-            "backup@host.example:repo",
-            "sftp:backup@host.example:/srv/restic",
-            "s3:https://s3.example/bucket",
-        ] {
-            for b in [Borg, Restic] {
-                assert_eq!(field(b, "list", &[("repo_url", repo)]), None, "{repo}");
-            }
-        }
-        // A local repository path may contain `:-`: tar uses --force-local
-        // and rsync gets a ./ prefix, so nothing is remote.
-        assert_eq!(field(Tar, "list", &[("repo_url", "/srv/a:-b")]), None);
-    }
-
-    #[test]
-    fn rsync_local_paths_never_look_remote() {
-        assert_eq!(rsync_local("/abs/a:b"), "/abs/a:b");
-        assert_eq!(rsync_local("host:path"), "./host:path");
-        assert_eq!(rsync_local("rsync://host/x"), "./rsync://host/x");
-        assert_eq!(rsync_local("./x"), "./x");
-        let c = build_rsync_create("repo/backup_1/", &["data".to_string()], &[]);
-        assert_eq!(
-            c.argv(),
-            ["rsync", "-a", "--stats", "--", "./data", "./repo/backup_1/"]
-        );
-    }
-}
+#[path = "backuph_tests.rs"]
+mod tests;

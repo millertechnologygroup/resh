@@ -1,0 +1,70 @@
+Handle: backup
+Verb: restore
+Definition: Restores a snapshot into a destination directory with the selected
+  backend, optionally only the paths matching include patterns.
+
+Usage:
+  resh backup://<profile>.restore snapshot_id=<id> dest=<path>
+    [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]
+    [password=<secret>|password_file=<path>] [include=<pattern>,...]
+    [exclude=<pattern>;...] [timeout_ms=<ms>] [json_pretty=true|false]
+    no dry run. timeout_ms default 1800000
+
+Example:
+  resh backup://db.restore repo_url=/srv/r snapshot_id=4f2a9c1e dest=restore
+
+Example Output:
+  {
+    "backend": {
+      "command": [
+        "restic",
+        "restore",
+        "--target=restore",
+        "--",
+        "4f2a9c1e"
+      ],
+      "env_redacted": {
+        "RESTIC_REPOSITORY": "/srv/r"
+      },
+      "id": "restic",
+      "simulated": false,
+      "timeout_ms": 1800000
+    },
+    "dry_run": false,
+    "duration_ms": 5120,
+    "events": [],
+    "handle": "backup",
+    "ok": true,
+    "result": {
+      "capabilities": {
+        "cloud_targets": [
+          "s3",
+          "azure",
+          "gcs",
+          "file"
+        ],
+        "dedup": true,
+        "encryption": true,
+        "incremental": true,
+        "retention": true,
+        "verify": true
+      },
+      "destination": "restore",
+      "restored": {
+        "bytes_restored": null,
+        "files_restored": 12,
+        "success": true
+      },
+      "snapshot_id": "4f2a9c1e"
+    },
+    "target": "backup://db",
+    "ts": "2026-10-16T09:12:44.931277+00:00",
+    "verb": "restore",
+    "warnings": []
+  }
+
+  Shown for restic, the first backend tried when backend is not given,
+  indented as with --json-pretty, with RESTIC_PASSWORD_FILE set in the
+  environment. files_restored and bytes_restored count the regular files
+  written (restic reports files and directories and no exact size). A
+  missing dest is created owner-only (0700); a symlink dest is refused.

@@ -1,0 +1,35 @@
+Handle: backup
+
+Description:
+  The backup handle creates, lists, restores, verifies, and prunes backup
+  snapshots by running restic, borg, rsync, or tar, using the first one
+  installed unless backend is given, and reports schedule definitions. The stage
+  URL names a backup profile, such as backup://db, and the repository location
+  is passed with repo_url, and restic and borg take the repository password from
+  password or password_file, or from their usual environment variables; every
+  verb prints a JSON envelope, and failures carry a backup.<code> error code.
+
+Available Verbs:
+  list       Lists the snapshots in a repository by running the backend's
+             listing command, such as restic snapshots or borg list, or by
+             reading a tar or rsync repository directory.
+  verify     Checks repository integrity with the backend's check command, or
+             reads every tar archive or rsync snapshot, reading all data when
+             mode is thorough or data.
+  create     Backs up one or more source paths with the selected backend and
+             reports the new snapshot id and sizes read from the backend's
+             output.
+  restore    Restores a snapshot into a destination directory with the selected
+             backend, optionally only the paths matching include patterns.
+  prune      Removes snapshots outside the keep_daily, keep_weekly, and
+             keep_monthly limits, or reports what would be removed when dry_run
+             is true.
+  schedule   Reports the backup command for a schedule, the cron handle command
+             that installs it, and the detected scheduler, without installing a
+             timer or cron job or writing any file.
+
+Usage:
+  resh backup://<profile>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh backup <verb> --help

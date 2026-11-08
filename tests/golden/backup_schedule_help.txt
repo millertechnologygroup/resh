@@ -1,0 +1,72 @@
+Handle: backup
+Verb: schedule
+Definition: Reports the backup command for a schedule, the cron handle command
+  that installs it, and the detected scheduler, without installing a timer or
+  cron job or writing any file.
+
+Usage:
+  resh backup://<profile>.schedule when=<cron> src=<path>[;<path>...]
+    [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]
+    [password_file=<path>] [enabled=true|false]
+    [json_pretty=true|false]
+    when: five crontab fields or an @ keyword
+
+Example:
+  resh backup://db.schedule when=@daily src=/etc backend=tar repo_url=/srv/b
+
+Example Output:
+  {
+    "backend": {
+      "command": [],
+      "env_redacted": {},
+      "id": "tar",
+      "simulated": false,
+      "timeout_ms": 0
+    },
+    "dry_run": false,
+    "duration_ms": 0,
+    "events": [],
+    "handle": "backup",
+    "ok": true,
+    "result": {
+      "capabilities": {
+        "cloud_targets": [
+          "file"
+        ],
+        "dedup": false,
+        "encryption": false,
+        "incremental": true,
+        "retention": true,
+        "verify": true
+      },
+      "schedule": {
+        "command": [
+          "resh",
+          "backup://db.create",
+          "src=/etc",
+          "backend=tar",
+          "repo_url=/srv/b"
+        ],
+        "definition_path": "/home/alice/resh-backup-db.json",
+        "enabled": true,
+        "install_command": [
+          "resh",
+          "cron://backup-db.add",
+          "schedule=@daily",
+          "command=resh backup://db.create src=/etc backend=tar repo_url=/srv/b"
+        ],
+        "runner": "systemd",
+        "when": "@daily"
+      }
+    },
+    "target": "backup://db",
+    "ts": "2026-10-16T09:12:44.931277+00:00",
+    "verb": "schedule",
+    "warnings": []
+  }
+
+  Shown on a systemd host, indented as with --json-pretty. Nothing is
+  installed: run install_command to add the job with the cron handle.
+  runner is cron when only crontab is found, and none (with a warning)
+  when neither is found. definition_path is not created. enabled=false
+  reports install_command as null.

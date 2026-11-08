@@ -4,7 +4,7 @@
 
 Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs and reports the results as JSON.
 
-The `backup://` handle creates, lists, restores, verifies and prunes backup snapshots by running an installed backup tool: `restic`, `borg`, `rsync` or `tar`. It also has a `schedule` verb, which only **reports** a schedule definition. It does not install a timer or cron job and does not write any file (see 4.6).
+The `backup://` handle creates, lists, restores, verifies and prunes backup snapshots by running an installed backup tool: `restic`, `borg`, `rsync` or `tar`. It also has a `schedule` verb, which only **reports** what to schedule: the backup command and the `cron://` command that would install it. It does not install a timer or cron job and does not write any file (see 4.6).
 
 The handle does not implement backups itself. Every operation runs the backend program (or, for some tar/rsync operations, reads the repository directory directly) and wraps the outcome in one JSON envelope.
 
@@ -17,19 +17,22 @@ resh backup://<profile>.<verb> key=value ...
 Where:
 
 * `<profile>` names the backup profile. It is taken from the URL host, so `backup://db.create` uses the profile `db`. `backup:///db` (path form) names the same profile, and `backup://db/sub` gives the profile `db/sub`. With no profile, the profile is `default`.
-* `<verb>` is one of `create`, `list`, `restore`, `verify`, `prune`, `schedule`.
+* `<verb>` is one of `create`, `list`, `restore`, `verify`, `prune`, `schedule`. Any other verb fails with `backup.unknown_verb` (exit 2) and a "did you mean" hint.
 * `key=value` words are the verb's arguments. The form `'backup://db.list(backend=restic)'` (quoted for the shell) is also accepted.
 
-The profile is only used to name the default tar repository and the reported schedule definition path. Everything else about the repository comes from the arguments.
+The profile is only used in the reported schedule (the backup command, the cron job label and `definition_path`). Everything else about the repository comes from the arguments.
 
 ---
 
 ## 2. Design Notes
 
-* **One envelope for every verb.** Success and failure both print the same JSON object on stdout (see 3.2). On failure resh also prints `Error: <message>` on stderr and exits non-zero.
+* **Arguments are checked first.** Each verb has one list of accepted arguments (the usage in `resh backup <verb> --help`). An unknown argument, a missing required argument or an invalid value is refused before anything is done: exit 2, error code `backup.invalid_argument`, `error.details.field` naming the argument, and a "did you mean" hint for a likely typo.
+* **One envelope for every verb.** Success and failure both print the same JSON object on stdout (see 3.2). On failure resh also prints `Error: [backup.<code>] <message>` on stderr.
+* **Exit status.** 0 success; 1 the operation failed (backend error, missing program, I/O error, verification problems); 2 invalid usage, nothing was done; 124 timeout (the outcome is unknown).
 * **The backend does the work.** Capabilities such as encryption, deduplication and cloud storage are whatever the selected backend provides. The `capabilities` object in the result is a fixed description per backend, not a probe of the repository.
-* **Dry run is limited.** Only `create` and `prune` have a dry-run mode. `restore` has none, so `restore dry_run=true` is refused with an error and nothing is restored. `list`, `verify` and `schedule` have no dry-run mode either; like every such verb, they refuse `dry_run=true` (exit 2).
-* **Timeouts.** Where a backend process is run, `timeout_ms` is enforced: at the deadline the backend process is killed and the verb fails with error kind `TIMEOUT`. Only the direct child process is killed; programs that the backend itself started may keep running. Operations done in-process (tar/rsync listing and pruning, rsync verification) do not use the timeout. Details per verb are in section 4.
+* **Dry run.** `create` and `prune` have a dry-run mode. `restore`, `list`, `verify` and `schedule` have none, and refuse `dry_run` in any spelling (exit 2); nothing is restored.
+* **Timeouts.** `timeout_ms` is the deadline of the whole verb (defaults in 4.7). At the deadline the backend and every process it started are stopped, and in-process work (tar/rsync listing, pruning, rsync verification) stops too; the verb fails with `backup.timeout` and exit 124. A `create` stopped this way removes its partial tar archive or rsync directory.
+* **Private files.** A tar or rsync repository directory that resh creates is owner-only (0700); tar archives are created 0600 and rsync snapshot directories 0700. A restore destination that resh creates is 0700. A snapshot is always created under a new name, so a second backup in the same second gets a `_2` suffix instead of overwriting the first, and nothing planted at the name is written through.
 * **Each invocation is independent.** Nothing persists between `resh` invocations except what the backend writes to the repository.
 
 ---
@@ -40,22 +43,24 @@ The profile is only used to name the default tar repository and the reported sch
 
 | Argument        | Verbs                                   | Meaning |
 | --------------- | --------------------------------------- | ------- |
-| `backend`       | all                                     | `restic`, `borg`, `rsync` or `tar`. Without it, the first of these found on `PATH` is used, in that order. An unknown name fails with `BACKEND_NOT_FOUND`. |
-| `repo_url`      | create, list, restore, verify, prune    | Repository location. **Required for tar, rsync and borg.** restic receives it as `RESTIC_REPOSITORY`; borg uses it as the repository path; tar and rsync use it as a local directory (a `file://` prefix is stripped). |
-| `password`      | create, list, restore, verify, prune    | restic/borg repository password (passed to the backend in its environment, redacted in the output). It still appears in the `resh` command line and shell history; prefer `password_file` or the environment variables. |
-| `password_file` | create, list, restore, verify, prune    | File holding the password. restic receives it as `RESTIC_PASSWORD_FILE`; for borg resh reads the file and passes the content as `BORG_PASSPHRASE`. |
-| `timeout_ms`    | all                                     | Backend deadline in milliseconds. A value that is not a non-negative integer is **silently ignored** and the default is used. |
-| `json_pretty`   | all                                     | `true` pretty-prints the envelope (same as the global `--json-pretty` flag). |
+| `backend`       | all                                     | `auto` (default), `restic`, `borg`, `rsync` or `tar`. `auto` uses the first of restic, borg, rsync, tar found on `PATH`, and fails with `backup.backend_not_found` (exit 1) when none is. Any other name is refused (exit 2). A named backend that is not installed fails with `backup.backend_not_found` (exit 1) before anything is done. |
+| `repo_url`      | all                                     | Repository location. **Required for tar, rsync and borg.** restic receives it as `RESTIC_REPOSITORY`; without it, restic needs `RESTIC_REPOSITORY` or `RESTIC_REPOSITORY_FILE` in the environment (else exit 2). borg uses it as the repository path; tar and rsync use it as a local directory (a `file://` prefix is stripped). |
+| `password`      | create, list, restore, verify, prune    | restic/borg repository password, passed to the backend in its environment (`RESTIC_PASSWORD`, `BORG_PASSPHRASE`) and redacted in the output. It appears in the `resh` command line and shell history, so resh prints a warning on stderr each time; prefer `password_file` or the environment variables. |
+| `password_file` | create, list, restore, verify, schedule, prune | File holding the password. restic receives it as `RESTIC_PASSWORD_FILE`; for borg resh reads the file and passes the content as `BORG_PASSPHRASE`. The file must be readable, else `backup.password_file_unreadable` (exit 1) before anything runs. |
+| `timeout_ms`    | all except schedule                     | Deadline of the whole verb in milliseconds, an integer from 1 to 2592000000 (30 days). Anything else is refused (exit 2). |
+| `json_pretty`   | all                                     | `true` pretty-prints the envelope (same as the global `--json-pretty` flag). Booleans accept `true/false`, `1/0`, `yes/no`, `on/off`; anything else is refused. |
 
-**Password sources (restic and borg only).** restic and borg need a repository password from `password=`, `password_file=`, or their usual environment variables (`RESTIC_PASSWORD`, `RESTIC_PASSWORD_FILE`, `RESTIC_PASSWORD_COMMAND`; `BORG_PASSPHRASE`, `BORG_PASSCOMMAND`, `BORG_PASSPHRASE_FD`). With none of these, the verb fails with error kind `MISSING_PASSWORD` before the backend is run. tar and rsync need no password.
+**Password sources (restic and borg only).** restic and borg need a repository password from `password=`, `password_file=`, or their usual environment variables (`RESTIC_PASSWORD`, `RESTIC_PASSWORD_FILE`, `RESTIC_PASSWORD_COMMAND`; `BORG_PASSPHRASE`, `BORG_PASSCOMMAND`, `BORG_PASSPHRASE_FD`). With none of these, the verb fails with `backup.missing_password` (exit 2) before the backend is run. Giving both `password` and `password_file` is refused. A password never appears in a backend's argv. resh does not store repository passwords.
 
-**No default repository.** tar, rsync and borg require `repo_url`. Without it every verb (including a dry run) fails with error kind `INVALID_ARGS` before anything runs. restic without `repo_url` uses `RESTIC_REPOSITORY` from the environment and fails if that is not set.
+**tar and rsync take no password.** Their repositories are not encrypted, so `password` and `password_file` are refused for them (exit 2) rather than silently ignored.
+
+**No default repository.** tar, rsync and borg require `repo_url`. Without it every verb (including a dry run) fails with `backup.invalid_argument` before anything runs.
 
 Before v1.0.3-beta, tar, rsync and borg fell back to `/tmp/resh_backup_<profile>`, `/tmp/rsync_backup` and `/tmp/borg_repo`. Those directories were created with default permissions (archives readable by every local user) and were accepted when another user had created them first, so they were removed.
 
-Choose a repository directory that only you (or root) can write. resh creates a missing tar or rsync repository directory with the default (umask) permissions and does not check the ownership or mode of an existing one; for sensitive data create it yourself first, for example `install -d -m 0700 /var/backups/resh/db`.
+resh does not check the ownership or mode of an existing repository directory; use a directory only you (or root) can write, for example one created with `install -d -m 0700 /var/backups/resh/db`.
 
-### 3.2 Response envelope
+### 3.2 Response envelope and errors
 
 Every verb prints one JSON object with these fields (the field set comes from the `BackupEnvelope` structure in `src/core/envelope.rs`):
 
@@ -68,11 +73,11 @@ Every verb prints one JSON object with these fields (the field set comes from th
 | `ts`          | timestamp (RFC 3339) |
 | `duration_ms` | elapsed time |
 | `dry_run`     | whether the run was a dry run |
-| `backend`     | `id`, `command` (argv run, empty when the repository was read directly), `env_redacted` (extra environment with secrets replaced by `***REDACTED***`), optional `cwd`, `timeout_ms`, `simulated` |
+| `backend`     | `id` (`unknown` when the request failed before a backend was chosen), `command` (argv run, empty when the repository was read directly or nothing ran), `env_redacted` (extra environment with secrets replaced by `***REDACTED***`), optional `cwd`, `timeout_ms` (0 when no deadline applies), `simulated` (true for a create dry-run plan) |
 | `result`      | verb-specific result (success only) |
 | `events`      | always an empty list in the current code |
 | `warnings`    | non-fatal notices |
-| `error`       | on failure: `kind`, `message`, optional `details` |
+| `error`       | on failure: `code`, `kind`, `message`, optional `details` |
 
 Example, a tar dry run (shortened from real output; `--json-pretty` sorts keys):
 
@@ -115,7 +120,7 @@ Example, a tar dry run (shortened from real output; `--json-pretty` sorts keys):
 }
 ```
 
-Example failure (restic with no password source):
+Example failure (restic with no password source), with `Error: [backup.missing_password] restic needs a repository password: ...` on stderr and exit 2:
 
 ```json
 {
@@ -136,31 +141,47 @@ Example failure (restic with no password source):
   "events": [],
   "warnings": [],
   "error": {
+    "code": "backup.missing_password",
     "kind": "MISSING_PASSWORD",
     "message": "restic needs a repository password: pass password=<secret> or password_file=<path>, or set RESTIC_PASSWORD or RESTIC_PASSWORD_FILE"
   }
 }
 ```
 
-Error kinds produced by the code: `BACKEND_NOT_FOUND`, `MISSING_PASSWORD`, `BACKEND_FAILED` (the backend exited non-zero; `details` has `exit_code` and `stderr_tail`), `TIMEOUT`, `EXECUTION_FAILED`, `IO`, `PARSE`, `INVALID_ARGS` (for a refused argument value, `details.field` names the argument; see 3.3), `VERIFY_FAILED`.
+**Error codes.** `error.code` is the stable code, also printed on stderr as `Error: [<code>] <message>`. `error.kind` is the upper-case kind of earlier releases, kept for compatibility.
 
-Exit status: 0 on success. On `BACKEND_FAILED` resh exits with the backend's exit code (1 if that is outside 1-255), so a backend exit code of 2 also gives exit 2; use `error.kind` to tell a backend failure from a resh usage error. Other failures exit 1. A missing required argument (`src`, `when`, `snapshot_id`, `dest`) is reported only as `Error: Missing required argument: ...` on stderr, with exit 1 and no JSON envelope.
+| `error.code` | `error.kind` | Exit | Meaning |
+| ------------ | ------------ | ---- | ------- |
+| `backup.invalid_argument` | `INVALID_ARGS` | 2 | Unknown argument, missing required argument, invalid value, unsafe value (3.3), `dry_run` on a verb without one, missing `repo_url`. `details.field` names the argument. Nothing was done. |
+| `backup.unknown_verb` | `INVALID_ARGS` | 2 | The verb is not one of the six. |
+| `backup.missing_password` | `MISSING_PASSWORD` | 2 | restic or borg has no password source. Nothing was run. |
+| `backup.password_file_unreadable` | `MISSING_PASSWORD` | 1 | `password_file` cannot be read. Nothing was run. |
+| `backup.backend_not_found` | `BACKEND_NOT_FOUND` | 1 | The backend program is not installed (or, with `backend=auto`, none is). |
+| `backup.backend_failed` | `BACKEND_FAILED` | 1 | The backend exited non-zero or was killed by a signal. `details` has `exit_code` (the backend's own status, null after a signal), `signal` and `stderr_tail`; the message ends with the backend's last stderr line. |
+| `backup.execution_failed` | `EXECUTION_FAILED` | 1 | The backend could not be started (for example permission denied). |
+| `backup.timeout` | `TIMEOUT` | 124 | The deadline passed. The backend was stopped; what it already did stays done. On stderr resh reports `Error: [backup.timeout] outcome unknown: <program> was stopped; ...` when a backend was stopped. |
+| `backup.io` | `IO` | 1 | A repository or destination directory cannot be read, created or written; a tar/rsync prune could not remove some snapshots (`details` lists what was removed and the errors). |
+| `backup.parse` | `PARSE` | 1 | restic or borg `list` output is not the expected JSON. |
+| `backup.verify_failed` | `VERIFY_FAILED` | 1 | tar or rsync verification found problems; `details` has the findings. |
+| `backup.snapshot_not_found` | `NOT_FOUND` | 1 | `verify snapshot_id=` names a tar archive or rsync snapshot that is not in the repository. |
+
+Before this release a backend failure exited with the backend's own exit code, a missing required argument printed only an error line (exit 1, no envelope), and refused values exited 1. Now usage errors exit 2 with an envelope, and a backend failure exits 1 with the backend's status in `error.details.exit_code`.
 
 Check `ok` (or the exit status) to decide success.
 
 ### 3.3 How argument values reach the backend
 
-Since v1.0.4-beta every caller value that ends up on a backend command line is checked **before** anything runs, including before a dry-run plan is reported. A refused value gives error kind `INVALID_ARGS`, exit 1, `details.field` naming the argument, and the backend is not started.
+Since v1.0.4-beta every caller value that ends up on a backend command line is checked **before** anything runs, including before a dry-run plan is reported. A refused value gives `backup.invalid_argument`, exit 2, `details.field` naming the argument, and the backend is not started.
 
-* `src`, `dest`, `snapshot_id` and `repo_url` must not be empty, must not start with `-` (write `./-name` for a relative path that does), and must not contain control characters such as line breaks. `src` must name at least one path.
-* For tar and rsync, `snapshot_id` is the name of an archive or snapshot directory in the repository and must not contain `/` or be `.` or `..`.
+* `src`, `dest`, `snapshot_id`, `repo_url` and `password_file` must not be empty, must not start with `-` (write `./-name` for a relative path that does), and must not contain control characters such as line breaks. `src` must name at least one path.
+* For tar and rsync, `snapshot_id` (restore and verify) is the name of an archive or snapshot directory in the repository and must not contain `/` or be `.` or `..`.
 * For restic and borg, no component of `repo_url` that names a host or user (after `ssh://`, `@`, `:` or `[`) may start with `-`.
 * `exclude`, `include`, `tag` and `label` may contain any text except control characters.
 
 The command lines are built so a value cannot change its role:
 
-* Option values are attached with `=` (`--exclude=<pattern>`, `--tag=<tag>`, `--hostname=<label>`, `--target=<dest>`), so a value beginning with `-` stays a value.
-* Positional values (sources, repository, snapshot) follow a `--` separator.
+* Option values are attached with `=` (`--exclude=<pattern>`, `--include=<pattern>`, `--tag=<tag>`, `--hostname=<label>`, `--target=<dest>`), so a value beginning with `-` stays a value.
+* Positional values (sources, repository, snapshot, include patterns for tar and borg) follow a `--` separator.
 * tar always gets `--force-local`, so an archive path containing `:` is never treated as `host:file` on a remote host.
 * rsync gets relative paths with a `./` prefix, so a path such as `name:dir` is never treated as a remote location.
 
@@ -185,16 +206,18 @@ resh backup://db.create 'src=/etc;/home' backend=restic repo_url=/srv/restic pas
 | Argument  | Required | Meaning |
 | --------- | -------- | ------- |
 | `src`     | yes      | Source path(s), separated by `;` |
-| `tag`     | no       | Tags, separated by `;` (passed to restic only) |
-| `label`   | no       | For tar, rsync and borg, the snapshot name prefix (`<label>_<timestamp>`, characters other than letters, digits, `.`, `-`, `_` become `_`); for restic, the `--hostname` value |
-| `exclude` | no       | Exclude patterns, separated by `;` |
-| `dry_run` | no       | `true`/`1`/`yes`/`on` (any case, or a bare `dry_run`) validates the arguments and reports the command without running it (`result.dry_run_mode` is `plan`). `false`/`0`/`no`/`off` runs it. Any other value is an error and nothing runs |
+| `tag`     | no       | Tags, separated by `;`. restic only: refused for the other backends (exit 2) |
+| `label`   | no       | For tar, rsync and borg, the snapshot name prefix (`<label>_<timestamp>`, characters other than letters, digits, `.`, `-`, `_` become `_`); for restic, the `--hostname` value (restic 0.18 prints a deprecation notice for it, kept in `backend_raw.stderr`) |
+| `exclude` | no       | Exclude patterns, separated by `;`, in the backend's own pattern syntax |
+| `dry_run` | no       | `true` (or `1`/`yes`/`on`, or a bare `dry_run`) validates the arguments and reports the command without running it or creating anything (`result.dry_run_mode` is `plan`, `backend.simulated` is true). Any value other than a boolean spelling is refused |
 
-Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 1800000, enforced).
+Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 1800000), `json_pretty`.
 
-Backend commands: `tar --force-local -czf <repo>/<name>.tar.gz ... -- <src>...`, `rsync -a --stats ... -- <src>... <repo>/<name>/`, `borg create --json --compression lz4 ... -- <repo>::<name> <src>...`, `restic backup ... --json -- <src>...`. The snapshot id is the archive or directory name for tar/rsync/borg, and the restic snapshot id read from restic's output. For tar and rsync the repository directory is created if missing.
+Backend commands: `tar --force-local -czf <repo>/<name>.tar.gz ... -- <src>...`, `rsync -a --stats ... -- <src>... <repo>/<name>/`, `borg create --json --compression lz4 ... -- <repo>::<name> <src>...`, `restic backup ... --json -- <src>...`. The snapshot id is the archive or directory name for tar/rsync/borg (with a `_2`, `_3` ... suffix when the name is taken), and the restic snapshot id read from restic's output. For tar and rsync a missing repository directory is created 0700, the archive 0600 and the snapshot directory 0700. If the backup fails or is stopped at the deadline, the partial tar archive or rsync directory is removed (`error.details.partial_snapshot` and `partial_snapshot_removed`).
 
-Sources are checked and passed as described in 3.3. Before v1.0.4-beta they were passed with no `--` separator, so a value beginning with `-` was read as a backend option.
+The exit statuses restic 3, borg 1, rsync 24 and tar 1 mean the backup was written with a warning; they are reported as success with a warning.
+
+Sources are checked and passed as described in 3.3.
 
 ### 4.2 list
 
@@ -205,10 +228,10 @@ resh --json-pretty backup://db.list backend=tar repo_url=/srv/backups
 resh backup://db.list backend=restic repo_url=/srv/restic password_file=/root/.restic-pass tag=daily
 ```
 
-Arguments: `tag` (`;`-separated, restic only), plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 10000).
+Arguments: `tag` (`;`-separated, restic only; refused for the other backends), plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 10000), `json_pretty`.
 
-* restic runs `restic snapshots --json`; borg runs `borg list --json -- <repo>`. The timeout is enforced on that command.
-* tar and rsync read the repository directory directly (`*.tar.gz` files or snapshot directories); no command runs and `timeout_ms` is not used.
+* restic runs `restic snapshots --json`; borg runs `borg list --json -- <repo>`.
+* tar and rsync read the repository directory directly (`*.tar.gz` files or snapshot directories); no command runs. A missing directory gives `backup.io`.
 
 The result has `snapshots` (each with `id`, `created_at`, `sources`, `tags`, and optionally `label`, `bytes_total`), `total_count` and `capabilities`.
 
@@ -218,18 +241,28 @@ Restores a snapshot into a destination directory.
 
 ```bash
 resh backup://db.restore snapshot_id=backup_20261016_091244 dest=/srv/restore backend=tar repo_url=/srv/backups
+resh backup://db.restore snapshot_id=latest dest=/srv/restore backend=restic repo_url=/srv/restic password_file=/root/.restic-pass 'include=/etc/*.conf'
 ```
 
 | Argument      | Required | Meaning |
 | ------------- | -------- | ------- |
-| `snapshot_id` | yes      | Snapshot id (tar: archive name without `.tar.gz`; rsync: directory name) |
-| `dest`        | yes      | Destination directory (created for tar and borg) |
-| `include`     | no       | Include patterns, separated by `,` (restic only; other backends warn and restore everything) |
-| `exclude`     | no       | Exclude patterns, separated by `;` |
+| `snapshot_id` | yes      | Snapshot id (tar: archive name without `.tar.gz`; rsync: directory name; borg: archive name; restic: snapshot id or `latest`) |
+| `dest`        | yes      | Destination directory. Created 0700 when missing. A `dest` that is a symbolic link or an existing non-directory is refused (exit 2) |
+| `include`     | no       | Only restore matching paths; patterns separated by `,` (see below) |
+| `exclude`     | no       | Do not restore matching paths; patterns separated by `;` |
 
-Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 1800000, enforced).
+Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 1800000), `json_pretty`.
 
-`restore` has **no dry run**: `dry_run=true` (or any true spelling) is refused with `Error: backup restore does not support dry_run; nothing was restored`, and a malformed `dry_run` value is an error. Without `dry_run` the restore is performed. The result's `restored.files_restored` counts backend output lines mentioning a restore, and `bytes_restored` is always 0.
+`include` and `exclude` use each backend's own pattern rules:
+
+* restic: `--include=` / `--exclude=` patterns, matched against the original absolute paths (`/etc/*.conf`); a pattern without `/` matches a name at any depth.
+* tar: include patterns are archive member patterns (members have no leading `/`, for example `etc/*.conf`), shell-style: `*` does not match `/`; a directory member restores everything below it. Exclude patterns match any member name component (`*.tmp`). A pattern that matches nothing makes tar fail (`backup.backend_failed`).
+* rsync: rsync filter patterns relative to the snapshot (`*.conf`, `data/sub/`); with `include`, directories are traversed and those left empty are not created.
+* borg: include patterns are borg PATH arguments (path prefixes such as `etc/hosts`, or borg pattern syntax such as `sh:etc/*.conf`); exclude patterns are borg `--exclude` patterns.
+
+`restore` has **no dry run**: `dry_run` in any spelling is refused with `backup restore does not support dry_run` (exit 2) and nothing is restored. Existing files in `dest` are overwritten by the backend; restore into an empty directory when unsure.
+
+The result's `restored` has `files_restored` and `bytes_restored`: the regular files written and their total size for tar and borg (from the extracted-member list), the regular files transferred and their size for rsync, and for restic the number of files and directories from restic's summary with `bytes_restored` null (restic reports only a rounded size). When a restore fails or is stopped, files already written stay in `dest` (`error.details.partial_restore_possible`).
 
 ### 4.4 verify
 
@@ -238,20 +271,21 @@ Checks repository integrity.
 ```bash
 resh backup://db.verify backend=tar repo_url=/srv/backups
 resh backup://db.verify backend=restic repo_url=/srv/restic password_file=/root/.restic-pass mode=thorough
+resh backup://db.verify backend=borg repo_url=/srv/borg password_file=/root/.borg-pass snapshot_id=db_20261016_020000
 ```
 
 | Argument      | Meaning |
 | ------------- | ------- |
-| `mode`        | `thorough` or `data` reads all data (`restic check --read-data`, `borg check --verify-data`). Any other value, including the default `quick`, runs the plain check |
-| `snapshot_id` | Only echoed back in the result; it does not limit the check |
+| `mode`        | `quick` (default), `thorough` or `data`. `thorough` and `data` read all data: `restic check --read-data`, `borg check --verify-data`, and for rsync every file is read completely (`quick` only opens each file). tar always reads each archive completely. Any other value is refused (exit 2) |
+| `snapshot_id` | Check only this snapshot: borg `check -- <repo>::<archive>`, one tar archive, or one rsync snapshot directory. restic cannot check a single snapshot, so `snapshot_id` is refused for restic (exit 2). A tar or rsync snapshot that does not exist gives `backup.snapshot_not_found` |
 
-Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 3600000).
+Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 3600000, for the whole verb, all archives together), `json_pretty`.
 
-* restic and borg run their `check` command with the timeout enforced.
-* tar runs `tar --force-local -tzf` on each archive in the repository. Each archive gets the full `timeout_ms`; it is not a total for the verb. An empty repository is reported as a problem.
-* rsync opens every file in the repository in-process; `timeout_ms` is not used.
+* restic and borg run their `check` command. A failing check is `backup.backend_failed` (exit 1) with the backend's output in `details`.
+* tar runs `tar --force-local -tzf` on each archive. An empty repository is reported as a problem.
+* rsync opens (or reads) every file in the repository in-process.
 
-Problems give error kind `VERIFY_FAILED` with the findings in `error.details`.
+tar and rsync problems give `backup.verify_failed` with the findings in `error.details`. `result.verification.files_checked` counts tar archive members or rsync files; it is null for restic and borg, which do not report a count.
 
 ### 4.5 prune
 
@@ -267,21 +301,21 @@ resh backup://db.prune backend=restic repo_url=/srv/restic password_file=/root/.
 | `keep_daily`   | Number of daily snapshots to keep |
 | `keep_weekly`  | Number of weekly snapshots to keep |
 | `keep_monthly` | Number of monthly snapshots to keep |
-| `dry_run`      | Report what would be removed. Same parsing as `create`: an unrecognised value is an error and nothing is pruned |
+| `dry_run`      | Report what would be removed. Same parsing as `create` |
 
-At least one `keep_*` is required, and each must be a non-negative integer, otherwise the verb fails with `INVALID_ARGS`. Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 3600000).
+At least one `keep_*` is required, and each must be an integer of at least 1 (omit a rule instead of passing 0), otherwise the verb fails with `backup.invalid_argument` (exit 2). Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 3600000), `json_pretty`.
 
-* restic runs `restic forget --json --keep-... --prune` (or `--dry-run`); borg runs `borg prune --list --keep-... --stats -- <repo>` (or `--dry-run`). The timeout is enforced.
-* tar and rsync apply the policy themselves to archives or snapshot directories by modification time (UTC days) and delete them in-process; `timeout_ms` is not used.
+* restic runs `restic forget --json --keep-... --prune` (or `--dry-run`); borg runs `borg prune --list --keep-... --stats -- <repo>` (or `--dry-run`). restic applies the policy separately to each group of snapshots with the same host and paths (its default `--group-by host,paths`), so snapshots made with a different `label` (restic hostname) are kept by their own group; borg applies it to all archives in the repository.
+* tar and rsync apply the policy themselves to archives or snapshot directories by modification time (UTC days, ISO weeks, months) and delete them in-process. At the deadline the removal stops between snapshots and the verb fails with `backup.timeout`, listing what was removed in `error.details`.
 
-The result reports `pruned` (or `would_prune` in a dry run) with `snapshots_removed`, `bytes_freed` (null for restic and borg) and `success`.
+The result reports `pruned` (or `would_prune` in a dry run) with `snapshots_removed`, `bytes_freed` (null for restic and borg) and `success`; tar and rsync also list the `removed` ids.
 
 **What a prune dry run does.** The arguments are validated first in every case, and a refused value stops the verb before any backend runs. Then:
 
 * tar and rsync: a pure plan. No program runs and nothing is removed; `result.dry_run_mode` is `plan`.
 * restic and borg: only the backend can apply its retention policy to its repository, so resh **runs the backend** with its own `--dry-run` flag and reports what it would remove; `result.dry_run_mode` is `backend`, `backend.simulated` is `false`, `backend.command` is the argv that ran, and a warning says so. If your automation requires that a dry run starts no external program, do not use `prune dry_run=true` with restic or borg.
 
-  What resh's tests verify: the arguments are validated before the backend starts, the backend receives its own `--dry-run` flag (and never `--prune` or `--stats`), and the result is labelled as above.
+  What resh's tests verify: the arguments are validated before the backend starts, the backend receives its own `--dry-run` flag (and never `--prune` or `--stats`), the result is labelled as above, and (in containers with real restic and borg) no snapshot is removed.
 
   **A restic or borg prune dry run is not free of side effects.** The following was observed with restic 0.18.0 and borg 1.4.0 on local repositories (verified for v1.0.5-beta):
 
@@ -295,39 +329,51 @@ The result reports `pruned` (or `would_prune` in a dry run) with `snapshots_remo
 
 ### 4.6 schedule
 
-Reports a schedule definition. **It does not install anything**: no systemd timer, no crontab entry, and no file is written, including the reported `definition_path`.
+Reports what to schedule. **It does not install anything**: no systemd timer, no crontab entry, and no file is written, including the reported `definition_path`. Nothing runs, so it takes no `timeout_ms`.
 
 ```bash
-resh --json-pretty backup://db.schedule 'when=0 2 * * *' src=/etc backend=tar
+resh --json-pretty backup://db.schedule 'when=0 2 * * *' src=/etc backend=tar repo_url=/srv/backups
 ```
 
-| Argument  | Required | Meaning |
-| --------- | -------- | ------- |
-| `when`    | yes      | Schedule expression; echoed back, not validated |
-| `src`     | yes      | Required but not used in the result |
-| `enabled` | no       | Echoed back (default `true`) |
-| `backend` | no       | Selected as for other verbs |
+| Argument        | Required | Meaning |
+| --------------- | -------- | ------- |
+| `when`          | yes      | Five crontab fields or an `@` keyword (`@daily`, `@reboot`, ...), checked with the cron handle's parser; an invalid schedule is refused (exit 2) |
+| `src`           | yes      | Source path(s) for the scheduled `create`, checked as in 3.3 |
+| `backend`       | no       | As for other verbs. A named backend that is not installed here gives a warning, not an error |
+| `repo_url`      | no       | Repository for the scheduled `create`; required for tar, rsync and borg |
+| `password_file` | no       | Password file for the scheduled `create` (restic and borg; refused for tar and rsync). `password=` is not accepted, so a password never ends up in a crontab |
+| `enabled`       | no       | `true` (default) or `false` |
 
-`timeout_ms` is accepted and echoed in `backend.timeout_ms`, but nothing runs, so it has no effect. The result's `schedule` object has `when`, `enabled`, `runner` (`systemd` if `systemctl` is on `PATH`, else `cron` if `crontab` is, else `none` with a warning) and `definition_path` (`$HOME/resh-backup-<profile>.json`, not created). To run backups on a schedule, add the `resh backup://... create ...` command to cron or a systemd timer yourself.
+The result's `schedule` object has:
+
+* `command`: the `resh backup://<profile>.create ...` argv the job runs (`src`, `backend`, and `repo_url`/`password_file` when given);
+* `install_command`: the `resh cron://backup-<profile>.add schedule=<when> command=<command>` argv that installs the job with the cron handle (`command` shell-quoted); `null` when `enabled=false`;
+* `when`, `enabled`;
+* `runner`: `systemd` if `systemctl` is on `PATH`, else `cron` if `crontab` is, else `none` with a warning;
+* `definition_path`: `$HOME/resh-backup-<profile>.json` (not created; null when `HOME` is not set).
+
+Warnings say when the scheduled job will need a password or `RESTIC_REPOSITORY` in its environment. The profile must consist of letters, digits, `-`, `_` and `/` to be scheduled.
 
 ### 4.7 timeout_ms summary
 
-| Verb     | restic / borg | tar | rsync |
-| -------- | ------------- | --- | ----- |
-| create   | enforced (default 30 min) | enforced | enforced |
-| restore  | enforced (default 30 min) | enforced | enforced |
-| list     | enforced (default 10 s) | not used (directory read) | not used (directory read) |
-| verify   | enforced (default 60 min) | enforced per archive | not used (in-process) |
-| prune    | enforced (default 60 min) | not used (in-process) | not used (in-process) |
-| schedule | not used (nothing runs) | not used | not used |
+`timeout_ms` is the deadline of the whole verb. Defaults:
 
-A malformed `timeout_ms` is not rejected; the default is used silently.
+| Verb     | Default | What it bounds |
+| -------- | ------- | -------------- |
+| create   | 1800000 (30 min) | the backend run |
+| restore  | 1800000 (30 min) | the backend run |
+| list     | 10000 (10 s) | restic/borg run; tar/rsync directory read |
+| verify   | 3600000 (60 min) | restic/borg check; all tar archives together; the rsync read |
+| prune    | 3600000 (60 min) | restic/borg run; tar/rsync scan, size count and removal |
+| schedule | none (refused) | nothing runs |
+
+At the deadline the backend's whole process tree is stopped (SIGTERM, then SIGKILL) and the verb exits 124 with `backup.timeout`.
 
 ---
 
 ## 5. Platform Support
 
-Only Linux is supported and verified. The backend programs must be installed and on `PATH`.
+Only Linux is supported and verified. The backend programs must be installed and on `PATH`. Real restic, borg, rsync and tar are exercised in Debian containers by `tests/backup_e2e_docker.rs`.
 
 ---
 
@@ -345,11 +391,11 @@ Only Linux is supported and verified. The backend programs must be installed and
 ## 7. Use Cases
 
 * Snapshot configuration directories (`create`) before an upgrade and roll back with `restore`.
-* Apply a retention policy from cron with `prune`.
+* Apply a retention policy from cron with `prune`; get the cron command from `schedule`.
 * Check repositories in CI or maintenance windows with `verify`, failing the job on `ok: false`.
 
 ---
 
 ## 8. Implementation
 
-The handle is written in Rust (`src/handles/automation/backuph.rs`). Backend commands are built as argument vectors (no shell), run with stdin closed and stdout/stderr captured (up to 256 KB each in `backend_raw`), and killed at the deadline as described above.
+The handle is written in Rust (`src/handles/automation/backuph.rs`, tests in `backuph_tests.rs`, `tests/backup_verbs.rs` and `tests/backup_e2e_docker.rs`). Backend commands are built as argument vectors (no shell), run in their own process group with stdin closed and stdout/stderr captured (up to 256 KB each in `backend_raw`), and stopped at the deadline as described above.
