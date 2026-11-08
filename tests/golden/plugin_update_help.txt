@@ -1,0 +1,13 @@
+Handle: plugin
+Verb: update
+Definition: Resolves the newest version of an installed plugin and installs and
+  activates it, keeping the old version if anything fails, or only reports the
+  plan when dry_run is true.
+
+Usage:
+  resh plugin://<plugin-id>.update [registry=<https-url>]
+    [url=<https-url>] [verify=sha256|none] [strict=true|false]
+    [dry_run=true|false] [timeout_ms=<ms>] [ca_file=<pem>]
+
+Example:
+  resh plugin://aws.update dry_run=true

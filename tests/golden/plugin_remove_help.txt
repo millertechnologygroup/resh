@@ -1,0 +1,48 @@
+Handle: plugin
+Verb: remove
+Definition: Removes an installed plugin's files from the plugin store,
+  optionally purging its data, or only reports the planned steps when dry_run is
+  true.
+
+Usage:
+  resh plugin://<plugin-id>.remove [force=true|false]
+    [purge=true|false] [dry_run=true|false] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty plugin://aws.remove dry_run=true
+
+Example Output:
+  {
+    "actions": [
+      {
+        "id": "check-0",
+        "name": "resolve_installation",
+        "ok": false,
+        "type": "check"
+      }
+    ],
+    "args": {
+      "dry_run": true,
+      "force": false,
+      "purge": false,
+      "timeout_ms": 30000
+    },
+    "code": 1,
+    "error": {
+      "code": "plugin.not_installed",
+      "message": "plugin aws is not installed"
+    },
+    "ok": false,
+    "op": "plugin.remove",
+    "result": {},
+    "target": {
+      "install_root": "/home/alice/.local/share/resh/plugins",
+      "name": "aws",
+      "requested_name": "aws"
+    },
+    "ts": "2026-11-08T09:12:44.512309+00:00"
+  }
+
+  Shown for a plugin that is not installed with --json-pretty (exit 1).
+  For an installed plugin, ok is true, actions lists each step, and result
+  reports removed, purged, and previous_version.

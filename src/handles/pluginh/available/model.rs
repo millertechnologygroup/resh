@@ -2,71 +2,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Arguments for the available.info verb
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AvailableInfoArgs {
-    pub name: Option<String>,
-    pub id: Option<String>,
-    pub version: Option<String>,
-    pub channel: String,
-    pub os: Option<String>,
-    pub arch: Option<String>,
-    pub include: String,
-    pub timeout_ms: u32,
-    pub source: String,
-    pub offline: bool,
-}
-
-impl Default for AvailableInfoArgs {
-    fn default() -> Self {
-        Self {
-            name: None,
-            id: None,
-            version: None,
-            channel: "stable".to_string(),
-            os: None,
-            arch: None,
-            include: "core".to_string(),
-            timeout_ms: 5000,
-            source: "default".to_string(),
-            offline: false,
-        }
-    }
-}
-
-/// Action record for envelope actions array
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionRecord {
-    pub r#type: String,
-    pub id: String,
-    pub ok: bool,
-    pub detail: String,
-    pub meta: serde_json::Value,
-}
-
-/// Error structure for error envelope
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorInfo {
-    pub code: String,
-    pub message: String,
-    pub details: serde_json::Value,
-}
-
-/// Main envelope structure for available.info responses
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AvailableInfoEnvelope {
-    pub op: String,
-    pub ok: bool,
-    pub target: String,
-    pub ts: String,
-    pub args: AvailableInfoArgs,
-    pub actions: Vec<ActionRecord>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<AvailableInfoResult>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<ErrorInfo>,
-}
-
 /// Result structure for successful available.info responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AvailableInfoResult {
@@ -177,7 +112,6 @@ pub struct IndexSnapshot {
 pub enum IndexKind {
     Official,
     Community,
-    Custom(String),
 }
 
 impl IndexKind {
@@ -185,7 +119,6 @@ impl IndexKind {
         match self {
             IndexKind::Official => 0,
             IndexKind::Community => 1,
-            IndexKind::Custom(_) => 2,
         }
     }
 }
@@ -222,36 +155,4 @@ pub struct PluginSelector {
 pub struct PluginResolved {
     pub plugin: PluginInfo,
     pub source_index: String,
-}
-
-/// Error codes for available.info operations
-#[derive(Debug, Clone)]
-pub enum AvailableInfoErrorCode {
-    InvalidArg,
-    NotFound,
-    Timeout,
-    IndexUnavailable,
-    Io,
-}
-
-impl AvailableInfoErrorCode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            AvailableInfoErrorCode::InvalidArg => "ERR_INVALID_ARG",
-            AvailableInfoErrorCode::NotFound => "ERR_NOT_FOUND",
-            AvailableInfoErrorCode::Timeout => "ERR_TIMEOUT",
-            AvailableInfoErrorCode::IndexUnavailable => "ERR_INDEX_UNAVAILABLE",
-            AvailableInfoErrorCode::Io => "ERR_IO",
-        }
-    }
-
-    pub fn exit_code(&self) -> i32 {
-        match self {
-            AvailableInfoErrorCode::InvalidArg => 2,
-            AvailableInfoErrorCode::NotFound => 3,
-            AvailableInfoErrorCode::Timeout => 124,
-            AvailableInfoErrorCode::IndexUnavailable => 69,
-            AvailableInfoErrorCode::Io => 74,
-        }
-    }
 }

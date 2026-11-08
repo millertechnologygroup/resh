@@ -1,0 +1,44 @@
+Handle: plugin
+
+Description:
+  The plugin handle installs, updates, removes, enables, and disables resh
+  plugins and searches plugin catalogs, printing a JSON envelope for every
+  operation. Lifecycle verbs name the plugin before the verb, such as
+  plugin://aws.install or plugin://aws.enable, while catalog and listing verbs
+  take no plugin name, such as plugin://available.list and
+  plugin://installed.list.
+
+Available Verbs:
+  available.list     Lists plugins from the catalog built into resh or from a
+                     catalog file, filtered by query, tags, publisher, and
+                     platform, with pagination.
+  available.search   Searches a plugin index, from the local cache or fetched
+                     over HTTPS, and returns scored matches for a query and
+                     filters.
+  available.info     Reports index details for one plugin selected by name or
+                     id, optionally narrowed by version, channel, OS, and
+                     architecture.
+  installed.list     Lists the plugins in the local plugin store with their
+                     version, enabled state, and health, with filtering,
+                     sorting, and pagination.
+  install            Resolves a plugin from a registry, URL, or local file, then
+                     downloads, verifies, and activates it in the local plugin
+                     store, or only reports the plan when dry_run is true.
+  update             Resolves the newest version of an installed plugin and
+                     installs and activates it, keeping the old version if
+                     anything fails, or only reports the plan when dry_run is
+                     true.
+  remove             Removes an installed plugin's files from the plugin store,
+                     optionally purging its data, or only reports the planned
+                     steps when dry_run is true.
+  enable             Marks an installed plugin as enabled in the user or system
+                     state file.
+  disable            Marks an installed plugin as disabled in the user or system
+                     state file, refusing while the plugin is running unless
+                     force is true.
+
+Usage:
+  resh plugin://<plugin-id>.<verb> [key=value ...]
+
+For help with a specific verb:
+  resh plugin <verb> --help

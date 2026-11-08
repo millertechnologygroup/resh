@@ -1,0 +1,13 @@
+Handle: plugin
+Verb: available.search
+Definition: Searches a plugin index, from the local cache or fetched over HTTPS,
+  and returns scored matches for a query and filters.
+
+Usage:
+  resh plugin://available.search [q=<text>]
+    [tags=<tag>;...] [owner=<name>] [name=<name>] [min_version=<version>]
+    [max_results=<n>] [source=default|<https-url>] [offline=true|false]
+    [refresh=true|false] [timeout_ms=<ms>] [ca_file=<pem>]
+
+Example:
+  resh --json-pretty plugin://available.search q=docker offline=true

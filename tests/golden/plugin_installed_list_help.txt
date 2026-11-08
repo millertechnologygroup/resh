@@ -1,0 +1,66 @@
+Handle: plugin
+Verb: installed.list
+Definition: Lists the plugins in the local plugin store with their version,
+  enabled state, and health, with filtering, sorting, and pagination.
+
+Usage:
+  resh plugin://installed.list [enabled=true|false]
+    [name=<name>] [prefix=<text>] [tag=<tag>]
+    [source=registry|url|file] [limit=<n>] [offset=<n>]
+    [sort=name|installed_at|updated_at] [order=asc|desc]
+    [format=full|summary|names]
+
+Example:
+  resh --json-pretty plugin://installed.list format=names
+
+Example Output:
+  {
+    "actions": [
+      {
+        "detail": {
+          "exists": false,
+          "path": "/home/alice/.local/share/resh/plugins"
+        },
+        "ok": true,
+        "target": "installed_dir",
+        "type": "scan.installed_dir"
+      },
+      {
+        "detail": {
+          "count": 0
+        },
+        "ok": true,
+        "target": "enabled_registry",
+        "type": "read.enabled_registry"
+      }
+    ],
+    "args": {
+      "enabled": null,
+      "format": "names",
+      "limit": 200,
+      "name": null,
+      "offset": 0,
+      "order": "asc",
+      "prefix": null,
+      "sort": "name",
+      "source": null,
+      "tag": null
+    },
+    "code": 0,
+    "error": null,
+    "ok": true,
+    "op": "plugin.installed.list",
+    "result": {
+      "count": 0,
+      "items": [],
+      "limit": 200,
+      "offset": 0,
+      "total": 0
+    },
+    "target": "plugin://installed.list",
+    "ts": "2026-11-08T09:12:44.512309+00:00",
+    "warnings": []
+  }
+
+  Shown for an empty plugin store with --json-pretty, and actions shortened.
+  The full list also has filter.apply, sort.apply, and paginate.apply.

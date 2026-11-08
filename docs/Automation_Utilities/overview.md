@@ -44,7 +44,7 @@ Detailed pages: [backup](backup.md), [plugin](plugin.md), [template](template.md
 | Handle   | Enforced | Accepted but not used | Notes |
 | -------- | -------- | --------------------- | ----- |
 | backup   | every verb, as a deadline for the whole verb (backend runs and in-process tar/rsync work; `schedule` passes it to the cron handle) | none | At the deadline the backend's whole process tree is stopped and the verb fails with `backup.timeout`, exit 124. Malformed values are refused (exit 2) |
-| plugin   | `install`, `update` (per HTTPS request, not a total deadline); `available.search`; `available.info` | `remove`, `enable`, `disable`; not read by `available.list`, `installed.list` | `available.search` rejects values outside 100-60000; `available.info` rejects non-integers and clamps to 100-30000; the other verbs silently use their default for a malformed value |
+| plugin   | `install`, `update`, `remove`, `available.search`, `available.info` (a deadline for the whole verb; exit 124) | none: `enable`, `disable`, `available.list` and `installed.list` refuse it (exit 2) | 1 ms to 24 hours; any other value is an error (exit 2) |
 | template | none | all verbs ignore it | |
 
 ---
@@ -104,7 +104,9 @@ resh template://newsletter.html.test
 * `source=url` cannot be verified and needs an explicit `verify=none`, which installs the artifact **unverified** (only HTTPS protects it).
 * Plain `http://` registries and artifact URLs are refused, as are HTTPS-to-HTTP redirects.
 * Artifacts may contain only regular files and directories; links, devices, FIFOs, absolute and `..` paths fail the install with nothing installed.
-* `enable`/`disable` write a state file for `scope=user` (default) or `scope=system` (`/var/lib/resh/plugins/state.json`).
+* `enable`/`disable` write a state file for `scope=user` (default) or `scope=system` (`/var/lib/resh/plugins/state.json`); `installed.list` reads the same files.
+* `ca_file=<pem>` adds a private CA for registry, index and artifact downloads; certificates are always verified.
+* Plugin verbs refuse directories that are symbolic links, belong to another user or are writable by others, so running them as root with another user's `HOME` (`sudo -E`) fails with `plugin.unsafe_path`.
 
 See [plugin.md](plugin.md) for the full security rules and known limitations.
 

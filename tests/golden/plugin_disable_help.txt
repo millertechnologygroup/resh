@@ -1,0 +1,11 @@
+Handle: plugin
+Verb: disable
+Definition: Marks an installed plugin as disabled in the user or system state
+  file, refusing while the plugin is running unless force is true.
+
+Usage:
+  resh plugin://<plugin-id>.disable [scope=user|system]
+    [force=true|false] [reason=<text>] [dry_run=true|false]
+
+Example:
+  resh --json-pretty plugin://aws.disable dry_run=true

@@ -1,0 +1,78 @@
+Handle: plugin
+Verb: available.list
+Definition: Lists plugins from the catalog built into resh or from a catalog
+  file, filtered by query, tags, publisher, and platform, with pagination.
+
+Usage:
+  resh plugin://available.list [query=<text>] [tags=<tag>,...]
+    [publisher=<name>] [platform=<os>-<arch>] [include_prerelease=true|false]
+    [limit=<n>] [offset=<n>] [format=summary|full]
+    [source=default|file:<path>]
+
+Example:
+  resh --json-pretty plugin://available.list query=docker limit=1
+
+Example Output:
+  {
+    "actions": [
+      {
+        "bytes": 8806,
+        "source": "default",
+        "type": "catalog.load"
+      },
+      {
+        "query": "docker",
+        "tags": [],
+        "type": "filter.apply"
+      }
+    ],
+    "args": {
+      "format": "summary",
+      "include_prerelease": false,
+      "limit": 1,
+      "offset": 0,
+      "platform": "linux-x86_64",
+      "publisher": null,
+      "query": "docker",
+      "source": "default",
+      "tags": ""
+    },
+    "code": 0,
+    "error": null,
+    "ok": true,
+    "op": "plugin.available.list",
+    "result": {
+      "catalog_version": 1,
+      "count": 1,
+      "generated_at": "2025-12-13T00:00:00Z",
+      "items": [
+        {
+          "description": "container:// plugin for Docker management",
+          "homepage": "https://github.com/resh-community/docker-plugin",
+          "id": "resh.docker",
+          "license": "MIT",
+          "name": "Docker Handle",
+          "platforms": [
+            "linux-x86_64",
+            "linux-aarch64",
+            "darwin-x86_64",
+            "darwin-aarch64"
+          ],
+          "publisher": "resh-community",
+          "repo": "https://github.com/resh-community/docker-plugin",
+          "tags": [
+            "container",
+            "docker",
+            "infrastructure"
+          ],
+          "version": "0.1.0"
+        }
+      ],
+      "source": "default"
+    },
+    "target": "plugin://available.list",
+    "ts": "2026-11-08T09:12:44.512309+00:00",
+    "warnings": []
+  }
+
+  Shown with --json-pretty and the description shortened.

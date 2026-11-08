@@ -1,0 +1,13 @@
+Handle: plugin
+Verb: available.info
+Definition: Reports index details for one plugin selected by name or id,
+  optionally narrowed by version, channel, OS, and architecture.
+
+Usage:
+  resh plugin://available.info name=<name>|id=<id>
+    [version=<x.y.z>] [channel=stable|beta|nightly] [os=<os>]
+    [arch=<arch>] [source=default|official|community]
+    [offline=true|false] [timeout_ms=<ms>] [ca_file=<pem>]
+
+Example:
+  resh --json-pretty plugin://available.info name=resh.docker offline=true

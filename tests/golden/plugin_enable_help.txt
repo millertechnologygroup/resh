@@ -1,0 +1,50 @@
+Handle: plugin
+Verb: enable
+Definition: Marks an installed plugin as enabled in the user or system state
+  file.
+
+Usage:
+  resh plugin://<plugin-id>.enable [scope=user|system]
+    [force=true|false] [reason=<text>] [dry_run=true|false]
+
+Example:
+  resh --json-pretty plugin://aws.enable dry_run=true
+
+Example Output:
+  {
+    "actions": [
+      {
+        "id": "check-0",
+        "name": "verify plugin installation",
+        "ok": false,
+        "type": "check"
+      }
+    ],
+    "args": {
+      "dry_run": true,
+      "force": false,
+      "scope": "user"
+    },
+    "code": 1,
+    "error": {
+      "code": "plugin.not_installed",
+      "message": "plugin aws is not installed"
+    },
+    "ok": false,
+    "op": "plugin.enable",
+    "result": {
+      "enabled": null,
+      "installed": false,
+      "scope": "user"
+    },
+    "target": {
+      "install_root": "/home/alice/.local/share/resh/plugins",
+      "name": "aws",
+      "requested_name": "aws"
+    },
+    "ts": "2026-11-08T09:12:44.512309+00:00"
+  }
+
+  Shown with --json-pretty for a plugin that is not installed (exit 1). For
+  an installed plugin, ok is true and result reports enabled, was_enabled,
+  and changed.
