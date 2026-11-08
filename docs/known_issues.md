@@ -334,11 +334,17 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   values with exit 2 before looking anything up. Errors are `[user.<code>]`
   with exits 0/1/2/124 (all failures were 1); with `format=json` the error
   object is printed on stdout.
-- `passwd` hashes passwords itself with real sha512-crypt, bcrypt and
-  argon2id (the previous "hashes" were PBKDF2 stand-ins with those labels)
-  and passes the hash to `chpasswd -e` on stdin. `new_password_env=`,
-  `new_password_stdin=true` and `old_password_env=` keep passwords off the
-  command line. `force` is refused on `passwd`.
+- `passwd` hashes passwords itself (real sha512-crypt, bcrypt and argon2id;
+  the previous "hashes" were PBKDF2 stand-ins) and passes the hash to
+  `chpasswd -e` on stdin. `new_password_env=`, `new_password_stdin=true` and
+  `old_password_env=` keep passwords off the command line;
+  `new_password_plain=` still works but prints a warning on stderr every
+  time. `require_old_password` checks hashes with the system crypt library
+  (loaded at run time; yescrypt included), falling back to built-in
+  sha512/sha256-crypt, bcrypt and argon2 verifiers.
+- `passwd` refuses accounts with a UID below 1000, root included, with exit 2
+  (`user.protected_account`) unless `force=true`, like `delete`, `lock` and
+  `unlock`.
 - `add`: `create_home` and `password_hash` work; everything is checked
   before the first change; uid/gid conflicts are reported; a group created
   for a failed `useradd` is removed again. `delete` reports partial
