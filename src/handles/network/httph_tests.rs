@@ -414,10 +414,22 @@ fn the_timeout_also_bounds_reading_the_body() {
 
 #[test]
 fn https_to_a_plain_http_server_fails_with_exit_1() {
-    let server = Server::run();
-    let u = format!("https://127.0.0.1:{}/x", server.addr().port());
+    // A plain-HTTP server that answers every connection at once and closes
+    // it, so the TLS handshake fails deterministically instead of waiting
+    // for a server that is still parsing the ClientHello as HTTP.
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut s in l.incoming().flatten() {
+            let _ = s.write_all(
+                b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        }
+    });
+    let u = format!("https://127.0.0.1:{port}/x");
     for verb in ALL_VERBS {
-        let o = call(&u, verb, &[("timeout_ms", "3000")]);
+        let o = call(&u, verb, &[("timeout_ms", "30000")]);
         assert_eq!(o.code(), 1, "{verb}: {}", o.reason());
     }
 }
