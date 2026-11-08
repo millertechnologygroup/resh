@@ -1,0 +1,20 @@
+Handle: proc
+Verb: term
+Definition: Sends SIGTERM to a process to request graceful termination.
+
+Usage:
+  resh proc://<pid|self>.term
+
+Example:
+  resh --json-pretty proc://1234.term
+
+Example Output:
+  {
+    "ok": true,
+    "pid": 1234,
+    "signal": "TERM",
+    "signal_num": 15,
+    "verb": "term"
+  }
+
+  Shown with --json-pretty.

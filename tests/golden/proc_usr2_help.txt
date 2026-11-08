@@ -1,0 +1,20 @@
+Handle: proc
+Verb: usr2
+Definition: Sends SIGUSR2 to a process.
+
+Usage:
+  resh proc://<pid|self>.usr2
+
+Example:
+  resh --json-pretty proc://1234.usr2
+
+Example Output:
+  {
+    "ok": true,
+    "pid": 1234,
+    "signal": "USR2",
+    "signal_num": 12,
+    "verb": "usr2"
+  }
+
+  Shown for Linux with --json-pretty.

@@ -9,7 +9,7 @@ Resource Shell (resh) is a resource-oriented command-line environment that model
 | Handle | Purpose | Detailed documentation |
 | ------ | ------- | ---------------------- |
 | `cron://` | Scheduled jobs as crontab entries or systemd timers | [cron.md](cron.md) |
-| `proc://` | Signals and nice values for a single process | [proc.md](proc.md) |
+| `proc://` | Signals, nice values and resource limits for a single process | [proc.md](proc.md) |
 | `svc://` | System services through systemd or OpenRC | [svc.md](svc.md) |
 
 ### Purpose
@@ -17,7 +17,7 @@ Resource Shell (resh) is a resource-oriented command-line environment that model
 These handles let you:
 
 * List, add, remove, enable and disable scheduled jobs
-* Send signals to processes and change their nice values
+* Send signals to processes and change their nice values and resource limits
 * Start, stop, restart, reload, enable and disable services, and read their state and logs
 
 Most verbs print a JSON object. Exceptions: `svc ... .logs` prints plain log lines, and `svc` `reload`, `enable`, `disable`, `mask` and `unmask` print nothing on success. `cron` verbs accept `format=text` for a text summary.
@@ -60,24 +60,23 @@ resh svc://nginx.restart
 ### Safety
 
 * `cron` `add`, `rm`, `enable` and `disable` support `dry_run` (true/false/1/0/yes/no/on/off, or a bare `dry_run` word; any other value is an error).
-* `svc` and the `proc` signal and nice verbs have **no dry run**; they act immediately.
-* Input checks done before any action: `proc` PIDs must be 1 to 2147483647 (or `self`); `svc` service names are rejected if they start with `-`, contain `.`/`..` path segments, whitespace, control characters or `:` (exit 2).
+* `svc` and the `proc` signal and nice verbs have **no dry run**; they act immediately. `proc` `limits.set` has `dry_run`.
+* Input checks done before any action: `proc` PIDs must be 1 to 2147483647 (or `self`), and every `proc` verb refuses unknown arguments and invalid values (exit 2, `proc.invalid_argument`); `svc` service names are rejected if they start with `-`, contain `.`/`..` path segments, whitespace, control characters or `:` (exit 2).
 * `cron` does not reject newlines in job fields; see the limitations in [cron.md](cron.md).
 
 ### Timeouts
 
 * Only `svc` `stop` and `wait` have a timeout, given as `timeout=<milliseconds>`. A timeout that expires exits with code 124.
-* No verb in this category reads `timeout_ms`. It is ignored everywhere except `proc` `limits.set`, which treats any unrecognized argument (including `timeout_ms`) as an unknown resource and fails.
+* `cron` and `svc` do not read `timeout_ms` (it is ignored). Every `proc` verb returns at once and refuses `timeout_ms` (exit 2).
 
 ### Exit status
 
 * 0 on success; non-zero on failure, with `Error: <reason>` on stderr if the handle did not already write to stderr.
 * `cron`: every failure exits 1, and the JSON `ok` field always agrees with the exit status.
-* `proc` and `svc` use a few specific codes (for example `proc` exit 3 for "process not found", `svc` exit 124 for a timeout). See each handle's document for the verified list.
+* `proc` follows the project-wide codes: 0, 1 failed, 2 invalid usage, with `Error: [proc.<code>] ...` on stderr and an `error` object in the JSON (for example `proc.not_found` when the process is gone). `svc` uses a few specific codes (for example exit 124 for a timeout). See each handle's document for the verified list.
 
 ### Limited verbs
 
-* `proc` `limits.set` applies `setrlimit` to the resh process itself, not to the target or `pid=` process, so it cannot change another process's limits.
 * `proc` `io.peek` reads log files in the resh state directory that nothing in resh writes.
 
 ---
@@ -209,7 +208,7 @@ Restart or reload services after package updates, enable newly installed service
 ### 4.6 Process & Service Management
 
 * `cron`: schedule, list and remove jobs
-* `proc`: signal processes and adjust nice values
+* `proc`: signal processes and adjust nice values and resource limits
 * `svc`: control and inspect services
 
 ### 4.7 Security & Secrets
@@ -234,7 +233,7 @@ Linux only. The code uses Unix-only system calls and Linux signal numbers, and n
 | Handle | Requirements |
 | ------ | ------------ |
 | `cron` | `crontab` for the cron backend; `systemctl` for systemd timers |
-| `proc` | Linux kernel interfaces (`kill`, `getpriority`, `setpriority`) |
+| `proc` | Linux kernel interfaces (`kill`, `getpriority`, `setpriority`, `prlimit`) |
 | `svc` | systemd (D-Bus, `systemctl`, `journalctl`) or OpenRC (`rc-service`, `rc-status`, `rc-update`) |
 
 ---

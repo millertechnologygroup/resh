@@ -1,0 +1,21 @@
+Handle: proc
+Verb: hup
+Definition: Sends SIGHUP to a process, which many daemons treat as a reload
+  request.
+
+Usage:
+  resh proc://<pid|self>.hup
+
+Example:
+  resh --json-pretty proc://1234.hup
+
+Example Output:
+  {
+    "ok": true,
+    "pid": 1234,
+    "signal": "HUP",
+    "signal_num": 1,
+    "verb": "hup"
+  }
+
+  Shown with --json-pretty.

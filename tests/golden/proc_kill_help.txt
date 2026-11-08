@@ -1,0 +1,20 @@
+Handle: proc
+Verb: kill
+Definition: Sends SIGKILL to a process to terminate it immediately.
+
+Usage:
+  resh proc://<pid|self>.kill
+
+Example:
+  resh --json-pretty proc://1234.kill
+
+Example Output:
+  {
+    "ok": true,
+    "pid": 1234,
+    "signal": "KILL",
+    "signal_num": 9,
+    "verb": "kill"
+  }
+
+  Shown with --json-pretty.

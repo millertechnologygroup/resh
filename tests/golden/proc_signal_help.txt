@@ -1,0 +1,23 @@
+Handle: proc
+Verb: signal
+Definition: Sends a signal, given by name or number, to a process.
+
+Usage:
+  resh proc://<pid|self>.signal sig=<name|number>
+
+Example:
+  resh --json-pretty proc://1234.signal sig=TERM
+
+Example Output:
+  {
+    "ok": true,
+    "pid": 1234,
+    "signal": "TERM",
+    "signal_num": 15,
+    "verb": "signal"
+  }
+
+  Shown with --json-pretty. Accepted names are HUP, INT, QUIT, KILL, TERM,
+  STOP, CONT, USR1, USR2, PIPE, ALRM, and CHLD, with or without SIG, in
+  any case. Numbers go from 0 (checks that the process exists, sends
+  nothing) to the highest real-time signal (64 on Linux).

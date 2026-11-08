@@ -1,0 +1,38 @@
+Handle: proc
+Verb: limits.set
+Definition: Sets the soft and hard resource limits of a process through prlimit.
+
+Usage:
+  resh proc://<pid|self>.limits.set <resource>=<soft>[:<hard>] ...
+    [pid=<n>] [dry_run=true|false]
+    resources: cpu as data stack core nofile fsize memlock nproc
+
+Example:
+  resh --json-pretty proc://self.limits.set nofile=1024 dry_run=true
+
+Example Output:
+  {
+    "backend": "prlimit",
+    "dry_run": true,
+    "pid": 41872,
+    "results": {
+      "nofile": {
+        "after": {
+          "hard": 524288,
+          "soft": 1024
+        },
+        "before": {
+          "hard": 524288,
+          "soft": 1024
+        },
+        "changed": false,
+        "requested": "1024",
+        "status": "ok"
+      }
+    }
+  }
+
+  Shown with --json-pretty. A value is a number, unlimited, a number with
+  an s suffix (cpu only, seconds), or with K, M, or G (powers of 1000);
+  an empty side keeps the current value. pid=<n> targets that process
+  instead of self. self is the short-lived resh process.

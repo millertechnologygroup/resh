@@ -1,0 +1,17 @@
+Handle: proc
+Verb: nice.get
+Definition: Reports the current nice value of a process.
+
+Usage:
+  resh proc://<pid|self>.nice.get
+
+Example:
+  resh --json-pretty proc://1234.nice.get
+
+Example Output:
+  {
+    "nice": 0,
+    "pid": 1234
+  }
+
+  Shown with --json-pretty.

@@ -1,0 +1,20 @@
+Handle: proc
+Verb: cont
+Definition: Sends SIGCONT to a process to resume it after a stop.
+
+Usage:
+  resh proc://<pid|self>.cont
+
+Example:
+  resh --json-pretty proc://1234.cont
+
+Example Output:
+  {
+    "ok": true,
+    "pid": 1234,
+    "signal": "CONT",
+    "signal_num": 18,
+    "verb": "cont"
+  }
+
+  Shown for Linux with --json-pretty.

@@ -1,27 +1,23 @@
-use anyhow::{Context, anyhow};
-use serde_json::json;
-use std::fs::File;
+//! `proc://<pid|self>`: signals, nice values, resource limits and captured
+//! output logs of one process.
+//!
+//! Every verb checks its arguments (one accepted-options list per verb,
+//! [`verb_args`]) and the target PID before it makes a system call, so an
+//! invalid call changes nothing (exit 2). Failures are reported as
+//! `proc.<code>` (see [`ERROR_CODES`]) on stderr and in the JSON written to
+//! stdout. Every verb is a few system calls on one process or a bounded read
+//! of one local file, so none takes `timeout_ms`.
+
+use serde_json::{Map, Value, json};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use url::Url;
 
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
-    status::Status,
+    status::{Status, exit},
 };
-
-#[cfg(unix)]
-use nix::sys::resource::{Resource, getrlimit, setrlimit};
-
-#[derive(Debug)]
-struct StreamData {
-    encoding: String,
-    auto_fallback: bool,
-    bytes_read: usize,
-    truncated: bool,
-    data: String,
-}
 
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("proc", |u| Ok(Box::new(ProcHandle::from_url(u)?)));
@@ -30,10 +26,11 @@ pub fn register(reg: &mut crate::core::Registry) {
 
 /// Metadata for `resh proc --help` and `resh proc <verb> --help`.
 static PROC_HELP: HandleHelp = HandleHelp {
-    description: "The proc handle sends signals to running processes and adjusts their \
-        scheduling priority through the kernel's kill and setpriority calls. It can also \
-        read captured output logs and apply resource limits. The target is a numeric \
-        process ID or self (the resh process itself), such as proc://1234.",
+    description: "The proc handle sends signals to a running process, reads and changes \
+        its nice value through getpriority and setpriority, sets its resource limits \
+        through prlimit, and reads output logs kept for it in the resh state directory. \
+        The target is a numeric process ID or self (the resh process itself), such as \
+        proc://1234.",
     usage: "resh proc://<pid|self>.<verb>[(key=value,...)]",
     verbs: &[
         VerbHelp {
@@ -54,12 +51,13 @@ Shown with --json-pretty."#,
         },
         VerbHelp {
             name: "io.peek",
-            definition: "Reads the tail of a process's captured stdout or stderr log from \
-                the resh state directory (~/.local/state/resh/proc/<pid>/) without blocking.",
+            definition: "Reads the tail of a process's stdout or stderr log from \
+                resh/proc/<pid>/ in the state directory ($XDG_STATE_HOME or \
+                ~/.local/state), which nothing in resh writes.",
             detail: Some(VerbDetail {
                 usage: "resh proc://<pid|self>.io.peek [stream=stdout|stderr|both]\n  \
-                    [max_bytes=<n>] [tail=<n>] [encoding=auto|utf8|base64]\n  \
-                    [json=true|false]",
+                    [max_bytes=<1..16777216>] [tail=<1..16777216>]\n  \
+                    [encoding=auto|utf8|base64] [json=true|false]",
                 example: "resh --json-pretty proc://1234.io.peek stream=stdout max_bytes=1024",
                 example_output: Some(
                     r#"{
@@ -72,9 +70,11 @@ Shown with --json-pretty."#,
   "truncated": false
 }
 
-Shown with --json-pretty. With stream=both, the per-stream fields are
-nested under streams.stdout and streams.stderr; json=false prints the raw
-stdout data. Reports an error if the log file does not exist."#,
+Shown with --json-pretty. Defaults: stream=stdout, max_bytes=4096,
+tail=max_bytes, encoding=auto. The last min(tail, max_bytes) bytes are
+returned; truncated is true when the file holds more. With stream=both
+the fields are under streams.stdout and streams.stderr. json=false
+prints only the data (stream=stdout only)."#,
                 ),
             }),
         },
@@ -94,7 +94,9 @@ stdout data. Reports an error if the log file does not exist."#,
 }
 
 Shown with --json-pretty. Accepted names are HUP, INT, QUIT, KILL, TERM,
-STOP, CONT, USR1, USR2, PIPE, ALRM, and CHLD, with or without SIG."#,
+STOP, CONT, USR1, USR2, PIPE, ALRM, and CHLD, with or without SIG, in
+any case. Numbers go from 0 (checks that the process exists, sends
+nothing) to the highest real-time signal (64 on Linux)."#,
                 ),
             }),
         },
@@ -263,7 +265,8 @@ Shown for Linux with --json-pretty."#,
   "pid": 1234
 }
 
-Shown with --json-pretty."#,
+Shown with --json-pretty. changed is false when the value was already
+set. Lowering a nice value usually requires root."#,
                 ),
             }),
         },
@@ -271,7 +274,7 @@ Shown with --json-pretty."#,
             name: "nice.inc",
             definition: "Raises the nice value of a process by a delta, lowering its priority.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.nice.inc delta=<n>",
+                usage: "resh proc://<pid|self>.nice.inc delta=<0..39>",
                 example: "resh --json-pretty proc://1234.nice.inc delta=5",
                 example_output: Some(
                     r#"{
@@ -282,7 +285,8 @@ Shown with --json-pretty."#,
   "pid": 1234
 }
 
-Shown with --json-pretty."#,
+Shown with --json-pretty. A result outside -20..19 is refused and
+nothing is changed."#,
                 ),
             }),
         },
@@ -290,7 +294,7 @@ Shown with --json-pretty."#,
             name: "nice.dec",
             definition: "Lowers the nice value of a process by a delta, raising its priority.",
             detail: Some(VerbDetail {
-                usage: "resh proc://<pid|self>.nice.dec delta=<n>",
+                usage: "resh proc://<pid|self>.nice.dec delta=<0..39>",
                 example: "resh --json-pretty proc://1234.nice.dec delta=5",
                 example_output: Some(
                     r#"{
@@ -301,7 +305,8 @@ Shown with --json-pretty."#,
   "pid": 1234
 }
 
-Shown with --json-pretty. Lowering a nice value usually requires root."#,
+Shown with --json-pretty. Lowering a nice value usually requires root.
+A result outside -20..19 is refused and nothing is changed."#,
                 ),
             }),
         },
@@ -323,61 +328,262 @@ Shown with --json-pretty. Lowering a nice value usually requires root."#,
 }
 
 Shown with --json-pretty. Classes map to nice values idle=19,
-background=10, normal=0, high=-5, and realtime=-10; nice overrides class."#,
+background=10, normal=0 (the default), high=-5, and realtime=-10;
+nice overrides class. No real-time scheduling policy is set."#,
                 ),
             }),
         },
         VerbHelp {
             name: "limits.set",
-            definition: "Sets soft and hard resource limits through setrlimit, which always \
-                applies them to the resh process itself rather than the target process.",
+            definition: "Sets the soft and hard resource limits of a process through \
+                prlimit.",
             detail: Some(VerbDetail {
                 usage: "resh proc://<pid|self>.limits.set <resource>=<soft>[:<hard>] ...\n  \
-                    [dry_run=true|false] [pid=<n>]",
-                example: "resh --json-pretty proc://self.limits.set nofile=4096 dry_run=true",
+                    [pid=<n>] [dry_run=true|false]\n  \
+                    resources: cpu as data stack core nofile fsize memlock nproc",
+                example: "resh --json-pretty proc://self.limits.set nofile=1024 dry_run=true",
                 example_output: Some(
                     r#"{
-  "backend": "rlimit",
+  "backend": "prlimit",
+  "dry_run": true,
   "pid": 41872,
   "results": {
     "nofile": {
       "after": {
         "hard": 524288,
-        "soft": 4096
+        "soft": 1024
       },
       "before": {
         "hard": 524288,
         "soft": 1024
       },
-      "requested": "4096",
+      "changed": false,
+      "requested": "1024",
       "status": "ok"
     }
   }
 }
 
-Shown with --json-pretty. Resources are cpu, as, data, stack, core,
-nofile, fsize, memlock, and nproc. Values accept unlimited, an s suffix
-for seconds, and K, M, or G suffixes (powers of 1000)."#,
+Shown with --json-pretty. A value is a number, unlimited, a number with
+an s suffix (cpu only, seconds), or with K, M, or G (powers of 1000);
+an empty side keeps the current value. pid=<n> targets that process
+instead of self. self is the short-lived resh process."#,
                 ),
             }),
         },
     ],
 };
 
-pub struct ProcHandle {
-    name: String, // Can be a PID or "self"
+// ---------------------------------------------------------------------------
+// Arguments and errors
+// ---------------------------------------------------------------------------
+
+/// Every error code `proc` reports (without the `proc.` prefix). The
+/// dispatcher also reports `proc.invalid_target` for a target that is not
+/// `self` or a valid PID, before the handle is built.
+pub(crate) const ERROR_CODES: &[&str] = &[
+    "invalid_argument",
+    "invalid_target",
+    "not_found",
+    "permission_denied",
+    "log_not_found",
+    "failed",
+    "unsupported_platform",
+];
+
+/// The resources `limits.set` accepts, in the order they are applied.
+const RESOURCES: &[&str] = &[
+    "cpu", "as", "data", "stack", "core", "nofile", "fsize", "memlock", "nproc",
+];
+
+const SIGNAL_ARGS: &[&str] = &["sig"];
+const NO_ARGS: &[&str] = &[];
+const NICE_SET_ARGS: &[&str] = &["value"];
+const NICE_DELTA_ARGS: &[&str] = &["delta"];
+const SET_PRIORITY_ARGS: &[&str] = &["class", "nice"];
+const IO_PEEK_ARGS: &[&str] = &["stream", "max_bytes", "tail", "encoding", "json"];
+const LIMITS_SET_ARGS: &[&str] = &[
+    "pid", "dry_run", "cpu", "as", "data", "stack", "core", "nofile", "fsize", "memlock", "nproc",
+];
+
+/// The arguments `verb` accepts, or `None` for an unknown verb.
+fn verb_args(verb: &str) -> Option<&'static [&'static str]> {
+    Some(match verb {
+        "signal" => SIGNAL_ARGS,
+        "kill" | "term" | "int" | "hup" | "stop" | "cont" | "usr1" | "usr2" | "nice.get" => NO_ARGS,
+        "nice.set" => NICE_SET_ARGS,
+        "nice.inc" | "nice.dec" => NICE_DELTA_ARGS,
+        "setPriority" => SET_PRIORITY_ARGS,
+        "io.peek" => IO_PEEK_ARGS,
+        "limits.set" => LIMITS_SET_ARGS,
+        _ => return None,
+    })
+}
+
+/// The largest `max_bytes` and `tail` of `io.peek` (16 MiB).
+const PEEK_LIMIT: u64 = 16 * 1024 * 1024;
+
+/// A failure: exit code, error code (without `proc.`) and message.
+#[derive(Debug)]
+struct Fail {
+    exit: i32,
+    code: &'static str,
+    detail: String,
+}
+
+impl Fail {
+    fn new(exit: i32, code: &'static str, detail: impl Into<String>) -> Self {
+        debug_assert!(ERROR_CODES.contains(&code), "undocumented code {code}");
+        Self {
+            exit,
+            code,
+            detail: detail.into(),
+        }
+    }
+
+    /// Invalid usage (exit 2): nothing was done.
+    fn invalid(detail: impl Into<String>) -> Self {
+        Self::new(exit::USAGE, "invalid_argument", detail)
+    }
+
+    fn failed(code: &'static str, detail: impl Into<String>) -> Self {
+        Self::new(exit::FAILED, code, detail)
+    }
+
+    fn error_obj(&self) -> Value {
+        crate::core::status::error_json(&format!("proc.{}", self.code), &self.detail)
+    }
+
+    fn status(&self, verb: &str) -> Status {
+        Status::coded(
+            self.exit,
+            &format!("proc.{}", self.code),
+            format!("proc {verb}: {}", self.detail),
+        )
+    }
+}
+
+/// Refuses any argument `verb` does not take, before anything is done.
+fn check_args(verb: &str, allowed: &[&'static str], args: &Args) -> Result<(), Fail> {
+    let mut keys: Vec<&String> = args.keys().collect();
+    keys.sort();
+    let Some(bad) = keys.into_iter().find(|k| !allowed.contains(&k.as_str())) else {
+        return Ok(());
+    };
+    Err(Fail::invalid(match bad.as_str() {
+        "timeout_ms" => {
+            format!("timeout_ms is not accepted: {verb} returns at once; nothing was done")
+        }
+        "dry_run" => format!("{verb} does not support dry_run; nothing was done"),
+        _ if verb == "limits.set" => format!(
+            "unknown resource or argument: {bad}{} (resources: {}); nothing was done",
+            hint(bad, allowed),
+            RESOURCES.join(", ")
+        ),
+        _ => format!(
+            "unknown argument for {verb}: {bad}{}{}; nothing was done",
+            hint(bad, allowed),
+            if allowed.is_empty() {
+                " (this verb takes no arguments)".to_string()
+            } else {
+                format!(" (accepted: {})", allowed.join(", "))
+            }
+        ),
+    }))
+}
+
+/// ` (did you mean `x`?)` for the candidate closest to `bad`, or "".
+fn hint(bad: &str, candidates: &[&str]) -> String {
+    suggest(bad, candidates)
+        .map(|s| format!(" (did you mean `{s}`?)"))
+        .unwrap_or_default()
+}
+
+/// The candidate closest to `bad` (edit distance at most 2 after lowercasing
+/// and `-` to `_`), for a "did you mean" hint.
+fn suggest<'a>(bad: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    fn distance(a: &str, b: &str) -> usize {
+        let b: Vec<char> = b.chars().collect();
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut cur = vec![i + 1; b.len() + 1];
+            for (j, cb) in b.iter().enumerate() {
+                let cost = usize::from(ca != *cb);
+                cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+    let lower = bad.to_ascii_lowercase().replace('-', "_");
+    candidates
+        .iter()
+        .map(|c| (distance(&lower, &c.to_ascii_lowercase()), *c))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, c)| c)
+}
+
+/// Integer argument `key` in `min..=max`; `None` when absent.
+fn int_arg(args: &Args, key: &str, min: i64, max: i64) -> Result<Option<i64>, Fail> {
+    let Some(raw) = args.get(key) else {
+        return Ok(None);
+    };
+    match raw.parse::<i64>() {
+        Ok(v) if (min..=max).contains(&v) => Ok(Some(v)),
+        _ => Err(Fail::invalid(format!(
+            "invalid value for {key}: {raw:?} (expected an integer from {min} to {max}); \
+             nothing was done"
+        ))),
+    }
+}
+
+/// Required integer argument `key` in `min..=max`.
+fn required_int(args: &Args, key: &str, min: i64, max: i64) -> Result<i64, Fail> {
+    int_arg(args, key, min, max)?.ok_or_else(|| {
+        Fail::invalid(format!(
+            "missing argument: {key}=<{min}..{max}>; nothing was done"
+        ))
+    })
+}
+
+/// Enumerated argument `key`; `default` when absent.
+fn choice_arg<'a>(
+    args: &'a Args,
+    key: &str,
+    choices: &[&str],
+    default: &'a str,
+) -> Result<&'a str, Fail> {
+    match args.get(key) {
+        None => Ok(default),
+        Some(v) if choices.contains(&v.as_str()) => Ok(v.as_str()),
+        Some(v) => Err(Fail::invalid(format!(
+            "invalid value for {key}: {v:?}{} (expected {}); nothing was done",
+            hint(v, choices),
+            choices.join(", ")
+        ))),
+    }
 }
 
 /// Parse a single target PID. Only 1..=pid_t::MAX is accepted: zero, negative
 /// values and anything that would wrap on conversion address process groups
 /// or every process (`kill(-1, ..)`), never one process.
 fn parse_pid(s: &str) -> anyhow::Result<libc::pid_t> {
-    let pid: u64 = s.parse().with_context(|| format!("invalid pid: {}", s))?;
+    let bad = || {
+        anyhow::anyhow!(
+            "invalid pid: {s:?} (expected self or 1..{})",
+            libc::pid_t::MAX
+        )
+    };
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad());
+    }
+    let pid: u64 = s.parse().map_err(|_| bad())?;
     if pid == 0 {
-        return Err(anyhow!("invalid pid: must be positive"));
+        return Err(anyhow::anyhow!("invalid pid: must be positive"));
     }
     libc::pid_t::try_from(pid).map_err(|_| {
-        anyhow!(
+        anyhow::anyhow!(
             "invalid pid: {} is out of range (max {})",
             s,
             libc::pid_t::MAX
@@ -385,1289 +591,181 @@ fn parse_pid(s: &str) -> anyhow::Result<libc::pid_t> {
     })
 }
 
-impl ProcHandle {
-    pub fn from_url(u: &Url) -> anyhow::Result<Self> {
-        // Accept host + path, strip leading slashes, parse as PID or "self"
-        let mut name = String::new();
-        if let Some(h) = u.host_str() {
-            name.push_str(h);
-        }
-        if !u.path().is_empty() {
-            if !name.is_empty() {
-                name.push('/');
-            }
-            name.push_str(u.path().trim_start_matches('/'));
-        }
+// ---------------------------------------------------------------------------
+// System calls
+// ---------------------------------------------------------------------------
 
-        if name.is_empty() {
-            return Err(anyhow!("invalid pid: missing"));
-        }
+#[cfg(target_os = "linux")]
+// rlim_t is u64 on 64-bit targets only; the casts keep 32-bit builds working.
+#[allow(clippy::unnecessary_cast)]
+mod sys {
+    use super::Fail;
 
-        // Allow "self", numeric PID, or an in-URL help flag (proc://--help)
-        if name == "self" || crate::core::help::is_help_flag(&name) {
-            Ok(Self { name })
-        } else {
-            parse_pid(&name)?;
-            Ok(Self { name })
+    /// The `Fail` for a failed system call on `pid`.
+    fn os_fail(what: &str, pid: libc::pid_t, err: std::io::Error) -> Fail {
+        match err.raw_os_error() {
+            Some(libc::ESRCH) => Fail::failed("not_found", format!("no process with pid {pid}")),
+            Some(libc::EPERM) | Some(libc::EACCES) => Fail::failed(
+                "permission_denied",
+                format!("{what} on pid {pid}: permission denied ({err})"),
+            ),
+            _ => Fail::failed("failed", format!("{what} on pid {pid} failed: {err}")),
         }
     }
 
-    /// Resolve the name to an actual PID
-    fn resolve_pid(&self) -> anyhow::Result<libc::pid_t> {
-        if self.name == "self" {
-            libc::pid_t::try_from(std::process::id())
-                .map_err(|_| anyhow!("invalid pid: own pid out of range"))
-        } else {
-            parse_pid(&self.name)
-        }
-    }
-
-    /// Get the nice value for the process
-    #[cfg(unix)]
-    fn get_nice(&self) -> anyhow::Result<i32> {
-        let pid = self.resolve_pid()?;
-
-        // Clear errno before the call
-        unsafe { *libc::__errno_location() = 0 };
-
-        let nice_value = unsafe { libc::getpriority(libc::PRIO_PROCESS, pid as u32) };
-
-        // Check if an error occurred (getpriority can return -1 as a valid value)
-        let errno = unsafe { *libc::__errno_location() };
-        if errno != 0 {
-            let error = std::io::Error::from_raw_os_error(errno);
-            match errno {
-                libc::ESRCH => return Err(anyhow!("no such process")),
-                libc::EPERM => return Err(anyhow!("permission denied")),
-                _ => return Err(anyhow!("getpriority failed: {}", error)),
+    pub fn get_nice(pid: libc::pid_t) -> Result<i32, Fail> {
+        // getpriority can return -1 as a valid value: errno tells.
+        nix::errno::Errno::clear();
+        let v = unsafe { libc::getpriority(libc::PRIO_PROCESS, pid as libc::id_t) };
+        if v == -1 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error().unwrap_or(0) != 0 {
+                return Err(os_fail("getpriority", pid, err));
             }
         }
-
-        Ok(nice_value)
+        Ok(v)
     }
 
-    #[cfg(not(unix))]
-    fn get_nice(&self) -> anyhow::Result<i32> {
-        Err(anyhow!(
-            "proc:// nice operations only supported on Unix-like systems"
-        ))
-    }
-
-    /// Set the nice value for the process
-    #[cfg(unix)]
-    fn set_nice(&self, value: i32) -> anyhow::Result<()> {
-        // Validate range
-        if value < -20 || value > 19 {
-            return Err(anyhow!("nice value out of range (-20..19)"));
+    pub fn set_nice(pid: libc::pid_t, value: i32) -> Result<(), Fail> {
+        let r = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, value) };
+        if r != 0 {
+            return Err(os_fail("setpriority", pid, std::io::Error::last_os_error()));
         }
-
-        let pid = self.resolve_pid()?;
-
-        let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as u32, value) };
-
-        if result != 0 {
-            let error = std::io::Error::last_os_error();
-            match error.raw_os_error() {
-                Some(libc::ESRCH) => return Err(anyhow!("no such process")),
-                Some(libc::EPERM) => return Err(anyhow!("permission denied")),
-                Some(libc::EACCES) => return Err(anyhow!("permission denied")),
-                _ => return Err(anyhow!("setpriority failed: {}", error)),
-            }
-        }
-
         Ok(())
     }
 
-    #[cfg(not(unix))]
-    fn set_nice(&self, _value: i32) -> anyhow::Result<()> {
-        Err(anyhow!(
-            "proc:// nice operations only supported on Unix-like systems"
-        ))
+    pub fn kill(pid: libc::pid_t, sig: libc::c_int) -> Result<(), Fail> {
+        if unsafe { libc::kill(pid, sig) } != 0 {
+            return Err(os_fail("kill", pid, std::io::Error::last_os_error()));
+        }
+        Ok(())
     }
 
-    /// Handle nice-related operations
-    fn handle_nice(&self, verb: &str, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        let pid = match self.resolve_pid() {
-            Ok(p) => p,
-            Err(e) => {
-                let error_json = json!({
-                    "pid": null,
-                    "verb": verb,
-                    "ok": false,
-                    "error": e.to_string()
-                });
-                writeln!(io.stdout, "{}", error_json)?;
-                writeln!(io.stderr, "Error: {}", e)?;
-                return Ok(Status::err(1, e.to_string()));
-            }
+    pub fn sig_rt_range() -> (libc::c_int, libc::c_int) {
+        (libc::SIGRTMIN(), libc::SIGRTMAX())
+    }
+
+    pub fn resource(name: &str) -> Option<libc::c_int> {
+        Some(match name {
+            "cpu" => libc::RLIMIT_CPU as libc::c_int,
+            "as" => libc::RLIMIT_AS as libc::c_int,
+            "data" => libc::RLIMIT_DATA as libc::c_int,
+            "stack" => libc::RLIMIT_STACK as libc::c_int,
+            "core" => libc::RLIMIT_CORE as libc::c_int,
+            "nofile" => libc::RLIMIT_NOFILE as libc::c_int,
+            "fsize" => libc::RLIMIT_FSIZE as libc::c_int,
+            "memlock" => libc::RLIMIT_MEMLOCK as libc::c_int,
+            "nproc" => libc::RLIMIT_NPROC as libc::c_int,
+            _ => return None,
+        })
+    }
+
+    pub const INFINITY: u64 = libc::RLIM_INFINITY as u64;
+
+    /// The (soft, hard) limits of `pid` for `res`.
+    pub fn get_limit(pid: libc::pid_t, res: libc::c_int) -> Result<(u64, u64), Fail> {
+        let mut old = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
         };
-
-        match verb {
-            "nice.get" => match self.get_nice() {
-                Ok(nice_value) => {
-                    let success_json = json!({
-                        "pid": pid,
-                        "nice": nice_value
-                    });
-                    writeln!(io.stdout, "{}", success_json)?;
-                    Ok(Status::ok())
-                }
-                Err(e) => {
-                    let error_json = json!({
-                        "pid": pid,
-                        "verb": verb,
-                        "ok": false,
-                        "error": e.to_string()
-                    });
-                    writeln!(io.stdout, "{}", error_json)?;
-                    writeln!(io.stderr, "Error: {}", e)?;
-                    Ok(Status::err(1, e.to_string()))
-                }
-            },
-            "nice.set" => {
-                let value_str = match args.get("value") {
-                    Some(v) => v,
-                    None => {
-                        let error_json = json!({
-                            "pid": pid,
-                            "verb": verb,
-                            "ok": false,
-                            "error": "missing arg: value"
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        writeln!(io.stderr, "Error: missing arg: value")?;
-                        return Ok(Status::err(2, "missing arg: value"));
-                    }
-                };
-
-                let value: i32 = match value_str.parse() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        let error_json = json!({
-                            "pid": pid,
-                            "verb": verb,
-                            "ok": false,
-                            "error": "value must be an integer"
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        writeln!(io.stderr, "Error: value must be an integer")?;
-                        return Ok(Status::err(2, "value must be an integer"));
-                    }
-                };
-
-                match self.set_nice(value) {
-                    Ok(()) => {
-                        let success_json = json!({
-                            "pid": pid,
-                            "nice": value,
-                            "changed": true
-                        });
-                        writeln!(io.stdout, "{}", success_json)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        let error_json = json!({
-                            "pid": pid,
-                            "verb": verb,
-                            "ok": false,
-                            "error": e.to_string()
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        writeln!(io.stderr, "Error: {}", e)?;
-
-                        let code = if e.to_string().contains("out of range") {
-                            3
-                        } else if e.to_string().contains("permission denied") {
-                            4
-                        } else {
-                            1
-                        };
-                        Ok(Status::err(code, e.to_string()))
-                    }
-                }
-            }
-            "nice.inc" => {
-                let delta_str = match args.get("delta") {
-                    Some(v) => v,
-                    None => {
-                        let error_json = json!({
-                            "pid": pid,
-                            "verb": verb,
-                            "ok": false,
-                            "error": "missing arg: delta"
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        writeln!(io.stderr, "Error: missing arg: delta")?;
-                        return Ok(Status::err(2, "missing arg: delta"));
-                    }
-                };
-
-                let delta: i32 = match delta_str.parse() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        let error_json = json!({
-                            "pid": pid,
-                            "verb": verb,
-                            "ok": false,
-                            "error": "delta must be an integer"
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        writeln!(io.stderr, "Error: delta must be an integer")?;
-                        return Ok(Status::err(2, "delta must be an integer"));
-                    }
-                };
-
-                match self.get_nice() {
-                    Ok(current) => {
-                        let new_value = current + delta;
-                        if new_value < -20 || new_value > 19 {
-                            let error_json = json!({
-                                "pid": pid,
-                                "verb": verb,
-                                "ok": false,
-                                "error": "nice value out of range (-20..19)"
-                            });
-                            writeln!(io.stdout, "{}", error_json)?;
-                            writeln!(io.stderr, "Error: nice value out of range (-20..19)")?;
-                            return Ok(Status::err(3, "nice value out of range (-20..19)"));
-                        }
-
-                        match self.set_nice(new_value) {
-                            Ok(()) => {
-                                let success_json = json!({
-                                    "pid": pid,
-                                    "nice_before": current,
-                                    "nice_after": new_value,
-                                    "delta": delta,
-                                    "changed": true
-                                });
-                                writeln!(io.stdout, "{}", success_json)?;
-                                Ok(Status::ok())
-                            }
-                            Err(e) => {
-                                let error_json = json!({
-                                    "pid": pid,
-                                    "verb": verb,
-                                    "ok": false,
-                                    "error": e.to_string()
-                                });
-                                writeln!(io.stdout, "{}", error_json)?;
-                                writeln!(io.stderr, "Error: {}", e)?;
-
-                                let code = if e.to_string().contains("permission denied") {
-                                    4
-                                } else {
-                                    1
-                                };
-                                Ok(Status::err(code, e.to_string()))
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let error_json = json!({
-                            "pid": pid,
-                            "verb": verb,
-                            "ok": false,
-                            "error": e.to_string()
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        writeln!(io.stderr, "Error: {}", e)?;
-                        Ok(Status::err(1, e.to_string()))
-                    }
-                }
-            }
-            "nice.dec" => {
-                let delta_str = match args.get("delta") {
-                    Some(v) => v,
-                    None => {
-                        let error_json = json!({
-                            "pid": pid,
-                            "verb": verb,
-                            "ok": false,
-                            "error": "missing arg: delta"
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        writeln!(io.stderr, "Error: missing arg: delta")?;
-                        return Ok(Status::err(2, "missing arg: delta"));
-                    }
-                };
-
-                let delta: i32 = match delta_str.parse() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        let error_json = json!({
-                            "pid": pid,
-                            "verb": verb,
-                            "ok": false,
-                            "error": "delta must be an integer"
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        writeln!(io.stderr, "Error: delta must be an integer")?;
-                        return Ok(Status::err(2, "delta must be an integer"));
-                    }
-                };
-
-                match self.get_nice() {
-                    Ok(current) => {
-                        let new_value = current - delta;
-                        if new_value < -20 || new_value > 19 {
-                            let error_json = json!({
-                                "pid": pid,
-                                "verb": verb,
-                                "ok": false,
-                                "error": "nice value out of range (-20..19)"
-                            });
-                            writeln!(io.stdout, "{}", error_json)?;
-                            writeln!(io.stderr, "Error: nice value out of range (-20..19)")?;
-                            return Ok(Status::err(3, "nice value out of range (-20..19)"));
-                        }
-
-                        match self.set_nice(new_value) {
-                            Ok(()) => {
-                                let success_json = json!({
-                                    "pid": pid,
-                                    "nice_before": current,
-                                    "nice_after": new_value,
-                                    "delta": delta,
-                                    "changed": true
-                                });
-                                writeln!(io.stdout, "{}", success_json)?;
-                                Ok(Status::ok())
-                            }
-                            Err(e) => {
-                                let error_json = json!({
-                                    "pid": pid,
-                                    "verb": verb,
-                                    "ok": false,
-                                    "error": e.to_string()
-                                });
-                                writeln!(io.stdout, "{}", error_json)?;
-                                writeln!(io.stderr, "Error: {}", e)?;
-
-                                let code = if e.to_string().contains("permission denied") {
-                                    4
-                                } else {
-                                    1
-                                };
-                                Ok(Status::err(code, e.to_string()))
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let error_json = json!({
-                            "pid": pid,
-                            "verb": verb,
-                            "ok": false,
-                            "error": e.to_string()
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        writeln!(io.stderr, "Error: {}", e)?;
-                        Ok(Status::err(1, e.to_string()))
-                    }
-                }
-            }
-            _ => {
-                let error_json = json!({
-                    "pid": pid,
-                    "verb": verb,
-                    "ok": false,
-                    "error": format!("unknown verb: {}", verb)
-                });
-                writeln!(io.stdout, "{}", error_json)?;
-                Ok(Status::err(1, format!("unknown verb: {}", verb)))
-            }
+        if unsafe { libc::prlimit(pid, res as _, std::ptr::null(), &mut old) } != 0 {
+            return Err(os_fail("prlimit", pid, std::io::Error::last_os_error()));
         }
+        Ok((old.rlim_cur as u64, old.rlim_max as u64))
     }
 
-    /// Handle setPriority verb - class-based priority setting
-    #[cfg(unix)]
-    fn verb_set_priority(&self, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        let pid = match self.resolve_pid() {
-            Ok(p) => p,
-            Err(_) => {
-                writeln!(io.stderr, "Error: invalid pid")?;
-                return Ok(Status::err(1, "invalid pid"));
-            }
+    pub fn set_limit(pid: libc::pid_t, res: libc::c_int, soft: u64, hard: u64) -> Result<(), Fail> {
+        let new = libc::rlimit {
+            rlim_cur: soft as libc::rlim_t,
+            rlim_max: hard as libc::rlim_t,
         };
-
-        // Get current nice value for the "previous_nice" field
-        let previous_nice = match self.get_nice() {
-            Ok(current) => current,
-            Err(e) => {
-                if e.to_string().contains("no such process") {
-                    writeln!(io.stderr, "Error: no such process")?;
-                    return Ok(Status::err(4, "no such process"));
-                } else if e.to_string().contains("permission denied") {
-                    writeln!(io.stderr, "Error: permission denied")?;
-                    return Ok(Status::err(4, "permission denied"));
-                } else {
-                    let msg = format!("failed to get current priority: {}", e);
-                    writeln!(io.stderr, "Error: {}", msg)?;
-                    return Ok(Status::err(4, msg));
-                }
-            }
-        };
-
-        // Parse arguments
-        let (target_nice, resolved_class) = if let Some(nice_str) = args.get("nice") {
-            // If nice is provided, use it directly and override class
-            match nice_str.parse::<i32>() {
-                Ok(nice_val) => {
-                    let clamped = nice_val.clamp(-20, 19);
-                    let class = match clamped {
-                        19 => "idle",
-                        10 => "background",
-                        0 => "normal",
-                        -5 => "high",
-                        -10 => "realtime",
-                        _ => "custom",
-                    };
-                    (clamped, class.to_string())
-                }
-                Err(_) => {
-                    writeln!(io.stderr, "Error: invalid nice value")?;
-                    return Ok(Status::err(2, "invalid nice value"));
-                }
-            }
-        } else {
-            // Use class mapping
-            let class = args.get("class").map(|s| s.as_str()).unwrap_or("normal");
-            let nice_val = match class {
-                "idle" => 19,
-                "background" => 10,
-                "normal" => 0,
-                "high" => -5,
-                "realtime" => -10,
-                _ => {
-                    writeln!(io.stderr, "Error: invalid class")?;
-                    return Ok(Status::err(3, "invalid class"));
-                }
-            };
-            (nice_val, class.to_string())
-        };
-
-        // Set the new priority using existing set_nice method
-        match self.set_nice(target_nice) {
-            Ok(()) => {
-                let success_json = json!({
-                    "pid": pid,
-                    "class": resolved_class,
-                    "nice": target_nice,
-                    "previous_nice": previous_nice,
-                    "backend": "linux-setpriority"
-                });
-                writeln!(io.stdout, "{}", success_json)?;
-                Ok(Status::ok())
-            }
-            Err(e) => {
-                if e.to_string().contains("no such process") {
-                    writeln!(io.stderr, "Error: no such process")?;
-                    Ok(Status::err(4, "no such process"))
-                } else if e.to_string().contains("permission denied") {
-                    writeln!(io.stderr, "Error: permission denied")?;
-                    Ok(Status::err(4, "permission denied"))
-                } else {
-                    let msg = format!("setpriority failed: {}", e);
-                    writeln!(io.stderr, "Error: {}", msg)?;
-                    Ok(Status::err(4, msg))
-                }
-            }
+        if unsafe { libc::prlimit(pid, res as _, &new, std::ptr::null_mut()) } != 0 {
+            return Err(os_fail("prlimit", pid, std::io::Error::last_os_error()));
         }
-    }
-
-    #[cfg(not(unix))]
-    fn verb_set_priority(&self, _args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        writeln!(
-            io.stderr,
-            "Error: setPriority not supported on this platform"
-        )?;
-        Ok(Status::err(5, "setPriority not supported on this platform"))
-    }
-
-    #[cfg(unix)]
-    fn send_signal_internal(
-        &self,
-        _signal_name: &str,
-        signal_num: libc::c_int,
-    ) -> anyhow::Result<bool> {
-        // Use libc::kill to send the signal
-        let pid = self.resolve_pid()?;
-        let result = unsafe { libc::kill(pid, signal_num) };
-
-        if result == 0 {
-            Ok(true)
-        } else {
-            let errno = std::io::Error::last_os_error();
-            match errno.raw_os_error() {
-                Some(libc::ESRCH) => Ok(false), // Process not found
-                Some(libc::EPERM) => Err(anyhow!("permission denied")),
-                _ => Err(anyhow!("kill failed: {}", errno)),
-            }
-        }
-    }
-
-    #[cfg(not(unix))]
-    fn send_signal_internal(
-        &self,
-        _signal_name: &str,
-        _signal_num: libc::c_int,
-    ) -> anyhow::Result<bool> {
-        Err(anyhow!("proc:// only supported on Unix-like systems"))
-    }
-
-    fn resolve_signal(verb: &str, args: &Args) -> anyhow::Result<(String, libc::c_int)> {
-        match verb {
-            "signal" => {
-                let sig = args.get("sig").ok_or_else(|| anyhow!("missing arg: sig"))?;
-                parse_signal_arg(sig)
-            }
-            "kill" => Ok(("KILL".to_string(), libc::SIGKILL)),
-            "term" => Ok(("TERM".to_string(), libc::SIGTERM)),
-            "int" => Ok(("INT".to_string(), libc::SIGINT)),
-            "hup" => Ok(("HUP".to_string(), libc::SIGHUP)),
-            "stop" => Ok(("STOP".to_string(), libc::SIGSTOP)),
-            "cont" => Ok(("CONT".to_string(), libc::SIGCONT)),
-            "usr1" => Ok(("USR1".to_string(), libc::SIGUSR1)),
-            "usr2" => Ok(("USR2".to_string(), libc::SIGUSR2)),
-            _ => Err(anyhow!("unknown verb: {}", verb)),
-        }
-    }
-
-    fn handle_signal(&self, verb: &str, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        #[cfg(not(unix))]
-        {
-            let pid = self.resolve_pid().unwrap_or(-1);
-            let error_json = json!({
-                "pid": pid,
-                "verb": verb,
-                "ok": false,
-                "backend": "unsupported",
-                "error": "proc:// only supported on Unix-like systems"
-            });
-            writeln!(io.stdout, "{}", error_json)?;
-            return Ok(Status::err(
-                1,
-                "proc:// only supported on Unix-like systems",
-            ));
-        }
-
-        #[cfg(unix)]
-        {
-            let pid = match self.resolve_pid() {
-                Ok(p) => p,
-                Err(e) => {
-                    let error_json = json!({
-                        "pid": null,
-                        "verb": verb,
-                        "ok": false,
-                        "error": e.to_string()
-                    });
-                    writeln!(io.stdout, "{}", error_json)?;
-                    return Ok(Status::err(1, e.to_string()));
-                }
-            };
-
-            let (signal_name, signal_num) = match Self::resolve_signal(verb, args) {
-                Ok(result) => result,
-                Err(e) => {
-                    let error_json = json!({
-                        "pid": pid,
-                        "verb": verb,
-                        "ok": false,
-                        "error": e.to_string()
-                    });
-                    writeln!(io.stdout, "{}", error_json)?;
-                    return Ok(Status::err(1, e.to_string()));
-                }
-            };
-
-            match self.send_signal_internal(&signal_name, signal_num) {
-                Ok(true) => {
-                    let success_json = json!({
-                        "pid": pid,
-                        "verb": verb,
-                        "signal": signal_name,
-                        "signal_num": signal_num,
-                        "ok": true
-                    });
-                    writeln!(io.stdout, "{}", success_json)?;
-                    Ok(Status::ok())
-                }
-                Ok(false) => {
-                    let error_json = json!({
-                        "pid": pid,
-                        "verb": verb,
-                        "signal": signal_name,
-                        "signal_num": signal_num,
-                        "ok": false,
-                        "error": "process not found"
-                    });
-                    writeln!(io.stdout, "{}", error_json)?;
-                    Ok(Status::err(3, "process not found"))
-                }
-                Err(e) => {
-                    let error_json = json!({
-                        "pid": pid,
-                        "verb": verb,
-                        "signal": signal_name,
-                        "signal_num": signal_num,
-                        "ok": false,
-                        "error": e.to_string()
-                    });
-                    writeln!(io.stdout, "{}", error_json)?;
-
-                    let code = if e.to_string().contains("permission denied") {
-                        4
-                    } else {
-                        1
-                    };
-                    Ok(Status::err(code, e.to_string()))
-                }
-            }
-        }
-    }
-
-    /// Handle io.peek verb - non-blocking peek at process output logs
-    fn handle_io_peek(&self, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        let pid = match self.resolve_pid() {
-            Ok(p) => p,
-            Err(e) => {
-                let error_json = json!({
-                    "error": format!("invalid pid: {}", e)
-                });
-                writeln!(io.stdout, "{}", error_json)?;
-                return Ok(Status::err(3, format!("invalid pid: {}", e)));
-            }
-        };
-
-        // Parse arguments
-        let stream = args.get("stream").map(|s| s.as_str()).unwrap_or("stdout");
-
-        // Parse max_bytes with error handling
-        let max_bytes = match args.get("max_bytes") {
-            Some(s) => match s.parse::<usize>() {
-                Ok(val) => val,
-                Err(_) => {
-                    let error_json = json!({
-                        "error": "max_bytes must be a positive integer",
-                        "pid": pid
-                    })
-                    .to_string();
-                    writeln!(io.stdout, "{}", error_json)?;
-                    return Ok(Status::err(3, "invalid max_bytes parameter".to_string()));
-                }
-            },
-            None => 4096,
-        };
-
-        let encoding = args.get("encoding").map(|s| s.as_str()).unwrap_or("auto");
-
-        // Parse tail with error handling
-        let tail = match args.get("tail") {
-            Some(s) => match s.parse::<usize>() {
-                Ok(val) => val,
-                Err(_) => {
-                    let error_json = json!({
-                        "error": "tail must be a positive integer",
-                        "pid": pid
-                    })
-                    .to_string();
-                    writeln!(io.stdout, "{}", error_json)?;
-                    return Ok(Status::err(3, "invalid tail parameter".to_string()));
-                }
-            },
-            None => max_bytes,
-        };
-
-        let json_mode = args
-            .get("json")
-            .map(|s| !matches!(s.as_str(), "false" | "0" | "no"))
-            .unwrap_or(true);
-
-        // Validate stream argument
-        if !matches!(stream, "stdout" | "stderr" | "both") {
-            let error_json = json!({
-                "error": format!("invalid stream value: {}", stream)
-            });
-            writeln!(io.stdout, "{}", error_json)?;
-            return Ok(Status::err(3, format!("invalid stream value: {}", stream)));
-        }
-
-        // Validate encoding argument
-        if !matches!(encoding, "auto" | "utf8" | "base64") {
-            let error_json = json!({
-                "error": format!("invalid encoding value: {}", encoding)
-            });
-            writeln!(io.stdout, "{}", error_json)?;
-            return Ok(Status::err(
-                3,
-                format!("invalid encoding value: {}", encoding),
-            ));
-        }
-
-        // Check for raw mode constraints
-        if !json_mode && (stream != "stdout") {
-            let error_json = json!({
-                "error": "raw mode (json=false) only allowed with stream=stdout"
-            });
-            writeln!(io.stdout, "{}", error_json)?;
-            return Ok(Status::err(3, "raw mode only allowed with stream=stdout"));
-        }
-
-        // Get state directory and construct log paths
-        let base = dirs::state_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-        let dir = base.join("resh").join("proc").join(pid.to_string());
-
-        match stream {
-            "stdout" => {
-                let stdout_log = dir.join("stdout.log");
-                match self.read_log_file(&stdout_log, max_bytes, tail, encoding) {
-                    Ok(stream_data) => {
-                        if json_mode {
-                            let response = json!({
-                                "pid": pid,
-                                "stream": "stdout",
-                                "encoding": stream_data.encoding,
-                                "auto_fallback": stream_data.auto_fallback,
-                                "bytes_read": stream_data.bytes_read,
-                                "truncated": stream_data.truncated,
-                                "data": stream_data.data
-                            });
-                            writeln!(io.stdout, "{}", response)?;
-                        } else {
-                            // Raw mode - write data directly
-                            write!(io.stdout, "{}", stream_data.data)?;
-                        }
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        let error_json = json!({
-                            "error": e.to_string()
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        Ok(Status::err(2, e.to_string()))
-                    }
-                }
-            }
-            "stderr" => {
-                let stderr_log = dir.join("stderr.log");
-                match self.read_log_file(&stderr_log, max_bytes, tail, encoding) {
-                    Ok(stream_data) => {
-                        let response = json!({
-                            "pid": pid,
-                            "stream": "stderr",
-                            "encoding": stream_data.encoding,
-                            "auto_fallback": stream_data.auto_fallback,
-                            "bytes_read": stream_data.bytes_read,
-                            "truncated": stream_data.truncated,
-                            "data": stream_data.data
-                        });
-                        writeln!(io.stdout, "{}", response)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        let error_json = json!({
-                            "error": e.to_string()
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        Ok(Status::err(2, e.to_string()))
-                    }
-                }
-            }
-            "both" => {
-                let stdout_log = dir.join("stdout.log");
-                let stderr_log = dir.join("stderr.log");
-
-                let stdout_result = self.read_log_file(&stdout_log, max_bytes, tail, encoding);
-                let stderr_result = self.read_log_file(&stderr_log, max_bytes, tail, encoding);
-
-                let response = json!({
-                    "pid": pid,
-                    "streams": {
-                        "stdout": match stdout_result {
-                            Ok(data) => json!({
-                                "encoding": data.encoding,
-                                "auto_fallback": data.auto_fallback,
-                                "bytes_read": data.bytes_read,
-                                "truncated": data.truncated,
-                                "data": data.data
-                            }),
-                            Err(e) => json!({
-                                "error": e.to_string()
-                            })
-                        },
-                        "stderr": match stderr_result {
-                            Ok(data) => json!({
-                                "encoding": data.encoding,
-                                "auto_fallback": data.auto_fallback,
-                                "bytes_read": data.bytes_read,
-                                "truncated": data.truncated,
-                                "data": data.data
-                            }),
-                            Err(e) => json!({
-                                "error": e.to_string()
-                            })
-                        }
-                    }
-                });
-                writeln!(io.stdout, "{}", response)?;
-                Ok(Status::ok())
-            }
-            _ => unreachable!("stream validation should prevent this"),
-        }
-    }
-
-    /// Read and process a log file according to the specified parameters
-    fn read_log_file(
-        &self,
-        path: &PathBuf,
-        max_bytes: usize,
-        tail: usize,
-        encoding: &str,
-    ) -> anyhow::Result<StreamData> {
-        use base64::Engine as _;
-
-        if !path.exists() {
-            return Err(anyhow!("log file not found: {}", path.display()));
-        }
-
-        let mut file = File::open(path)
-            .with_context(|| format!("failed to open log file: {}", path.display()))?;
-
-        // Get file length
-        let file_len = file
-            .metadata()
-            .with_context(|| format!("failed to get file metadata: {}", path.display()))?
-            .len();
-
-        if file_len == 0 {
-            return Ok(StreamData {
-                encoding: "utf8".to_string(),
-                auto_fallback: false,
-                bytes_read: 0,
-                truncated: false,
-                data: String::new(),
-            });
-        }
-
-        // Determine how many bytes to read from the end
-        let bytes_to_read = std::cmp::min(file_len, tail as u64);
-
-        if bytes_to_read > 0 {
-            // Seek to the tail position
-            file.seek(SeekFrom::End(-(bytes_to_read as i64)))
-                .with_context(|| format!("failed to seek in log file: {}", path.display()))?;
-        }
-
-        // Read the bytes
-        let mut buffer = vec![0u8; bytes_to_read as usize];
-        let bytes_read = file
-            .read(&mut buffer)
-            .with_context(|| format!("failed to read log file: {}", path.display()))?;
-        buffer.truncate(bytes_read);
-
-        // Apply max_bytes limit if needed
-        let truncated = bytes_read > max_bytes;
-        if truncated {
-            let start = bytes_read - max_bytes;
-            buffer = buffer[start..].to_vec();
-        }
-
-        // Apply encoding
-        match encoding {
-            "utf8" => {
-                let data = String::from_utf8_lossy(&buffer).into_owned();
-                Ok(StreamData {
-                    encoding: "utf8".to_string(),
-                    auto_fallback: false,
-                    bytes_read: buffer.len(),
-                    truncated,
-                    data,
-                })
-            }
-            "base64" => {
-                let data = base64::engine::general_purpose::STANDARD.encode(&buffer);
-                Ok(StreamData {
-                    encoding: "base64".to_string(),
-                    auto_fallback: false,
-                    bytes_read: buffer.len(),
-                    truncated,
-                    data,
-                })
-            }
-            "auto" => match String::from_utf8(buffer.clone()) {
-                Ok(utf8_string) => Ok(StreamData {
-                    encoding: "utf8".to_string(),
-                    auto_fallback: false,
-                    bytes_read: buffer.len(),
-                    truncated,
-                    data: utf8_string,
-                }),
-                Err(_) => {
-                    let data = base64::engine::general_purpose::STANDARD.encode(&buffer);
-                    Ok(StreamData {
-                        encoding: "base64".to_string(),
-                        auto_fallback: true,
-                        bytes_read: buffer.len(),
-                        truncated,
-                        data,
-                    })
-                }
-            },
-            _ => Err(anyhow!("invalid encoding: {}", encoding)),
-        }
-    }
-
-    /// Main implementation of limits.set verb
-    #[cfg(unix)]
-    fn limits_set(&self, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        // Determine target PID
-        let target_pid = if let Some(pid_str) = args.get("pid") {
-            match pid_str.parse::<i32>() {
-                Ok(p) if p > 0 => p,
-                _ => {
-                    let error_json = json!({
-                        "pid": null,
-                        "backend": "rlimit",
-                        "error": format!("invalid pid argument: '{}'", pid_str),
-                        "resource": "pid"
-                    });
-                    writeln!(io.stdout, "{}", error_json)?;
-                    return Ok(Status::err(
-                        2,
-                        format!("invalid pid argument: '{}'", pid_str),
-                    ));
-                }
-            }
-        } else {
-            self.resolve_pid()?
-        };
-
-        // Check if this is check-only mode
-        let check_only = crate::core::lenient::dry_run(args)?;
-
-        let mut results = serde_json::Map::new();
-        let mut overall_success = true;
-
-        // Process each resource limit argument
-        for (key, value) in args {
-            // Skip special arguments
-            if key == "pid" || key == "dry_run" {
-                continue;
-            }
-
-            match self.process_resource_limit(key, value, target_pid, check_only) {
-                Ok(resource_result) => {
-                    results.insert(key.clone(), resource_result);
-                }
-                Err(e) => {
-                    let error_result = json!({
-                        "requested": value,
-                        "status": "error",
-                        "error": e.to_string()
-                    });
-                    results.insert(key.clone(), error_result);
-                    overall_success = false;
-                }
-            }
-        }
-
-        // Generate final JSON response
-        let response = json!({
-            "pid": target_pid,
-            "backend": "rlimit",
-            "results": results
-        });
-
-        writeln!(io.stdout, "{}", response)?;
-
-        if overall_success {
-            Ok(Status::ok())
-        } else {
-            Ok(Status::err(
-                1,
-                "one or more resource limit operations failed",
-            ))
-        }
-    }
-
-    #[cfg(not(unix))]
-    fn limits_set(&self, _args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        let error_json = json!({
-            "backend": "limits",
-            "supported": false,
-            "error": "resource limits not supported on this platform"
-        });
-        writeln!(io.stdout, "{}", error_json)?;
-        Ok(Status::err(
-            1,
-            "resource limits not supported on this platform",
-        ))
-    }
-
-    /// Process a single resource limit setting
-    #[cfg(unix)]
-    fn process_resource_limit(
-        &self,
-        name: &str,
-        value: &str,
-        _pid: i32,
-        check_only: bool,
-    ) -> anyhow::Result<serde_json::Value> {
-        // Map resource name to nix Resource enum
-        let resource = match self.map_resource_name(name)? {
-            Some(r) => r,
-            None => return Err(anyhow!("unknown resource: '{}'", name)),
-        };
-
-        // Get current limits
-        let (current_soft, current_hard) = getrlimit(resource)
-            .map_err(|e| anyhow!("failed to get current limits for {}: {}", name, e))?;
-
-        // Parse the new limits
-        let (new_soft, new_hard) = self.parse_limit_value(value, current_soft, current_hard)?;
-
-        // Validate that soft <= hard
-        if new_soft > new_hard {
-            return Err(anyhow!(
-                "soft limit ({}) cannot exceed hard limit ({})",
-                new_soft,
-                new_hard
-            ));
-        }
-
-        // Apply the limits if not in check-only mode
-        if !check_only {
-            setrlimit(resource, new_soft, new_hard)
-                .map_err(|e| anyhow!("failed to set limits for {}: {}", name, e))?;
-        }
-
-        // Build result JSON
-        Ok(json!({
-            "requested": value,
-            "before": {
-                "soft": current_soft,
-                "hard": current_hard
-            },
-            "after": {
-                "soft": new_soft,
-                "hard": new_hard
-            },
-            "status": "ok"
-        }))
-    }
-
-    /// Map resource names to nix Resource enum values
-    #[cfg(unix)]
-    fn map_resource_name(&self, name: &str) -> anyhow::Result<Option<Resource>> {
-        let resource = match name {
-            "cpu" => Some(Resource::RLIMIT_CPU),
-            "as" => Some(Resource::RLIMIT_AS),
-            "data" => Some(Resource::RLIMIT_DATA),
-            "stack" => Some(Resource::RLIMIT_STACK),
-            "core" => Some(Resource::RLIMIT_CORE),
-            "nofile" => Some(Resource::RLIMIT_NOFILE),
-            "fsize" => Some(Resource::RLIMIT_FSIZE),
-            "memlock" => Some(Resource::RLIMIT_MEMLOCK),
-            #[cfg(target_os = "linux")]
-            "nproc" => Some(Resource::RLIMIT_NPROC),
-            _ => None,
-        };
-        Ok(resource)
-    }
-
-    /// Parse limit value in various formats
-    #[cfg(unix)]
-    fn parse_limit_value(
-        &self,
-        value: &str,
-        current_soft: u64,
-        current_hard: u64,
-    ) -> anyhow::Result<(u64, u64)> {
-        if value.contains(':') {
-            // Format: "soft:hard"
-            let parts: Vec<&str> = value.splitn(2, ':').collect();
-            let soft_str = parts[0];
-            let hard_str = parts[1];
-
-            let new_soft = if soft_str.is_empty() {
-                current_soft
-            } else {
-                self.parse_single_limit(soft_str)?
-            };
-
-            let new_hard = if hard_str.is_empty() {
-                current_hard
-            } else {
-                self.parse_single_limit(hard_str)?
-            };
-
-            Ok((new_soft, new_hard))
-        } else {
-            // Single value - set soft limit, keep hard unchanged
-            let new_soft = self.parse_single_limit(value)?;
-            Ok((new_soft, current_hard))
-        }
-    }
-
-    /// Parse a single limit value (with potential suffixes)
-    #[cfg(unix)]
-    fn parse_single_limit(&self, value: &str) -> anyhow::Result<u64> {
-        if value == "unlimited" {
-            return Ok(u64::MAX); // RLIM_INFINITY equivalent
-        }
-
-        // Handle time suffixes for CPU
-        if value.ends_with('s') {
-            let num_str = &value[..value.len() - 1];
-            return num_str
-                .parse::<u64>()
-                .map_err(|_| anyhow!("invalid time value: '{}'", value));
-        }
-
-        // Handle SI suffixes for byte values
-        if value.ends_with('K') {
-            let num_str = &value[..value.len() - 1];
-            let base: u64 = num_str
-                .parse()
-                .map_err(|_| anyhow!("invalid byte value: '{}'", value))?;
-            return Ok(base * 1_000);
-        }
-
-        if value.ends_with('M') {
-            let num_str = &value[..value.len() - 1];
-            let base: u64 = num_str
-                .parse()
-                .map_err(|_| anyhow!("invalid byte value: '{}'", value))?;
-            return Ok(base * 1_000_000);
-        }
-
-        if value.ends_with('G') {
-            let num_str = &value[..value.len() - 1];
-            let base: u64 = num_str
-                .parse()
-                .map_err(|_| anyhow!("invalid byte value: '{}'", value))?;
-            return Ok(base * 1_000_000_000);
-        }
-
-        // Plain number
-        value
-            .parse::<u64>()
-            .map_err(|_| anyhow!("invalid limit value: '{}'", value))
+        Ok(())
     }
 }
 
-impl Handle for ProcHandle {
-    fn verbs(&self) -> &'static [&'static str] {
-        &[
-            "signal",
-            "kill",
-            "term",
-            "int",
-            "hup",
-            "stop",
-            "cont",
-            "usr1",
-            "usr2",
-            "nice.get",
-            "nice.set",
-            "nice.inc",
-            "nice.dec",
-            "setPriority",
-            "io.peek",
-            "limits.set",
-        ]
+#[cfg(not(target_os = "linux"))]
+mod sys {
+    use super::Fail;
+
+    fn unsupported() -> Fail {
+        Fail::failed("unsupported_platform", "proc:// is supported on Linux only")
     }
-
-    fn help(&self) -> Option<&'static HandleHelp> {
-        Some(&PROC_HELP)
+    pub fn get_nice(_: libc::pid_t) -> Result<i32, Fail> {
+        Err(unsupported())
     }
+    pub fn set_nice(_: libc::pid_t, _: i32) -> Result<(), Fail> {
+        Err(unsupported())
+    }
+    pub fn kill(_: libc::pid_t, _: libc::c_int) -> Result<(), Fail> {
+        Err(unsupported())
+    }
+    pub fn sig_rt_range() -> (libc::c_int, libc::c_int) {
+        (0, 31)
+    }
+    pub fn resource(name: &str) -> Option<libc::c_int> {
+        super::RESOURCES
+            .iter()
+            .position(|r| *r == name)
+            .map(|i| i as libc::c_int)
+    }
+    pub const INFINITY: u64 = u64::MAX;
+    pub fn get_limit(_: libc::pid_t, _: libc::c_int) -> Result<(u64, u64), Fail> {
+        Err(unsupported())
+    }
+    pub fn set_limit(_: libc::pid_t, _: libc::c_int, _: u64, _: u64) -> Result<(), Fail> {
+        Err(unsupported())
+    }
+}
 
-    fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        // Check for help request before processing verbs
-        if should_show_help(verb, args) {
-            return self.display_help(args.get("verb").map(String::as_str), io);
-        }
+// ---------------------------------------------------------------------------
+// Signals
+// ---------------------------------------------------------------------------
 
-        match verb {
-            "signal" | "kill" | "term" | "int" | "hup" | "stop" | "cont" | "usr1" | "usr2" => {
-                self.handle_signal(verb, args, io)
-            }
-            "nice.get" | "nice.set" | "nice.inc" | "nice.dec" => self.handle_nice(verb, args, io),
-            "setPriority" => self.verb_set_priority(args, io),
-            "io.peek" => self.handle_io_peek(args, io),
-            "limits.set" => self.limits_set(args, io),
-            _ => {
-                let pid = self.resolve_pid().unwrap_or(-1);
-                let error_json = json!({
-                    "pid": pid,
-                    "verb": verb,
-                    "ok": false,
-                    "error": format!("unknown verb: {}", verb)
-                });
-                writeln!(io.stdout, "{}", error_json)?;
-                Ok(Status::err(1, format!("unknown verb: {}", verb)))
-            }
+/// The signal named by `sig` (a name, with or without `SIG`, in any case, or
+/// a number from 0 to SIGRTMAX), as (label, number).
+fn parse_signal_arg(sig: &str) -> Result<(String, libc::c_int), Fail> {
+    let (_, rt_max) = sys::sig_rt_range();
+    if !sig.is_empty() && sig.bytes().all(|b| b.is_ascii_digit()) {
+        return match sig.parse::<libc::c_int>() {
+            Ok(n) if (0..=rt_max).contains(&n) => Ok((signal_label(n), n)),
+            _ => Err(Fail::invalid(format!(
+                "invalid signal number: {sig} (expected 0..{rt_max}); nothing was done"
+            ))),
+        };
+    }
+    let upper = sig.to_ascii_uppercase();
+    let name = upper.strip_prefix("SIG").unwrap_or(&upper);
+    match ACCEPTED_SIGNALS.iter().find(|(n, _)| *n == name) {
+        Some((n, num)) => Ok((n.to_string(), *num)),
+        None => {
+            let names: Vec<&str> = ACCEPTED_SIGNALS.iter().map(|(n, _)| *n).collect();
+            Err(Fail::invalid(format!(
+                "invalid signal: {sig:?}{} (names: {}, or a number); nothing was done",
+                hint(name, &names),
+                names.join(", ")
+            )))
         }
     }
 }
 
-fn parse_signal_arg(sig: &str) -> anyhow::Result<(String, libc::c_int)> {
-    // Try to parse as number first; the number is sent as given and only
-    // the label comes from the platform's signal table.
-    if let Ok(num) = sig.parse::<i32>() {
-        return Ok((signal_label(num).to_string(), num));
-    }
-
-    // Parse as signal name (case-insensitive)
-    let sig_upper = sig.to_uppercase();
-    let sig_name = if sig_upper.starts_with("SIG") {
-        &sig_upper[3..]
-    } else {
-        &sig_upper
-    };
-
-    let signal_num = match sig_name {
-        "HUP" => libc::SIGHUP,
-        "INT" => libc::SIGINT,
-        "QUIT" => libc::SIGQUIT,
-        "KILL" => libc::SIGKILL,
-        "TERM" => libc::SIGTERM,
-        "STOP" => libc::SIGSTOP,
-        "CONT" => libc::SIGCONT,
-        "USR1" => libc::SIGUSR1,
-        "USR2" => libc::SIGUSR2,
-        "PIPE" => libc::SIGPIPE,
-        "ALRM" => libc::SIGALRM,
-        "CHLD" => libc::SIGCHLD,
-        _ => return Err(anyhow!("invalid signal: {}", sig)),
-    };
-
-    Ok((sig_name.to_string(), signal_num))
-}
-
-// ===========================================================================
-// Helper functions for help display
-// ===========================================================================
-
-/// Check if help should be displayed. Matches whole tokens only, so a verb
-/// or argument merely containing "-h" is not a help request.
-fn should_show_help(method: &str, args: &Args) -> bool {
-    method == "help"
-        || method == "h"
-        || crate::core::help::is_help_flag(method)
-        || args.contains_key("help")
-        || args.contains_key("h")
-}
-
-impl ProcHandle {
-    /// Display the approved proc help (same text as `resh proc [<verb>] --help`).
-    fn display_help(&self, verb: Option<&str>, io: &mut IoStreams) -> anyhow::Result<Status> {
-        let text = crate::core::help::render_legacy("proc", &PROC_HELP, self.verbs(), verb);
-        write!(io.stdout, "{}", text)?;
-        Ok(Status::ok())
-    }
-}
+/// The signal names `signal sig=` accepts.
+const ACCEPTED_SIGNALS: &[(&str, libc::c_int)] = &[
+    ("HUP", libc::SIGHUP),
+    ("INT", libc::SIGINT),
+    ("QUIT", libc::SIGQUIT),
+    ("KILL", libc::SIGKILL),
+    ("TERM", libc::SIGTERM),
+    ("STOP", libc::SIGSTOP),
+    ("CONT", libc::SIGCONT),
+    ("USR1", libc::SIGUSR1),
+    ("USR2", libc::SIGUSR2),
+    ("PIPE", libc::SIGPIPE),
+    ("ALRM", libc::SIGALRM),
+    ("CHLD", libc::SIGCHLD),
+];
 
 /// Signal names by number, from the platform's libc constants (Linux
 /// numbering on Linux: 10 = USR1, 12 = USR2, 17 = CHLD, 19 = STOP).
@@ -1701,169 +799,660 @@ const SIGNAL_NAMES: &[(&str, libc::c_int)] = &[
     ("WINCH", libc::SIGWINCH),
     ("IO", libc::SIGIO),
     ("SYS", libc::SIGSYS),
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    ("PWR", libc::SIGPWR),
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    ("STKFLT", libc::SIGSTKFLT),
 ];
 
-/// Name for a signal number, or "UNKNOWN".
-fn signal_label(num: libc::c_int) -> &'static str {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        if num == libc::SIGPWR {
-            return "PWR";
+/// Name for a signal number: `NULL` for 0, `RTMIN+<n>` for real-time
+/// signals, or `UNKNOWN`.
+fn signal_label(num: libc::c_int) -> String {
+    if num == 0 {
+        return "NULL".to_string();
+    }
+    if let Some((name, _)) = SIGNAL_NAMES.iter().find(|(_, n)| *n == num) {
+        return name.to_string();
+    }
+    let (rt_min, rt_max) = sys::sig_rt_range();
+    if (rt_min..=rt_max).contains(&num) {
+        return format!("RTMIN+{}", num - rt_min);
+    }
+    "UNKNOWN".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// The handle
+// ---------------------------------------------------------------------------
+
+pub struct ProcHandle {
+    name: String, // Can be a PID or "self"
+}
+
+impl ProcHandle {
+    pub fn from_url(u: &Url) -> anyhow::Result<Self> {
+        // Accept host + path, strip leading slashes, parse as PID or "self"
+        let mut name = String::new();
+        if let Some(h) = u.host_str() {
+            name.push_str(h);
         }
-        if num == libc::SIGSTKFLT {
-            return "STKFLT";
+        if !u.path().is_empty() {
+            if !name.is_empty() {
+                name.push('/');
+            }
+            name.push_str(u.path().trim_start_matches('/'));
+        }
+
+        if name.is_empty() {
+            return Err(anyhow::anyhow!("invalid pid: missing"));
+        }
+
+        // Allow "self", numeric PID, or an in-URL help flag (proc://--help)
+        if name == "self" || crate::core::help::is_help_flag(&name) {
+            Ok(Self { name })
+        } else {
+            parse_pid(&name)?;
+            Ok(Self { name })
         }
     }
-    SIGNAL_NAMES
-        .iter()
-        .find(|(_, n)| *n == num)
-        .map(|(name, _)| *name)
-        .unwrap_or("UNKNOWN")
+
+    /// Resolve the name to an actual PID
+    fn resolve_pid(&self) -> anyhow::Result<libc::pid_t> {
+        if self.name == "self" {
+            libc::pid_t::try_from(std::process::id())
+                .map_err(|_| anyhow::anyhow!("invalid pid: own pid out of range"))
+        } else {
+            parse_pid(&self.name)
+        }
+    }
+
+    /// Display the approved proc help (same text as `resh proc [<verb>] --help`).
+    fn display_help(&self, verb: Option<&str>, io: &mut IoStreams) -> anyhow::Result<Status> {
+        let text = crate::core::help::render_legacy("proc", &PROC_HELP, self.verbs(), verb);
+        write!(io.stdout, "{}", text)?;
+        Ok(Status::ok())
+    }
 }
+
+/// What a verb prints on success.
+enum Output {
+    Json(Value),
+    /// `io.peek json=false`: the data alone.
+    Raw(String),
+}
+
+/// A failed verb: the error, plus fields printed with it (for example the
+/// per-resource results of `limits.set`).
+struct Failure {
+    fail: Fail,
+    extra: Map<String, Value>,
+}
+
+impl From<Fail> for Failure {
+    fn from(fail: Fail) -> Self {
+        Self {
+            fail,
+            extra: Map::new(),
+        }
+    }
+}
+
+type VerbResult = Result<Output, Failure>;
+
+impl Handle for ProcHandle {
+    fn verbs(&self) -> &'static [&'static str] {
+        &[
+            "signal",
+            "kill",
+            "term",
+            "int",
+            "hup",
+            "stop",
+            "cont",
+            "usr1",
+            "usr2",
+            "nice.get",
+            "nice.set",
+            "nice.inc",
+            "nice.dec",
+            "setPriority",
+            "io.peek",
+            "limits.set",
+        ]
+    }
+
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&PROC_HELP)
+    }
+
+    fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
+        if should_show_help(verb, args) {
+            // `proc://1234.kill(help=1)` shows the help of `kill`.
+            let topic = args
+                .get("verb")
+                .map(String::as_str)
+                .or_else(|| verb_args(verb).map(|_| verb));
+            return self.display_help(topic, io);
+        }
+        let pid = self.resolve_pid().ok();
+        let result = self.run(verb, args);
+        match result {
+            Ok(Output::Json(v)) => {
+                writeln!(io.stdout, "{v}")?;
+                Ok(Status::ok())
+            }
+            Ok(Output::Raw(data)) => {
+                write!(io.stdout, "{data}")?;
+                Ok(Status::ok())
+            }
+            Err(Failure { fail, extra }) => {
+                let mut obj = Map::new();
+                obj.insert("pid".into(), json!(pid));
+                obj.insert("verb".into(), json!(verb));
+                obj.insert("ok".into(), json!(false));
+                obj.extend(extra);
+                obj.insert("error".into(), fail.error_obj());
+                writeln!(io.stdout, "{}", Value::Object(obj))?;
+                Ok(fail.status(verb))
+            }
+        }
+    }
+}
+
+impl ProcHandle {
+    /// Checks the verb, its arguments and the target, then runs the verb.
+    fn run(&self, verb: &str, args: &Args) -> VerbResult {
+        let Some(allowed) = verb_args(verb) else {
+            return Err(Fail::invalid(format!(
+                "unknown verb: {verb}{} (verbs: {})",
+                hint(verb, self.verbs()),
+                self.verbs().join(", ")
+            ))
+            .into());
+        };
+        check_args(verb, allowed, args)?;
+        let pid = self
+            .resolve_pid()
+            .map_err(|e| Fail::new(exit::USAGE, "invalid_target", e.to_string()))?;
+        match verb {
+            "signal" | "kill" | "term" | "int" | "hup" | "stop" | "cont" | "usr1" | "usr2" => {
+                verb_signal(pid, verb, args)
+            }
+            "nice.get" => {
+                let nice = sys::get_nice(pid)?;
+                Ok(Output::Json(json!({"pid": pid, "nice": nice})))
+            }
+            "nice.set" => verb_nice_set(pid, args),
+            "nice.inc" => verb_nice_delta(pid, args, 1),
+            "nice.dec" => verb_nice_delta(pid, args, -1),
+            "setPriority" => verb_set_priority(pid, args),
+            "io.peek" => verb_io_peek(pid, args, state_dir()),
+            "limits.set" => verb_limits_set(pid, self.name == "self", args),
+            _ => unreachable!("verb_args lists every verb"),
+        }
+    }
+}
+
+fn verb_signal(pid: libc::pid_t, verb: &str, args: &Args) -> VerbResult {
+    let (name, num) = match verb {
+        "signal" => {
+            let sig = args.get("sig").ok_or_else(|| {
+                Fail::invalid("missing argument: sig=<name|number>; nothing was done")
+            })?;
+            parse_signal_arg(sig)?
+        }
+        "kill" => ("KILL".to_string(), libc::SIGKILL),
+        "term" => ("TERM".to_string(), libc::SIGTERM),
+        "int" => ("INT".to_string(), libc::SIGINT),
+        "hup" => ("HUP".to_string(), libc::SIGHUP),
+        "stop" => ("STOP".to_string(), libc::SIGSTOP),
+        "cont" => ("CONT".to_string(), libc::SIGCONT),
+        "usr1" => ("USR1".to_string(), libc::SIGUSR1),
+        "usr2" => ("USR2".to_string(), libc::SIGUSR2),
+        _ => unreachable!("signal verbs only"),
+    };
+    sys::kill(pid, num).map_err(|fail| {
+        let mut extra = Map::new();
+        extra.insert("signal".into(), json!(name));
+        extra.insert("signal_num".into(), json!(num));
+        Failure { fail, extra }
+    })?;
+    Ok(Output::Json(json!({
+        "pid": pid,
+        "verb": verb,
+        "signal": name,
+        "signal_num": num,
+        "ok": true
+    })))
+}
+
+fn verb_nice_set(pid: libc::pid_t, args: &Args) -> VerbResult {
+    let value = required_int(args, "value", -20, 19)? as i32;
+    let before = sys::get_nice(pid)?;
+    if before != value {
+        sys::set_nice(pid, value)?;
+    }
+    Ok(Output::Json(json!({
+        "pid": pid,
+        "nice": value,
+        "changed": before != value
+    })))
+}
+
+/// `nice.inc` (`sign` 1) and `nice.dec` (`sign` -1).
+fn verb_nice_delta(pid: libc::pid_t, args: &Args, sign: i32) -> VerbResult {
+    let delta = required_int(args, "delta", 0, 39)? as i32;
+    let before = sys::get_nice(pid)?;
+    let after = before + sign * delta;
+    if !(-20..=19).contains(&after) {
+        return Err(Fail::invalid(format!(
+            "the nice value would be {after} ({before} {} {delta}), outside -20..19; \
+             nothing was done",
+            if sign > 0 { "+" } else { "-" }
+        ))
+        .into());
+    }
+    if after != before {
+        sys::set_nice(pid, after)?;
+    }
+    Ok(Output::Json(json!({
+        "pid": pid,
+        "nice_before": before,
+        "nice_after": after,
+        "delta": delta,
+        "changed": after != before
+    })))
+}
+
+const CLASSES: &[(&str, i32)] = &[
+    ("idle", 19),
+    ("background", 10),
+    ("normal", 0),
+    ("high", -5),
+    ("realtime", -10),
+];
+
+fn verb_set_priority(pid: libc::pid_t, args: &Args) -> VerbResult {
+    let names: Vec<&str> = CLASSES.iter().map(|(n, _)| *n).collect();
+    let class = choice_arg(args, "class", &names, "normal")?;
+    let (nice, class) = match int_arg(args, "nice", -20, 19)? {
+        Some(n) => {
+            let n = n as i32;
+            let label = CLASSES
+                .iter()
+                .find(|(_, v)| *v == n)
+                .map_or("custom", |(c, _)| c);
+            (n, label)
+        }
+        None => (CLASSES.iter().find(|(c, _)| *c == class).unwrap().1, class),
+    };
+    let previous = sys::get_nice(pid)?;
+    if previous != nice {
+        sys::set_nice(pid, nice)?;
+    }
+    Ok(Output::Json(json!({
+        "pid": pid,
+        "class": class,
+        "nice": nice,
+        "previous_nice": previous,
+        "backend": "linux-setpriority"
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// io.peek
+// ---------------------------------------------------------------------------
+
+/// The base of the per-process log directories: `$XDG_STATE_HOME` or
+/// `~/.local/state`. Never a shared directory such as /tmp.
+fn state_dir() -> Option<PathBuf> {
+    dirs::state_dir()
+}
+
+/// One stream read by `io.peek`.
+struct StreamData {
+    encoding: &'static str,
+    auto_fallback: bool,
+    bytes_read: usize,
+    truncated: bool,
+    data: String,
+}
+
+impl StreamData {
+    fn json(&self) -> Map<String, Value> {
+        let mut m = Map::new();
+        m.insert("encoding".into(), json!(self.encoding));
+        m.insert("auto_fallback".into(), json!(self.auto_fallback));
+        m.insert("bytes_read".into(), json!(self.bytes_read));
+        m.insert("truncated".into(), json!(self.truncated));
+        m.insert("data".into(), json!(self.data));
+        m
+    }
+}
+
+fn verb_io_peek(pid: libc::pid_t, args: &Args, base: Option<PathBuf>) -> VerbResult {
+    let stream = choice_arg(args, "stream", &["stdout", "stderr", "both"], "stdout")?;
+    let max_bytes = int_arg(args, "max_bytes", 1, PEEK_LIMIT as i64)?.unwrap_or(4096) as u64;
+    let tail = int_arg(args, "tail", 1, PEEK_LIMIT as i64)?.map_or(max_bytes, |t| t as u64);
+    let encoding = choice_arg(args, "encoding", &["auto", "utf8", "base64"], "auto")?;
+    let json_mode = crate::core::lenient::bool_arg(args, "json")
+        .map_err(|e| Fail::invalid(format!("{e}; nothing was done")))?
+        .unwrap_or(true);
+    if !json_mode && stream != "stdout" {
+        return Err(Fail::invalid(
+            "json=false is allowed only with stream=stdout; nothing was done",
+        )
+        .into());
+    }
+    let base = base.ok_or_else(|| {
+        Fail::failed(
+            "failed",
+            "cannot determine the state directory (set XDG_STATE_HOME or HOME)",
+        )
+    })?;
+    let dir = base.join("resh").join("proc").join(pid.to_string());
+    let read =
+        |name: &str| read_log_file(&dir.join(format!("{name}.log")), max_bytes, tail, encoding);
+
+    if stream == "both" {
+        let mut streams = Map::new();
+        let mut first_fail = None;
+        for name in ["stdout", "stderr"] {
+            match read(name) {
+                Ok(d) => {
+                    streams.insert(name.into(), Value::Object(d.json()));
+                }
+                Err(f) => {
+                    streams.insert(name.into(), json!({"error": f.error_obj()}));
+                    first_fail.get_or_insert(f);
+                }
+            }
+        }
+        if let Some(fail) = first_fail {
+            let mut extra = Map::new();
+            extra.insert("streams".into(), Value::Object(streams));
+            return Err(Failure { fail, extra });
+        }
+        return Ok(Output::Json(json!({"pid": pid, "streams": streams})));
+    }
+
+    let d = read(stream)?;
+    if !json_mode {
+        return Ok(Output::Raw(d.data));
+    }
+    let mut obj = d.json();
+    obj.insert("pid".into(), json!(pid));
+    obj.insert("stream".into(), json!(stream));
+    Ok(Output::Json(Value::Object(obj)))
+}
+
+/// Reads the last `min(tail, max_bytes)` bytes of the regular file `path`.
+/// A FIFO or device is refused without blocking on it.
+fn read_log_file(
+    path: &Path,
+    max_bytes: u64,
+    tail: u64,
+    encoding: &str,
+) -> Result<StreamData, Fail> {
+    use base64::Engine as _;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path);
+    let mut file = match file {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Fail::failed(
+                "log_not_found",
+                format!("log file not found: {}", path.display()),
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Err(Fail::failed(
+                "permission_denied",
+                format!("cannot read {}: {e}", path.display()),
+            ));
+        }
+        Err(e) => {
+            return Err(Fail::failed(
+                "failed",
+                format!("cannot open {}: {e}", path.display()),
+            ));
+        }
+    };
+    let io_fail =
+        |e: std::io::Error| Fail::failed("failed", format!("cannot read {}: {e}", path.display()));
+    let meta = file.metadata().map_err(io_fail)?;
+    if !meta.is_file() {
+        return Err(Fail::failed(
+            "failed",
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    let len = meta.len();
+    let want = len.min(tail).min(max_bytes);
+    file.seek(SeekFrom::Start(len - want)).map_err(io_fail)?;
+    let mut buf = Vec::with_capacity(want as usize);
+    file.take(want).read_to_end(&mut buf).map_err(io_fail)?;
+    let truncated = (buf.len() as u64) < len;
+
+    let (encoding, auto_fallback, data) = match encoding {
+        "utf8" => ("utf8", false, String::from_utf8_lossy(&buf).into_owned()),
+        "base64" => (
+            "base64",
+            false,
+            base64::engine::general_purpose::STANDARD.encode(&buf),
+        ),
+        _ => match String::from_utf8(buf.clone()) {
+            Ok(s) => ("utf8", false, s),
+            Err(_) => (
+                "base64",
+                true,
+                base64::engine::general_purpose::STANDARD.encode(&buf),
+            ),
+        },
+    };
+    Ok(StreamData {
+        encoding,
+        auto_fallback,
+        bytes_read: buf.len(),
+        truncated,
+        data,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// limits.set
+// ---------------------------------------------------------------------------
+
+/// One side of a limit value: `None` keeps the current value.
+type Side = Option<u64>;
+
+/// Parses `<soft>[:<hard>]` for `resource`.
+fn parse_limit_spec(resource: &str, value: &str) -> Result<(Side, Side), Fail> {
+    let bad = |why: &str| {
+        Fail::invalid(format!(
+            "invalid value for {resource}: {value:?} ({why}); nothing was done"
+        ))
+    };
+    let (soft, hard) = match value.split_once(':') {
+        Some((s, h)) => (s, Some(h)),
+        None => (value, None),
+    };
+    let side = |s: &str| -> Result<Side, Fail> {
+        if s.is_empty() {
+            return Ok(None);
+        }
+        parse_single_limit(resource, s)
+            .map(Some)
+            .map_err(|why| bad(&why))
+    };
+    let soft_v = if hard.is_none() && soft.is_empty() {
+        return Err(bad("expected <soft>[:<hard>]"));
+    } else {
+        side(soft)?
+    };
+    let hard_v = match hard {
+        Some(h) => side(h)?,
+        None => None,
+    };
+    if soft_v.is_none() && hard_v.is_none() {
+        return Err(bad("give a soft limit, a hard limit or both"));
+    }
+    Ok((soft_v, hard_v))
+}
+
+/// A number, `unlimited`, `<n>s` (cpu only) or `<n>K|M|G` (powers of 1000).
+fn parse_single_limit(resource: &str, s: &str) -> Result<u64, String> {
+    if s == "unlimited" {
+        return Ok(sys::INFINITY);
+    }
+    let (digits, mult) = match s.as_bytes().last() {
+        Some(b's') if resource == "cpu" => (&s[..s.len() - 1], 1),
+        Some(b's') => return Err("the s suffix is for cpu only".to_string()),
+        Some(b'K') => (&s[..s.len() - 1], 1_000),
+        Some(b'M') => (&s[..s.len() - 1], 1_000_000),
+        Some(b'G') => (&s[..s.len() - 1], 1_000_000_000),
+        _ => (s, 1),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("expected a number, unlimited, or a number with a suffix".to_string());
+    }
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(mult))
+        .filter(|n| *n < sys::INFINITY)
+        .ok_or_else(|| "number too large (use unlimited)".to_string())
+}
+
+fn verb_limits_set(url_pid: libc::pid_t, url_is_self: bool, args: &Args) -> VerbResult {
+    // Everything is checked before any limit is read or changed.
+    let pid = match args.get("pid") {
+        None => url_pid,
+        Some(raw) => {
+            let p =
+                parse_pid(raw).map_err(|e| Fail::invalid(format!("pid: {e}; nothing was done")))?;
+            if !url_is_self && p != url_pid {
+                return Err(Fail::invalid(format!(
+                    "pid={p} disagrees with the target proc://{url_pid}; nothing was done"
+                ))
+                .into());
+            }
+            p
+        }
+    };
+    limits_set_for(pid, args).map_err(|mut f| {
+        f.extra.entry("pid").or_insert(json!(pid));
+        f
+    })
+}
+
+fn limits_set_for(pid: libc::pid_t, args: &Args) -> VerbResult {
+    let dry_run = crate::core::lenient::dry_run(args)
+        .map_err(|e| Fail::invalid(format!("{e}; nothing was done")))?;
+    let mut specs = Vec::new();
+    for name in RESOURCES {
+        if let Some(value) = args.get(*name) {
+            let res = sys::resource(name).ok_or_else(|| {
+                Fail::failed(
+                    "unsupported_platform",
+                    format!("{name} limits are not supported on this platform"),
+                )
+            })?;
+            specs.push((*name, res, value, parse_limit_spec(name, value)?));
+        }
+    }
+    if specs.is_empty() {
+        return Err(Fail::invalid(format!(
+            "no resource given: pass <resource>=<soft>[:<hard>] (resources: {}); \
+             nothing was done",
+            RESOURCES.join(", ")
+        ))
+        .into());
+    }
+
+    // Read the current limits and work out the new ones; still no change.
+    let mut plan = Vec::new();
+    for (name, res, value, (soft, hard)) in specs {
+        let (cur_soft, cur_hard) = sys::get_limit(pid, res)?;
+        let new_soft = soft.unwrap_or(cur_soft);
+        let new_hard = hard.unwrap_or(cur_hard);
+        if new_soft > new_hard {
+            return Err(Fail::invalid(format!(
+                "{name}: the soft limit ({}) would exceed the hard limit ({}); nothing was done",
+                show_limit(new_soft),
+                show_limit(new_hard)
+            ))
+            .into());
+        }
+        plan.push((name, res, value, (cur_soft, cur_hard), (new_soft, new_hard)));
+    }
+
+    let mut results = Map::new();
+    let mut failure: Option<Fail> = None;
+    for (name, res, value, before, after) in plan {
+        let changed = before != after;
+        let mut entry = json!({
+            "requested": value,
+            "before": {"soft": before.0, "hard": before.1},
+            "after": {"soft": after.0, "hard": after.1},
+            "changed": changed,
+            "status": "ok"
+        });
+        if failure.is_some() {
+            // Not attempted after an earlier failure.
+            entry["status"] = json!("skipped");
+            entry["after"] = entry["before"].clone();
+            entry["changed"] = json!(false);
+        } else if changed
+            && !dry_run
+            && let Err(f) = sys::set_limit(pid, res, after.0, after.1)
+        {
+            entry["status"] = json!("error");
+            entry["after"] = entry["before"].clone();
+            entry["changed"] = json!(false);
+            entry["error"] = f.error_obj();
+            failure = Some(f);
+        }
+        results.insert(name.to_string(), entry);
+    }
+
+    let mut out = Map::new();
+    out.insert("backend".into(), json!("prlimit"));
+    out.insert("dry_run".into(), json!(dry_run));
+    out.insert("results".into(), Value::Object(results));
+    out.insert("pid".into(), json!(pid));
+    match failure {
+        None => Ok(Output::Json(Value::Object(out))),
+        Some(fail) => Err(Failure { fail, extra: out }),
+    }
+}
+
+fn show_limit(v: u64) -> String {
+    if v == sys::INFINITY {
+        "unlimited".to_string()
+    } else {
+        v.to_string()
+    }
+}
+
+// ===========================================================================
+// Helper functions for help display
+// ===========================================================================
+
+/// Check if help should be displayed. Matches whole tokens only, so a verb
+/// or argument merely containing "-h" is not a help request.
+fn should_show_help(method: &str, args: &Args) -> bool {
+    method == "help"
+        || method == "h"
+        || crate::core::help::is_help_flag(method)
+        || args.contains_key("help")
+        || args.contains_key("h")
+}
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn numeric_signal_labels_follow_platform_numbering() {
-        for (num, name) in [
-            (libc::SIGHUP, "HUP"),
-            (libc::SIGKILL, "KILL"),
-            (libc::SIGUSR1, "USR1"),
-            (libc::SIGUSR2, "USR2"),
-            (libc::SIGTERM, "TERM"),
-            (libc::SIGCHLD, "CHLD"),
-            (libc::SIGCONT, "CONT"),
-            (libc::SIGSTOP, "STOP"),
-        ] {
-            assert_eq!(
-                parse_signal_arg(&num.to_string()).unwrap(),
-                (name.to_string(), num)
-            );
-        }
-        assert_eq!(
-            parse_signal_arg("999").unwrap(),
-            ("UNKNOWN".to_string(), 999)
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn numeric_signal_labels_linux() {
-        let label = |n: i32| parse_signal_arg(&n.to_string()).unwrap().0;
-        assert_eq!(label(10), "USR1");
-        assert_eq!(label(12), "USR2");
-        assert_eq!(label(17), "CHLD");
-        assert_eq!(label(18), "CONT");
-        assert_eq!(label(19), "STOP");
-        assert_eq!(label(20), "TSTP");
-        assert_eq!(label(16), "STKFLT");
-        assert_eq!(label(30), "PWR");
-        assert_eq!(label(31), "SYS");
-    }
-
-    #[test]
-    fn named_signals_round_trip() {
-        assert_eq!(
-            parse_signal_arg("sigusr1").unwrap(),
-            ("USR1".to_string(), libc::SIGUSR1)
-        );
-        assert_eq!(
-            parse_signal_arg("TERM").unwrap(),
-            ("TERM".to_string(), libc::SIGTERM)
-        );
-        assert!(parse_signal_arg("bogus").is_err());
-    }
-
-    #[test]
-    fn help_detection_is_exact() {
-        let none = Args::new();
-        assert!(should_show_help("help", &none));
-        assert!(should_show_help("--help", &none));
-        assert!(should_show_help("-h", &none));
-        assert!(!should_show_help("signal", &none));
-        assert!(!should_show_help("pre-hotfix", &none));
-        assert!(!should_show_help("x-help", &none));
-        let mut a = Args::new();
-        a.insert("help".into(), "1".into());
-        assert!(should_show_help("signal", &a));
-    }
-
-    #[test]
-    fn help_url_forms_and_rendering() {
-        let h = ProcHandle::from_url(&Url::parse("proc://--help").unwrap()).unwrap();
-        let out = crate::core::help::render_legacy("proc", &PROC_HELP, h.verbs(), None);
-        assert!(out.starts_with("Handle: proc"), "{out}");
-        assert!(ProcHandle::from_url(&Url::parse("proc://my-hosts").unwrap()).is_err());
-    }
-
-    // SEC-03: no PID may wrap into 0 or a negative pid_t on its way to kill().
-    // These tests only parse; no signal is ever sent.
-    #[test]
-    fn pid_parsing_rejects_out_of_range_values() {
-        assert_eq!(parse_pid("1").unwrap(), 1);
-        assert_eq!(parse_pid("4242").unwrap(), 4242);
-        assert_eq!(
-            parse_pid(&libc::pid_t::MAX.to_string()).unwrap(),
-            libc::pid_t::MAX
-        );
-        for bad in [
-            "0",
-            "-1",
-            "-4242",
-            "2147483648",
-            "4294967295",
-            "4294967296",
-            "18446744073709551615",
-            "18446744073709551616",
-            "99999999999999999999999",
-            "",
-            "12a",
-            "0x10",
-            "1.5",
-            " 1",
-        ] {
-            assert!(parse_pid(bad).is_err(), "{bad:?} must be rejected");
-        }
-    }
-
-    #[test]
-    fn proc_url_rejects_wrapping_pids() {
-        for url in [
-            "proc://4294967295",
-            "proc://2147483648",
-            "proc://0",
-            "proc://-1",
-        ] {
-            assert!(
-                ProcHandle::from_url(&Url::parse(url).unwrap()).is_err(),
-                "{url}"
-            );
-        }
-        let h = ProcHandle::from_url(&Url::parse("proc://2147483647").unwrap()).unwrap();
-        assert_eq!(h.resolve_pid().unwrap(), 2147483647);
-        let h = ProcHandle::from_url(&Url::parse("proc://self").unwrap()).unwrap();
-        assert_eq!(h.resolve_pid().unwrap() as u32, std::process::id());
-    }
-
-    #[test]
-    fn resolve_pid_rechecks_range_without_from_url() {
-        // A handle built without from_url must still never yield -1.
-        let h = ProcHandle {
-            name: "4294967295".to_string(),
-        };
-        assert!(h.resolve_pid().is_err());
-        let h = ProcHandle {
-            name: "0".to_string(),
-        };
-        assert!(h.resolve_pid().is_err());
-    }
-
-    #[test]
-    fn kill_stage_with_wrapping_pid_fails_before_dispatch() {
-        let p = crate::core::parse::parse_stage("proc://4294967295.kill").unwrap();
-        assert_eq!(p.verb, "kill");
-        let url = Url::parse(&p.target).unwrap();
-        assert!(ProcHandle::from_url(&url).is_err());
-    }
-}
+#[path = "proch_tests.rs"]
+mod tests;

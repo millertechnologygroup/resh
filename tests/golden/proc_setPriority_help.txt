@@ -1,0 +1,24 @@
+Handle: proc
+Verb: setPriority
+Definition: Sets the nice value of a process from a named priority class or an
+  explicit nice value.
+
+Usage:
+  resh proc://<pid|self>.setPriority
+    [class=idle|background|normal|high|realtime] [nice=<-20..19>]
+
+Example:
+  resh --json-pretty proc://1234.setPriority class=background
+
+Example Output:
+  {
+    "backend": "linux-setpriority",
+    "class": "background",
+    "nice": 10,
+    "pid": 1234,
+    "previous_nice": 0
+  }
+
+  Shown with --json-pretty. Classes map to nice values idle=19,
+  background=10, normal=0 (the default), high=-5, and realtime=-10;
+  nice overrides class. No real-time scheduling policy is set.

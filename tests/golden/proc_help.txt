@@ -1,0 +1,40 @@
+Handle: proc
+
+Description:
+  The proc handle sends signals to a running process, reads and changes its nice
+  value through getpriority and setpriority, sets its resource limits through
+  prlimit, and reads output logs kept for it in the resh state directory. The
+  target is a numeric process ID or self (the resh process itself), such as
+  proc://1234.
+
+Available Verbs:
+  nice.get      Reports the current nice value of a process.
+  io.peek       Reads the tail of a process's stdout or stderr log from
+                resh/proc/<pid>/ in the state directory ($XDG_STATE_HOME or
+                ~/.local/state), which nothing in resh writes.
+  signal        Sends a signal, given by name or number, to a process.
+  term          Sends SIGTERM to a process to request graceful termination.
+  int           Sends SIGINT to a process, like pressing Ctrl+C.
+  hup           Sends SIGHUP to a process, which many daemons treat as a reload
+                request.
+  kill          Sends SIGKILL to a process to terminate it immediately.
+  stop          Sends SIGSTOP to a process to pause it.
+  cont          Sends SIGCONT to a process to resume it after a stop.
+  usr1          Sends SIGUSR1 to a process.
+  usr2          Sends SIGUSR2 to a process.
+  nice.set      Sets the nice value of a process to an exact value from -20 to
+                19.
+  nice.inc      Raises the nice value of a process by a delta, lowering its
+                priority.
+  nice.dec      Lowers the nice value of a process by a delta, raising its
+                priority.
+  setPriority   Sets the nice value of a process from a named priority class or
+                an explicit nice value.
+  limits.set    Sets the soft and hard resource limits of a process through
+                prlimit.
+
+Usage:
+  resh proc://<pid|self>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh proc <verb> --help

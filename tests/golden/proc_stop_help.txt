@@ -1,0 +1,20 @@
+Handle: proc
+Verb: stop
+Definition: Sends SIGSTOP to a process to pause it.
+
+Usage:
+  resh proc://<pid|self>.stop
+
+Example:
+  resh --json-pretty proc://1234.stop
+
+Example Output:
+  {
+    "ok": true,
+    "pid": 1234,
+    "signal": "STOP",
+    "signal_num": 19,
+    "verb": "stop"
+  }
+
+  Shown for Linux with --json-pretty.

@@ -1,0 +1,20 @@
+Handle: proc
+Verb: int
+Definition: Sends SIGINT to a process, like pressing Ctrl+C.
+
+Usage:
+  resh proc://<pid|self>.int
+
+Example:
+  resh --json-pretty proc://1234.int
+
+Example Output:
+  {
+    "ok": true,
+    "pid": 1234,
+    "signal": "INT",
+    "signal_num": 2,
+    "verb": "int"
+  }
+
+  Shown with --json-pretty.
