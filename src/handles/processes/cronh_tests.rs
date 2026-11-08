@@ -34,6 +34,8 @@ struct State {
     crontab_version: Option<String>,
     no_crontab: bool,
     no_systemctl: bool,
+    /// systemctl exists but systemd is not the running init (a container).
+    not_booted: bool,
     /// "user" / "system": that service manager does not answer.
     managers_down: HashSet<String>,
     /// (scope, timer name) -> state
@@ -285,6 +287,10 @@ impl CronHost for MockHost {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("could not read {path}: No such file"))
     }
+    fn systemd_booted(&self) -> bool {
+        !self.state().not_booted
+    }
+
     fn command_runs(&self, program: &str, _: &str) -> bool {
         let st = self.state();
         match program {
@@ -1990,6 +1996,35 @@ fn add_refuses_options_of_the_other_backend() {
     );
     let st = host.state();
     assert_eq!(st.crontab_writes, 0);
+}
+
+#[test]
+fn auto_backend_needs_a_running_systemd_not_just_systemctl() {
+    // A container with a systemctl binary but no systemd as init: auto must
+    // use cron, and an explicit systemd backend is unavailable.
+    let (h, host) = setup(CRONIE);
+    host.state().not_booted = true;
+    let o = run(
+        &h,
+        "add",
+        &[
+            ("schedule", "0 2 * * *"),
+            ("command", "/x"),
+            ("dry_run", "1"),
+        ],
+    );
+    assert_eq!(o.ok()["backend_used"], "cron");
+    run(
+        &h,
+        "add",
+        &[
+            ("schedule", "0 2 * * *"),
+            ("command", "/x"),
+            ("backend", "systemd"),
+            ("dry_run", "1"),
+        ],
+    )
+    .fails(1, "cron.add_backend_unavailable");
 }
 
 #[test]

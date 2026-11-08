@@ -2105,6 +2105,12 @@ pub trait CronHost: std::fmt::Debug + Send + Sync {
     fn read_file(&self, path: &str) -> Result<String>;
     /// Whether `program arg` can be run (backend availability).
     fn command_runs(&self, program: &str, arg: &str) -> bool;
+    /// Whether systemd is the running init system (sd_booted(3): the
+    /// directory /run/systemd/system exists). A systemctl binary alone, as in
+    /// many containers, does not make the systemd backend usable.
+    fn systemd_booted(&self) -> bool {
+        true
+    }
     /// What `crontab -V` prints when it succeeds. cronie's crontab prints its
     /// package string (`cronie 1.7.2`); Debian/vixie and busybox crontab have
     /// no `-V` and fail with a usage message, giving `None`.
@@ -2333,6 +2339,10 @@ impl CronHost for SystemCronHost {
 
     fn command_runs(&self, program: &str, arg: &str) -> bool {
         run_tool(Command::new(program).arg(arg)).is_ok()
+    }
+
+    fn systemd_booted(&self) -> bool {
+        std::path::Path::new("/run/systemd/system").is_dir()
     }
 
     fn crontab_version(&self) -> Option<String> {
@@ -5530,14 +5540,15 @@ fn systemd_trigger(options: &CronAddOptions) -> Result<TimerTrigger, String> {
 }
 
 /// The backend `add` uses: `cron` or `systemd` when available, and for
-/// `auto` systemd whenever systemctl runs, cron otherwise.
+/// `auto` systemd when systemctl runs and systemd is the running init system,
+/// cron otherwise.
 fn choose_backend(
     host: &dyn CronHost,
     requested: &str,
     warnings: &mut Vec<String>,
 ) -> Result<String> {
     let crontab = || host.command_runs("crontab", "-V");
-    let systemctl = || host.command_runs("systemctl", "--version");
+    let systemctl = || host.systemd_booted() && host.command_runs("systemctl", "--version");
     match requested {
         "cron" if crontab() => Ok("cron".into()),
         "cron" => Err(anyhow::anyhow!(
@@ -5545,7 +5556,7 @@ fn choose_backend(
         )),
         "systemd" if systemctl() => Ok("systemd".into()),
         "systemd" => Err(anyhow::anyhow!(
-            "systemd backend requested but systemctl is not available"
+            "systemd backend requested but systemd is not running (or systemctl is not available)"
         )),
         _ if systemctl() => Ok("systemd".into()),
         _ if crontab() => {
