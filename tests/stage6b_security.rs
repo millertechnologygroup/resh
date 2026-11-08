@@ -496,8 +496,8 @@ fn backup_prune_dry_run_for_local_backends_changes_nothing() {
     assert_eq!(f.artifacts(), before);
 }
 
-/// A failed backend is never reported as success. Its exit code is passed
-/// through (documented in backup.md 3.2), and the JSON names it.
+/// A failed backend is never reported as success: resh exits 1 and the
+/// backend's own exit code is in the JSON (documented in backup.md 3.2).
 #[test]
 fn backup_backend_failure_is_a_failure() {
     let f = Fixture::new();
@@ -508,9 +508,10 @@ fn backup_backend_failure_is_a_failure() {
         .arg("backup://db.create")
         .arg("src=/etc")
         .args(backend_args("tar", &repo)));
-    assert_eq!(r.code, 2, "{}", r.stdout);
+    assert_eq!(r.code, 1, "{}", r.stdout);
     assert_eq!(r.json["ok"], false);
     assert_eq!(r.json["error"]["kind"], "BACKEND_FAILED");
+    assert_eq!(r.json["error"]["code"], "backup.backend_failed");
     assert_eq!(r.json["error"]["details"]["exit_code"], 2);
 }
 
