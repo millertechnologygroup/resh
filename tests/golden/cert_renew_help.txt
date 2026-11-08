@@ -1,0 +1,61 @@
+Handle: cert
+Verb: renew
+Definition: Issues a replacement for an existing certificate with the same
+  subject, SANs, and extensions, signed by signer_ca and signer_key or
+  self-signed, reusing the existing key or generating a new one, and reports the
+  new certificate's real details.
+
+Usage:
+  resh cert://<cert-path>.renew
+    [renewal_mode=auto|self_signed|explicit_signer] [signer_ca=<path>]
+    [signer_key=<path>] [signer_key_passphrase=<pass>]
+    [key_strategy=reuse|rekey] [existing_key_path=<path>]
+    [key_passphrase=<pass>] [algorithm=rsa|ecdsa|ed25519]
+    [rsa_bits=2048|3072|4096] [ecdsa_curve=P-256|P-384]
+    [key_format=pkcs8|pkcs1|sec1] [key_encoding=pem|der]
+    [key_kdf=pbkdf2] [key_kdf_iterations=<n>]
+    [new_key_output_path=<path>] [new_cert_output_path=<path>]
+    [cert_encoding=pem|der] [copy_subject=true|false]
+    [subject_override=<json>] [copy_sans=true|false]
+    [sans_override=<list>] [copy_key_usage=true|false]
+    [key_usage_override=<list>] [copy_extended_key_usage=true|false]
+    [extended_key_usage_override=<list>] [is_ca=true|false]
+    [path_len=<n>] [not_before=now|carry_over_start|<rfc3339>]
+    [not_after=<rfc3339>] [not_after_offset_days=<n>]
+    [include_cert_pem=true|false] [include_new_key_pem=true|false]
+    [overwrite=true|false] [format=json|text] [timeout_ms=<ms>]
+
+Example:
+  resh cert://./server.pem.renew format=text
+
+Example Output:
+  Old certificate: ./server.pem
+  New certificate: ./server-renewed.pem
+  Renewal mode: auto
+  Key strategy: reuse (reused existing)
+
+  Old Subject: CN=Example CA
+  New Subject: CN=Example CA
+  New Issuer: CN=Example CA
+  New Serial: 3EE388C46643ADB4F8B6111A9846AF57
+  New SHA256: 37:55:D5:8C:DC:F4:76:2F:...:AA:D0:22:A6:7C:19:CD:10
+
+  Old Validity:
+    Not Before: 2026-11-08T11:33:38+00:00
+    Not After : 2027-11-08T11:33:38+00:00
+
+  New Validity:
+    Not Before: 2026-11-08T11:33:39+00:00
+    Not After : 2027-11-08T11:33:39+00:00
+
+  Signer:
+    self-signed
+
+  Warnings:
+    (none)
+
+  Shown for a self-signed certificate with the default key_strategy=reuse,
+  which signs with the key in existing_key_path (default <name>-key.pem;
+  key_passphrase if it is encrypted). A CA-signed certificate needs
+  signer_ca and signer_key; with reuse and no key file, its public key is
+  reused. key_strategy=rekey saves the new key as <name>-renewed-key.pem.

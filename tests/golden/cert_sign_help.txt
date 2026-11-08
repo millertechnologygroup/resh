@@ -1,0 +1,62 @@
+Handle: cert
+Verb: sign
+Definition: Signs a file or base64 data with a private key, as a raw signature
+  or, with signature_format=cms_detached|cms_attached and the key's signer_cert,
+  as a CMS SignedData, or with mode=csr issues a certificate for a CSR signed by
+  the CA in signer_cert and signer_key, using the target only as the signer
+  label in the output.
+
+Usage:
+  resh cert://<label>.sign [mode=data] signer_key=<path>
+    [signer_key_passphrase=<pass>] data_source=<path>
+    (or data_bytes_base64=<b64>) [signature_output_path=<path>]
+    [signature_algorithm=<alg>] [signature_encoding=base64|pem|der]
+    [signature_format=raw|cms_detached|cms_attached signer_cert=<path>]
+    [include_signature_bytes=true|false]
+    resh cert://<label>.sign mode=csr signer_key=<path> csr_source=<path>
+    signer_cert=<path> cert_output_path=<path> [csr_encoding=auto|pem|der]
+    [cert_encoding=pem|der] [not_before=now|<rfc3339>]
+    [not_after=<rfc3339>] [not_after_offset_days=<n>]
+    [is_ca=true|false] [path_len=<n>] [key_usage=<list>]
+    [extended_key_usage=<list>] [sans_override=<list>]
+    [include_cert_pem=true|false]
+    both modes: [overwrite=true|false] [format=json|text]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty cert://./ca.sign signer_key=ca-key.pem data_source=app.tar
+
+Example Output:
+  {
+    "algorithm": "EcdsaSha256",
+    "cert": null,
+    "cert_pem": null,
+    "csr_source": null,
+    "csr_subject": null,
+    "data": {
+      "length_bytes": 20480,
+      "source": "app.tar"
+    },
+    "mode": "data",
+    "ok": true,
+    "signature": {
+      "bytes_base64": null,
+      "stored_at": null
+    },
+    "signature_encoding": "Base64",
+    "signature_format": "Raw",
+    "signer": "./ca",
+    "signer_cert": null,
+    "signer_key": "ca-key.pem",
+    "warnings": [
+      "Signature not kept (no signature_output_path, include_signature_bytes)"
+    ]
+  }
+
+  Shown for a P-256 signer key with --json-pretty. Pass
+  signature_output_path or include_signature_bytes=true to keep the
+  signature. signature_format=cms_detached or cms_attached needs
+  signer_cert, the certificate of signer_key, and produces a CMS SignedData
+  (RFC 5652) as a DER ContentInfo encoded with signature_encoding (PEM
+  label CMS). With mode=csr the CSR signature is verified and the
+  certificate keeps the CSR subject, SANs, and public key.

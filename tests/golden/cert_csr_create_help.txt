@@ -1,0 +1,64 @@
+Handle: cert
+Verb: csr.create
+Definition: Creates a certificate signing request at the target path, signed
+  with an existing key (encrypted keys need existing_key_passphrase) or with a
+  newly generated key that it also saves, requesting the SANs, key usage and
+  extended key usage given.
+
+Usage:
+  resh cert://<csr-path>.csr.create subject=<json>
+    [key_strategy=reuse|generate] [existing_key_path=<path>]
+    [existing_key_passphrase=<pass>] [new_key_output_path=<path>]
+    [new_key_passphrase=<pass>] [algorithm=rsa|ecdsa|ed25519]
+    [rsa_bits=2048|3072|4096] [ecdsa_curve=P-256|P-384]
+    [key_format=pkcs8|pkcs1|sec1] [key_encoding=pem|der]
+    [key_kdf=pbkdf2] [key_kdf_iterations=<n>] [csr_encoding=pem|der]
+    [sans=<json-array>] [key_usage=<list>] [extended_key_usage=<list>]
+    [include_csr_pem=true|false] [include_new_key_pem=true|false]
+    [overwrite=true|false] [format=json|text] [timeout_ms=<ms>]
+
+Example:
+  resh cert://web.csr.create existing_key_path=k subject='{"common_name":"web"}'
+
+Example Output:
+  {
+    "csr": {
+      "encoding": "pem",
+      "extended_key_usage": [],
+      "fingerprints": {
+        "sha256": "89:D5:8E:CC:...:39:FA:9A:97"
+      },
+      "key_usage": [],
+      "path": "web",
+      "sans": [],
+      "subject": {
+        "common_name": "web",
+        "raw_dn": "CN=web"
+      }
+    },
+    "csr_target": "web",
+    "key": {
+      "algorithm": "ecdsa",
+      "ecdsa_curve": "P-256",
+      "encoding": "pem",
+      "encrypted": false,
+      "key_format": "pkcs8",
+      "path": "k",
+      "reused": true,
+      "rsa_bits": null
+    },
+    "key_strategy": "reuse",
+    "ok": true,
+    "returned": {
+      "csr_der_base64": null,
+      "csr_pem": null,
+      "new_key_der_base64": null,
+      "new_key_pem": null
+    },
+    "warnings": []
+  }
+
+  Shown for an existing P-256 key in k. The CSR is written to the target
+  path exactly. The algorithm is read from the key; algorithm= only checks
+  it. key_usage and extended_key_usage take names such as digitalSignature
+  or serverAuth, as a JSON array or comma list.

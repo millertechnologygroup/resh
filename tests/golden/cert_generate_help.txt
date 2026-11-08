@@ -1,0 +1,63 @@
+Handle: cert
+Verb: generate
+Definition: Generates a private key, a self-signed certificate, a CA-signed leaf
+  certificate, or a CSR and writes it beside the target path as <target>-key.pem
+  (mode 0600, encrypted PKCS#8 with key_passphrase), <target>.pem, or
+  <target>.csr.
+
+Usage:
+  resh cert://<base-path>.generate [mode=key|self_signed|csr|leaf_cert]
+    [algorithm=rsa|ecdsa|ed25519] [rsa_bits=2048|3072|4096]
+    [ecdsa_curve=P-256|P-384] [subject=<json>] [sans=<json-array>]
+    [is_ca=true|false] [path_len=<n>] [not_before=now|<rfc3339>]
+    [not_after=<rfc3339>] [not_after_offset_days=<n>]
+    [signer_ca=<path>] [signer_key=<path>] [signer_key_passphrase=<pass>]
+    [key_format=pkcs8|pkcs1|sec1] [key_encoding=pem|der]
+    [cert_encoding=pem|der] [csr_encoding=pem|der]
+    [key_passphrase=<pass>] [key_kdf=pbkdf2] [key_kdf_iterations=<n>]
+    [output=<json>] [overwrite=true|false] [format=json|text]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty cert://./server.generate mode=key algorithm=ecdsa
+
+Example Output:
+  {
+    "algorithm": "ecdsa",
+    "certificate": null,
+    "csr": null,
+    "ecdsa_curve": "P256",
+    "encodings": {
+      "cert": "pem",
+      "csr": "pem",
+      "key": "pem"
+    },
+    "is_ca": false,
+    "key": {
+      "encrypted": false,
+      "key_format": "pkcs8",
+      "stored_at": "./server-key.pem"
+    },
+    "mode": "key",
+    "ok": true,
+    "path_len": null,
+    "returned": {
+      "cert_der_base64": null,
+      "cert_pem": null,
+      "csr_der_base64": null,
+      "csr_pem": null,
+      "key_der_base64": null,
+      "key_pem": null
+    },
+    "rsa_bits": null,
+    "sans": [],
+    "subject": null,
+    "target": "./server",
+    "validity": null,
+    "warnings": []
+  }
+
+  Shown with --json-pretty. mode=leaf_cert needs signer_ca and signer_key
+  (signer_key_passphrase for an encrypted CA key). key_passphrase writes an
+  encrypted PKCS#8 key (PBKDF2-HMAC-SHA256, AES-256-CBC). Default
+  timeout_ms is 300000; at the deadline nothing is written (exit 124).

@@ -4034,6 +4034,7 @@ dependencies = [
  "ring 0.17.14",
  "rsa",
  "rustls",
+ "rustls-webpki",
  "scopeguard",
  "sec1",
  "serde",

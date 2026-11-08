@@ -153,7 +153,7 @@ fn cms_attached_from_the_binary_verifies_with_openssl() {
 }
 
 #[test]
-fn cms_without_signer_cert_fails_with_invalid_options() {
+fn cms_without_signer_cert_fails_with_invalid_argument() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("data.bin"), b"x").unwrap();
     // The options are rejected before the key is read, so no key is needed.
@@ -166,11 +166,11 @@ fn cms_without_signer_cert_fails_with_invalid_options() {
             "signature_output_path=sig.der",
         ])
         .assert()
-        .code(1)
+        .code(2)
         .get_output()
         .stdout
         .clone();
     let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(json["error"]["code"], "cert.invalid_options");
+    assert_eq!(json["error"]["code"], "cert.invalid_argument");
     assert!(!tmp.path().join("sig.der").exists());
 }

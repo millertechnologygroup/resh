@@ -1,0 +1,68 @@
+Handle: cert
+Verb: info
+Definition: Reads a PEM or DER file holding certificates, a CSR, or a private
+  key and reports, for each object, its type, serial number, subject, issuer,
+  validity, public key, extensions, and fingerprints.
+
+Usage:
+  resh cert://<path>.info [format=json|text] [encoding=auto|pem|der]
+    [fingerprint_algs=sha1,sha256,sha384,sha512] [include_pem=true|false]
+    [include_raw=true|false]
+
+Example:
+  resh --json-pretty cert://./server.pem.info
+
+Example Output:
+  {
+    "encoding": "pem",
+    "objects": [
+      {
+        "extensions": {
+          "authority_key_id": "85:AB:5E:DA:...:CF:16:F3:3C",
+          "basic_constraints": {
+            "ca": false,
+            "critical": true,
+            "path_len": null
+          },
+          "extended_key_usage": [],
+          "key_usage": [],
+          "subject_alt_names": [
+            "DNS:web.test"
+          ],
+          "subject_key_id": "85:D3:F5:24:...:D7:B8:5A:F0"
+        },
+        "fingerprints": {
+          "sha256": "A1:D8:59:5D:...:31:BC:FD:1A"
+        },
+        "is_ca": false,
+        "issuer": {
+          "common_name": "Example CA",
+          "raw_dn": "CN=Example CA"
+        },
+        "kind": "certificate",
+        "public_key": {
+          "algorithm": "ECDSA",
+          "curve": "P-256",
+          "key_size": 256
+        },
+        "serial_number": "7C0906C15584DDC109D5A214E2944D94",
+        "subject": {
+          "common_name": "web.test",
+          "raw_dn": "CN=web.test"
+        },
+        "validity": {
+          "is_currently_valid": true,
+          "not_after": "2027-11-08T11:33:38+00:00",
+          "not_before": "2026-11-08T11:33:38+00:00"
+        },
+        "version": 2
+      }
+    ],
+    "type": "certificate"
+  }
+
+  Shown for a CA-signed PEM certificate with --json-pretty. version is
+  zero-based (2 means X.509 v3). A bundle reports type certificatechain with
+  one object per certificate; a CSR, private key (also an encrypted one) or
+  public key reports kind csr, private_key or public_key. Fingerprints are
+  digests of the whole DER certificate.

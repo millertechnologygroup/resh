@@ -1,0 +1,13 @@
+Handle: cert
+Verb: csr.sign
+Definition: Cannot be run from the command line, because
+  cert://<target>.csr.sign is parsed as the sign verb; programmatic callers get
+  the same certificate issuing as sign with mode=csr, which is the command to
+  use instead.
+
+Usage:
+  resh cert://<target>.csr.sign
+    (runs the sign verb with target <target>.csr; see the example)
+
+Example:
+  resh cert sign --help

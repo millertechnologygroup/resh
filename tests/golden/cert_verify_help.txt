@@ -1,0 +1,60 @@
+Handle: cert
+Verb: verify
+Definition: Checks a certificate's structure, its chain to a trust anchor
+  (validated by rustls-webpki), validity period, hostname, purpose, and private
+  key against a policy, and reports each check as passed, failed, skipped,
+  not_checked, or unsupported; exits 1 if any check fails.
+
+Usage:
+  resh cert://<path>.verify [hostname=<name>]
+    [purpose=server_auth|client_auth|code_signing|email_protection|any]
+    [trust=system|mount|inline] [trust_paths=<path>,...] [ca_file=<pem>]
+    [trust_pem=<pem>] [max_chain_depth=<n>] [min_rsa_bits=<n>]
+    [allow_self_signed=true|false] [allow_expired=true|false]
+    [allow_not_yet_valid=true|false] [check_revocation=none|soft|hard]
+    [keypair_target=<key-path>] [disallow_weak_signatures=true|false]
+    [include_chain_report=true|false] [encoding=auto|pem|der]
+    [format=json|text]
+
+Example:
+  resh cert://./web.pem.verify trust_paths=ca.pem hostname=web.test format=text
+
+Example Output:
+  Target: cert://./web.pem
+  Type: certificate (pem)
+  Overall: OK
+
+  [STRUCTURE]
+    OK: Certificate parsed (X.509 v3, ecdsa-with-SHA256, ecdsa 256-bit key)
+
+  [CHAIN]
+    OK: Chain of 2 certificate(s) verified to trust anchor CN=Example CA
+
+  [TIME]
+    OK: Certificate is currently valid
+
+  [HOSTNAME]
+    OK: Hostname web.test matches DNS SAN web.test
+
+  [USAGE]
+    SKIPPED: No purpose requested (purpose=any)
+
+  [KEYPAIR]
+    SKIPPED: No keypair_target specified
+
+  [REVOCATION]
+    SKIPPED: Revocation checking disabled (check_revocation=none)
+
+  [Chain Report]
+    0: CN=web.test
+    1: CN=Example CA (TRUSTED)
+
+  Warnings:
+    Revocation not checked (check_revocation=none)
+
+  Shown for a leaf issued by the CA in ca.pem. The first certificate in the
+  file is verified and any others are used as intermediates. The default
+  trust=system uses the system CA bundle; trust_paths, ca_file and trust_pem
+  add anchors. Chains use RSA 2048-8192 bits, ECDSA P-256/P-384 or Ed25519
+  (SHA-1 is never accepted). Revocation is not implemented: soft reports
+  not_checked and hard fails. format=json adds a status field per check.

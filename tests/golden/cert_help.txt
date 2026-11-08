@@ -1,0 +1,55 @@
+Handle: cert
+
+Description:
+  The cert handle inspects and manages X.509 certificates, private keys, and
+  certificate signing requests stored as PEM or DER files, using pure Rust
+  crypto libraries (x509-parser, rcgen, ring, rustls-webpki, rsa, p256, p384,
+  ed25519-dalek) with no OpenSSL dependency. It covers inspection, verification,
+  chain analysis, key and certificate generation, CSR creation, signing, and
+  renewal. The target is a file path, written as
+  cert:///etc/ssl/certs/server.pem for an absolute path or cert://./server.pem
+  for a relative one.
+
+Available Verbs:
+  info         Reads a PEM or DER file holding certificates, a CSR, or a private
+               key and reports, for each object, its type, serial number,
+               subject, issuer, validity, public key, extensions, and
+               fingerprints.
+  verify       Checks a certificate's structure, its chain to a trust anchor
+               (validated by rustls-webpki), validity period, hostname, purpose,
+               and private key against a policy, and reports each check as
+               passed, failed, skipped, not_checked, or unsupported; exits 1 if
+               any check fails.
+  chain.info   Parses a certificate bundle, finds its leaf certificates, and
+               reports every chain from each leaf through the bundle and the
+               trust anchors, linking issuers by name and signature; a chain is
+               trusted only when rustls-webpki validates it to an anchor.
+  generate     Generates a private key, a self-signed certificate, a CA-signed
+               leaf certificate, or a CSR and writes it beside the target path
+               as <target>-key.pem (mode 0600, encrypted PKCS#8 with
+               key_passphrase), <target>.pem, or <target>.csr.
+  csr.create   Creates a certificate signing request at the target path, signed
+               with an existing key (encrypted keys need
+               existing_key_passphrase) or with a newly generated key that it
+               also saves, requesting the SANs, key usage and extended key usage
+               given.
+  sign         Signs a file or base64 data with a private key, as a raw
+               signature or, with signature_format=cms_detached|cms_attached and
+               the key's signer_cert, as a CMS SignedData, or with mode=csr
+               issues a certificate for a CSR signed by the CA in signer_cert
+               and signer_key, using the target only as the signer label in the
+               output.
+  csr.sign     Cannot be run from the command line, because
+               cert://<target>.csr.sign is parsed as the sign verb; programmatic
+               callers get the same certificate issuing as sign with mode=csr,
+               which is the command to use instead.
+  renew        Issues a replacement for an existing certificate with the same
+               subject, SANs, and extensions, signed by signer_ca and signer_key
+               or self-signed, reusing the existing key or generating a new one,
+               and reports the new certificate's real details.
+
+Usage:
+  resh cert://<file-path>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh cert <verb> --help

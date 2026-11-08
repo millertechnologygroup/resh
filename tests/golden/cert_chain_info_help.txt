@@ -1,0 +1,45 @@
+Handle: cert
+Verb: chain.info
+Definition: Parses a certificate bundle, finds its leaf certificates, and
+  reports every chain from each leaf through the bundle and the trust anchors,
+  linking issuers by name and signature; a chain is trusted only when
+  rustls-webpki validates it to an anchor.
+
+Usage:
+  resh cert://<bundle-path>.chain.info
+    [trust=none|system|mount|inline|system+mount|system+inline|mount+inline]
+    [trust_paths=<path>,...] [ca_file=<pem>] [trust_pem=<pem>]
+    [max_depth=<n>] [max_paths=<n>] [include_raw_subjects=true|false]
+    [include_raw_issuers=true|false] [include_cert_refs=true|false]
+    [encoding=auto|pem|der] [format=json|text]
+
+Example:
+  resh cert://./bundle.pem.chain.info trust_paths=ca.pem format=text
+
+Example Output:
+  Target: cert://./bundle.pem
+  Encoding: pem
+  Trust anchors loaded: 1
+
+  Leaf Candidates:
+    [0] CN=web.test
+
+  Chain 0 (length=2)
+    Trust Status : trusted
+    Reason       : Validated to trust anchor CN=Example CA (mount)
+    [0] Leaf (target_bundle)
+        Subject : CN=web.test
+        Issuer  : CN=Example CA
+        Key     : ECDSA P-256
+    [1] Root (target_bundle, trust anchor)
+        Subject : CN=Example CA
+        Issuer  : CN=Example CA
+        Key     : ECDSA P-256, CA
+
+  Warnings:
+    (none)
+
+  Shown for bundle.pem holding web.pem and ca.pem. trust_status is trusted,
+  invalid (ends at an anchor but fails validation), untrusted_root,
+  self_signed_untrusted or incomplete. The default trust=none uses only
+  trust_paths, ca_file and trust_pem as anchors.
