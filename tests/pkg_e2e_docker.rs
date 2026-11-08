@@ -200,6 +200,15 @@ fn cycle(c: &Container, small: &str, big: &str) -> Value {
     let r = c.resh("info", json!({"packages": [small]}));
     let info = &r.ok()["packages"][0];
     assert_eq!(info["installed"], true, "{info}");
+    if c.manager == "apt" {
+        // suite/component as in snapshot; the URL separately.
+        let repo = info["repository"].as_str().unwrap();
+        assert!(repo.contains('/'), "{info}");
+        assert!(
+            info["repository_url"].as_str().unwrap().starts_with("http"),
+            "{info}"
+        );
+    }
     let r = c.resh("info", json!({"packages": ["resh-no-such-package"]}));
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(r.stderr.contains("[pkg.not_found]"), "{}", r.stderr);
@@ -269,6 +278,39 @@ fn cycle(c: &Container, small: &str, big: &str) -> Value {
     assert_eq!(op["status"], "success", "{json}");
     assert_eq!(c.version(small).as_deref(), Some(version.as_str()));
 
+    // An upstream-only snapshot (include_versions: minimal) restores a
+    // build of the same upstream version.
+    let r = c.resh(
+        "snapshot",
+        json!({"include_versions": "minimal", "include_repo": false, "timeout_ms": 300000}),
+    );
+    let minimal = r.ok()["lockfile"].as_str().unwrap().to_string();
+    let lock: Value = serde_json::from_str(&minimal).unwrap();
+    assert_eq!(lock["manager"]["config"]["include_versions"], "minimal");
+    let upstream = lock["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == small)
+        .unwrap()["version"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(version.contains(&upstream), "{upstream} vs {version}");
+    assert_ne!(upstream, version, "the build/revision is dropped");
+    c.resh("remove", json!({"packages": [{"name": small}]}))
+        .ok();
+    let r = c.resh(
+        "restore",
+        json!({"lockfile": minimal, "on_repo_mismatch": "ignore", "timeout_ms": 600000}),
+    );
+    let restored = r.ok();
+    assert_eq!(
+        restored["results"]["install"][0]["status"], "success",
+        "{restored}"
+    );
+    assert!(c.version(small).unwrap().contains(&upstream));
+
     let r = c.resh("update", json!({"check_only": true}));
     r.ok();
     let r = c.resh(
@@ -317,11 +359,18 @@ fn two_versions(c: &Container, candidates: &[&str]) -> Option<(String, String, S
 /// with mode exact (a downgrade).
 fn downgrade_cycle(c: &Container, candidates: &[&str]) {
     let Some((name, old, new)) = two_versions(c, candidates) else {
-        panic!("no package with two versions among {candidates:?}");
+        // The archives decide: right after a point release no candidate
+        // may have two versions. The other distributions still cover it.
+        eprintln!(
+            "{}: no package with two versions among {candidates:?}; downgrade cycle skipped",
+            c.manager
+        );
+        return;
     };
     let r = c.resh(
         "install",
-        json!({"packages": [{"name": name, "version": old}], "update_cache": false}),
+        json!({"packages": [{"name": name, "version": old}], "update_cache": false,
+               "allow_downgrade": true}),
     );
     r.ok();
     let installed = c.version(&name).unwrap();
@@ -345,6 +394,14 @@ fn downgrade_cycle(c: &Container, candidates: &[&str]) {
     r.ok();
     let upgraded = c.version(&name).unwrap();
     assert_ne!(upgraded, installed, "{name} was not upgraded to {new}");
+    // Asking for the older version again needs allow_downgrade.
+    let r = c.resh(
+        "install",
+        json!({"packages": [{"name": name, "version": old}], "update_cache": false}),
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(r.stderr.contains("[pkg.downgrade_refused]"), "{}", r.stderr);
+    assert_eq!(c.version(&name).unwrap(), upgraded);
 
     // allow_newer (default) keeps the newer version.
     let r = c.resh(
@@ -374,7 +431,18 @@ fn apt_debian() {
     let (_, audit) = c.sh("dpkg --audit");
     eprintln!("dpkg --audit after the timeout: {audit:?}");
     c.sh_ok("dpkg --configure -a");
-    downgrade_cycle(&c, &["tzdata", "libcap2", "curl"]);
+    downgrade_cycle(
+        &c,
+        &[
+            "tzdata",
+            "libcap2",
+            "curl",
+            "openssl",
+            "libsqlite3-0",
+            "libexpat1",
+            "libxml2",
+        ],
+    );
 }
 
 #[test]
@@ -382,7 +450,18 @@ fn apt_ubuntu() {
     let c = Container::start("ubuntu:24.04", "apt");
     cycle(&c, "tree", "gcc");
     c.sh_ok("dpkg --configure -a");
-    downgrade_cycle(&c, &["tzdata", "libcap2", "curl"]);
+    downgrade_cycle(
+        &c,
+        &[
+            "tzdata",
+            "libcap2",
+            "curl",
+            "openssl",
+            "libsqlite3-0",
+            "libexpat1",
+            "libxml2",
+        ],
+    );
 }
 
 #[test]

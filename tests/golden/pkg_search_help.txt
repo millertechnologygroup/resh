@@ -29,7 +29,8 @@ Example Output:
         "homepage": "https://nginx.org",
         "installed": true,
         "name": "nginx",
-        "repository": "main",
+        "repository": "noble/main",
+        "repository_url": "http://archive.ubuntu.com/ubuntu",
         "score": 1.0,
         "summary": "small, powerful, scalable web/proxy server",
         "version": "1.24.0-2ubuntu7"

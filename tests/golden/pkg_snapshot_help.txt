@@ -6,7 +6,8 @@ Definition: Captures the installed package set as a pkg-lock/v1 lockfile in
 Usage:
   resh pkg://<alias>.snapshot input=<json>
     <json> keys: manager (required), scope (all|manual|dependency),
-    include_versions (exact|none), include_repo, include_arch,
+    include_versions (exact|minimal|none; minimal records the
+    upstream version only), include_repo, include_arch,
     include_install_reason, include_os_metadata, exclude_patterns
     (shell-style globs), format (json|yaml|text), timeout_ms
     (default 15000), env

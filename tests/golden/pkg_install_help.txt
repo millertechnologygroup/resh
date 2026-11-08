@@ -7,7 +7,9 @@ Usage:
   resh pkg://<alias>.install input=<json>
     <json> keys: manager, packages (both required; each package is
     {name, version}), update_cache, assume_yes, only_if_missing,
-    reinstall, upgrade, dry_run, timeout_ms (default 600000), arch,
+    reinstall, upgrade, allow_downgrade (default false; a version older
+    than the installed one is refused without it), dry_run,
+    timeout_ms (default 600000), arch,
     extra_args, env
     version: apt, dnf, yum, apk; arch: apt, dnf, yum; elsewhere refused
     A package source is not supported; a package with source is refused

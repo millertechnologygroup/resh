@@ -97,6 +97,10 @@ case "$sub" in
       "$1" "$(echo "$all" | tail -n 1)" "$1" "$1" "$1" ;;
   search)
     cut -d' ' -f1 "$D/available" | sort -u | grep -- "$1" | while read -r n; do echo "$n - fake $n"; done ;;
+  madison)
+    avail "$1" | while read -r v; do
+      echo "   $1 | $v | http://deb.example.org/debian stable/main amd64 Packages"
+    done ;;
   depends) printf '%s\n  Depends: libfake\n' "$1" ;;
   rdepends) printf '%s\nReverse Depends:\n  fake-user\n' "$1" ;;
 esac
@@ -369,6 +373,9 @@ fn info_reports_installed_and_candidate_versions() {
     assert_eq!(p["installed_version"], "1.6");
     assert_eq!(p["candidate_version"], "1.7");
     assert_eq!(p["homepage"], "https://example.org/jq");
+    // The repository as snapshot records it, and its URL.
+    assert_eq!(p["repository"], "stable/main");
+    assert_eq!(p["repository_url"], "http://deb.example.org/debian");
     assert_eq!(p["dependencies"]["runtime"], json!(["libfake"]));
     assert_eq!(p["reverse_dependencies"], json!(["fake-user"]));
     assert_eq!(p["files"], json!(["/usr/bin/jq"]));
@@ -1248,4 +1255,100 @@ impl Fixture {
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         }
     }
+}
+
+// ===========================================================================
+// Owner decisions: upstream-only lockfiles, allow_downgrade
+// ===========================================================================
+
+/// `include_versions: minimal` records the upstream version; restore
+/// accepts any installed build of it and installs the newest build.
+#[test]
+fn minimal_snapshot_restores_any_build_of_the_upstream_version() {
+    let f = Fixture::new();
+    f.available(&[
+        ("jq", "1.7-1"),
+        ("jq", "1.7-2"),
+        ("jq", "1.8-1"),
+        ("curl", "1:8.5-3"),
+    ])
+    .installed(&[("jq", "1.7-1"), ("curl", "1:8.5-3")], &["jq", "curl"]);
+    for format in ["json", "text"] {
+        f.installed(&[("jq", "1.7-1"), ("curl", "1:8.5-3")], &["jq", "curl"]);
+        let r = f.verb(
+            "snapshot",
+            json!({"manager": "apt", "include_versions": "minimal", "format": format}),
+        );
+        let lockfile = r.ok()["lockfile"].as_str().unwrap().to_string();
+        if format == "json" {
+            let lock: Value = serde_json::from_str(&lockfile).unwrap();
+            assert_eq!(lock["manager"]["config"]["include_versions"], "minimal");
+            assert_eq!(
+                lock["packages"][0]["version"], "8.5",
+                "epoch and revision dropped"
+            );
+            assert_eq!(lock["packages"][1]["version"], "1.7");
+        } else {
+            assert!(lockfile.contains("\njq=1.7 "), "{lockfile}");
+        }
+
+        // Another build of 1.7 is kept; a missing jq gets the newest 1.7 build.
+        f.installed(&[("jq", "1.7-2"), ("curl", "1:8.5-3")], &[]);
+        let input = json!({"manager": "apt", "lockfile": lockfile, "on_repo_mismatch": "ignore"});
+        let mut dry = input.clone();
+        dry["dry_run"] = json!(true);
+        assert_eq!(
+            f.verb("restore", dry).ok()["plan"]["keep"],
+            json!(["curl", "jq"])
+        );
+        f.installed(&[("curl", "1:8.5-3")], &[]);
+        f.clear_log();
+        let r = f.verb("restore", input);
+        let json = r.ok();
+        assert_eq!(
+            json["results"]["install"][0]["to_version"], "1.7-2",
+            "{json}"
+        );
+        assert_eq!(
+            f.changes(),
+            [vec!["apt-get", "install", "-y", "jq=1.7-2"]],
+            "{format}"
+        );
+    }
+}
+
+#[test]
+fn install_refuses_an_older_version_unless_allowed() {
+    let f = Fixture::new();
+    f.available(&[("jq", "1.6"), ("jq", "1.7")])
+        .installed(&[("jq", "1.7")], &[]);
+    for dry in [true, false] {
+        f.verb(
+            "install",
+            json!({"manager": "apt", "packages": [{"name": "jq", "version": "1.6"}],
+                   "dry_run": dry}),
+        )
+        .failed(1, "pkg.downgrade_refused");
+    }
+    assert!(f.changes().is_empty());
+
+    let r = f.verb(
+        "install",
+        json!({"manager": "apt", "packages": [{"name": "jq", "version": "1.6"}],
+               "allow_downgrade": true, "update_cache": false}),
+    );
+    let json = r.ok();
+    assert_eq!(json["packages"][0]["action"], "downgraded");
+    assert_eq!(json["summary"]["downgraded"], 1);
+    assert_eq!(
+        f.changes(),
+        [vec![
+            "apt-get",
+            "install",
+            "-y",
+            "--allow-downgrades",
+            "jq=1.6"
+        ]]
+    );
+    assert_eq!(f.installed_now(), [("jq".into(), "1.6".into())]);
 }

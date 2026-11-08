@@ -71,6 +71,7 @@ pub(crate) fn accepted(verb: &str) -> &'static [&'static str] {
             "only_if_missing",
             "reinstall",
             "upgrade",
+            "allow_downgrade",
             "dry_run",
             "timeout_ms",
             "arch",
@@ -338,5 +339,6 @@ pub(crate) const ERROR_CODES: &[(&str, i32)] = &[
     ("pkg.platform_mismatch", 1),
     ("pkg.repo_mismatch", 1),
     ("pkg.unresolved", 1),
+    ("pkg.downgrade_refused", 1),
     ("pkg.timeout", 124),
 ];

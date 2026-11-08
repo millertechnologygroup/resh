@@ -29,7 +29,8 @@ Example Output:
         "installed": true,
         "installed_version": "1.24.0-2ubuntu7",
         "license": null,
-        "repository": "http://archive.ubuntu.com/ubuntu",
+        "repository": "noble/main",
+        "repository_url": "http://archive.ubuntu.com/ubuntu",
         "summary": "small, powerful, scalable web/proxy server"
       }
     ]

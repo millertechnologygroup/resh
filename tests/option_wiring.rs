@@ -493,13 +493,13 @@ fn pkg_info_include_repo() {
         assert_eq!(r.code, 0, "{} {}", r.stdout, r.stderr);
         r.json["packages"][0].clone()
     };
-    assert_eq!(info("")["repository"], "http://deb.example.org/debian");
-    assert_eq!(
-        info(r#","include_repo":true"#)["repository"],
-        "http://deb.example.org/debian"
-    );
+    // The suite/component, as snapshot records it; the URL is repository_url.
+    assert_eq!(info("")["repository"], "stable/main");
+    assert_eq!(info("")["repository_url"], "http://deb.example.org/debian");
+    assert_eq!(info(r#","include_repo":true"#)["repository"], "stable/main");
     let off = info(r#","include_repo":false"#);
     assert_eq!(off["repository"], Value::Null);
+    assert_eq!(off["repository_url"], Value::Null);
     assert_eq!(off["installed_version"], "1.7");
 }
 

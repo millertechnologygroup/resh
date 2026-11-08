@@ -46,7 +46,7 @@ resh pkg://system.install 'input={"manager":"auto","packages":[{"name":"curl"}]}
 | `remove`         | Remove packages, optionally purging configuration and unused dependencies | `manager`, `packages` (array of `{name, version}`) |
 | `update`         | Refresh the index and by default upgrade all or the listed packages; `check_only` only reports; `security_only` with dnf/yum only (see 4.4) | `manager` |
 | `upgrade`        | Upgrade all or the listed packages; `check_only` only reports; `security_only` with dnf only (see 4.4) | `manager` |
-| `info`           | Details for named packages; `include_repo: false` sets `repository` to null | `manager`, `packages` (array of names) |
+| `info`           | Details for named packages; `include_repo: false` sets `repository` and `repository_url` to null | `manager`, `packages` (array of names) |
 | `search`         | Search the package index | `manager`, `query` |
 | `list_installed` | List installed packages, optionally filtered and paginated; `include_versions: false` sets `version` to null | `manager` |
 | `snapshot`       | Capture the installed package set as a lockfile (JSON, YAML or text) | `manager` |
@@ -100,7 +100,9 @@ resh pkg://system.install 'input={"manager":"apt","packages":[{"name":"jq","vers
 
 A package entry may not have a `source` field (`install` and `remove`). No manager backend can take a package from a given source; packages always come from the manager's configured repositories. A request with `source` set is refused before anything runs, dry run included (exit 2, `pkg.invalid_argument`).
 
-`install` works on one package at a time: a package that is already installed is left alone (`only_if_missing`, default true) unless a different `version` is requested, `upgrade` upgrades it in place (`apt-get install --only-upgrade`, `dnf upgrade`, `pacman -S --needed`, `apk add --upgrade`, `brew upgrade`) and `reinstall` reinstalls it (`apk fix` on apk). The reported action (`installed`, `upgraded`, `reinstalled`, `unchanged`) comes from the installed version before and after the command; a failed package is `failed` with an `error` object (`code`, `message`).
+`install` works on one package at a time: a package that is already installed is left alone (`only_if_missing`, default true) unless a different `version` is requested, `upgrade` upgrades it in place (`apt-get install --only-upgrade`, `dnf upgrade`, `pacman -S --needed`, `apk add --upgrade`, `brew upgrade`) and `reinstall` reinstalls it (`apk fix` on apk). The reported action (`installed`, `upgraded`, `downgraded`, `reinstalled`, `unchanged`) comes from the installed version before and after the command; a failed package is `failed` with an `error` object (`code`, `message`).
+
+A requested `version` older than the installed one (in the manager's version order) is a downgrade. Without `allow_downgrade: true` (default false) the request is refused before anything runs, dry run included (exit 1, `pkg.downgrade_refused`). With it, apt installs with `--allow-downgrades`, dnf and yum use `downgrade`, and apk installs the version with `add` (which downgrades). pacman and brew take no version at all (see "Options by manager").
 
 #### Remove Package (Dry Run)
 
@@ -132,7 +134,7 @@ The `query` must not start with `-` and must not contain control characters.
 resh pkg://system.snapshot 'input={"manager":"auto","scope":"all","include_versions":"exact","format":"json"}'
 ```
 
-`include_versions` is `exact` (the default) or `none`. `minimal` is refused (exit 2, `pkg.unsupported_option`): earlier releases accepted it and recorded the same exact versions, and no reduced form is defined. `exclude_patterns` are shell-style globs (`*`, `?`, `[...]`) matched against package names; an invalid pattern is refused. With apt, a package that was removed but still has configuration files (dpkg state `config-files`) is not listed as installed by `list_installed`, `snapshot` or `restore`.
+`include_versions` is `exact` (the default), `minimal` or `none`. `minimal` records only the upstream version: the epoch and the distribution revision are dropped (apt `1:8.5.0-2ubuntu10` becomes `8.5.0`; dnf, yum and pacman `[epoch:]version-release` becomes `version`; apk `1.8.2-r0` becomes `1.8.2`; brew `1.7.1_1` becomes `1.7.1`). The lockfile is marked with `manager.config.include_versions: "minimal"` (`# include_versions: minimal` in a text lockfile), and `restore` then accepts any installed build of each upstream version (see 3.4). `exclude_patterns` are shell-style globs (`*`, `?`, `[...]`) matched against package names; an invalid pattern is refused. With apt, a package that was removed but still has configuration files (dpkg state `config-files`) is not listed as installed by `list_installed`, `snapshot` or `restore`.
 
 #### Restore from Snapshot (Dry Run)
 
@@ -194,6 +196,7 @@ What a stopped package manager may leave behind, and how to check:
 * A locked package that is not installed goes to `install`.
 * A locked package installed at a different version goes to `upgrade` when the installed version is older and to `downgrade` when it is newer, in the manager's own version order (dpkg's for apt, rpm's for dnf and yum, `vercmp`'s for pacman, apk's for apk; brew compares the version strings). A newer installed version is kept when `allow_newer` is true (the default); otherwise it is downgraded with `allow_downgrades`, or else it is `unresolved`.
 * A locked package without a version that is installed is kept.
+* With a lockfile of upstream versions (`include_versions: minimal`), an installed package whose upstream version equals the locked one is kept whatever its build, and versions are compared by their upstream part. `exact` installs the newest build of the locked upstream version that the repositories carry (apt `apt-cache madison`, dnf and yum `list --showduplicates --available`, apk `apk policy`; pacman only when its repository version is a build of it) and accepts any build of it afterwards; when no build of it is available the pinned command fails (`best_effort` then installs the repository version).
 * Packages installed on the host but not in the lockfile are listed in `extra`, or **removed** when `allow_removals` is `true`. Use this with care: on a full system it removes every package missing from the lockfile.
 * `mode` decides the versions:
   * `exact` (the default) installs, upgrades and downgrades to the **locked version** (`name=ver` for apt and apk, `name-ver` for dnf and yum; apt downgrades with `--allow-downgrades`, dnf and yum with `downgrade`). After each command, resh reads the installed version; a package that is not at the locked version is a failure. pacman and brew cannot install a given version: pacman installs by name the packages whose locked version is the one its repositories carry (`pacman -Si`), and a plan that needs any other version is refused before anything runs (exit 2, `pkg.unsupported_option`), as is any locked version for brew.
@@ -271,7 +274,7 @@ Errors are printed to standard error as `Error: [pkg.<code>] <message>`. Exit st
 | Code | Exit | Meaning |
 | ---- | ---- | ------- |
 | `pkg.invalid_argument` | 2 | Missing or malformed `input`, an argument other than `input`, an unknown key, a value of the wrong type or outside its set, an invalid package name, version, arch, query, pattern or `env`, `timeout_ms` of 0, contradictory options (such as `only_if_missing` with `reinstall`), a package `source` |
-| `pkg.unsupported_option` | 2 | An option the manager cannot honor (see "Options by manager"), `security_only` where it is not supported, `include_versions: minimal`, a restore `mode: exact` that needs a version pacman or brew cannot install |
+| `pkg.unsupported_option` | 2 | An option the manager cannot honor (see "Options by manager"), `security_only` where it is not supported, a restore `mode: exact` that needs a version pacman or brew cannot install |
 | `pkg.invalid_lockfile` | 2 | A restore lockfile that cannot be read, has an unsupported `lockfile_version`, an invalid package entry or an unknown manager |
 | `pkg.manager_mismatch` | 2 | The request's manager differs from the lockfile's |
 | `pkg.manager_not_found` | 1 | The manager binary is not on `PATH` (or none is found for `auto`) |
@@ -285,6 +288,7 @@ Errors are printed to standard error as `Error: [pkg.<code>] <message>`. Exit st
 | `pkg.platform_mismatch` | 1 | `on_platform_mismatch: fail` and the lockfile is from another OS or architecture |
 | `pkg.repo_mismatch` | 1 | `on_repo_mismatch: fail` and a package comes from another repository |
 | `pkg.unresolved` | 1 | `on_missing_package: fail` and the plan has unresolved packages |
+| `pkg.downgrade_refused` | 1 | `install` with a `version` older than the installed one, without `allow_downgrade` |
 | `pkg.timeout` | 124 | `timeout_ms` passed; the package manager was stopped (see 3.3) |
 
 Inside a result, `install` and `remove` mark a failed package with `"action": "failed"` and `restore` with `"status": "failed"`; each carries `"error": {"code": "pkg.<code>", "message": "..."}` with one of the codes above. `info` reports an unknown package with `"found": false` and exits 1 (`pkg.not_found`).
@@ -333,7 +337,7 @@ Inside a result, `install` and `remove` mark a failed package with `"action": "f
 
 ### 4.5 System Information
 
-`info`, `list_installed` and `snapshot` can report installed and candidate versions, architecture, repository, installation reason, OS metadata and the manager version, depending on the manager and the `include_*` keys. `info` with `include_repo: false` and `list_installed` with `include_versions: false` keep the `repository` / `version` key and set it to null. `snapshot` always returns the lockfile in the `lockfile` field; a request with an `inline` key (which older releases accepted without effect) is refused before anything runs (exit 2, `pkg.invalid_argument`).
+`info`, `list_installed` and `snapshot` can report installed and candidate versions, architecture, repository, installation reason, OS metadata and the manager version, depending on the manager and the `include_*` keys. `info` and `search` report `repository` in the same form as `snapshot` (for apt the suite/component of the installed version, or of the candidate when the package is not installed, such as `noble/main`) and the source URL in `repository_url` (apt only; null elsewhere). `info` with `include_repo: false` and `list_installed` with `include_versions: false` keep the `repository`, `repository_url` / `version` keys and set them to null. `snapshot` always returns the lockfile in the `lockfile` field; a request with an `inline` key (which older releases accepted without effect) is refused before anything runs (exit 2, `pkg.invalid_argument`).
 
 ---
 

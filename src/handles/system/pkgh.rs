@@ -59,7 +59,8 @@ static PKG_HELP: HandleHelp = HandleHelp {
       "installed": true,
       "installed_version": "1.24.0-2ubuntu7",
       "license": null,
-      "repository": "http://archive.ubuntu.com/ubuntu",
+      "repository": "noble/main",
+      "repository_url": "http://archive.ubuntu.com/ubuntu",
       "summary": "small, powerful, scalable web/proxy server"
     }
   ]
@@ -96,7 +97,8 @@ Shown for apt. Other managers fill different subsets of these fields."#,
       "homepage": "https://nginx.org",
       "installed": true,
       "name": "nginx",
-      "repository": "main",
+      "repository": "noble/main",
+      "repository_url": "http://archive.ubuntu.com/ubuntu",
       "score": 1.0,
       "summary": "small, powerful, scalable web/proxy server",
       "version": "1.24.0-2ubuntu7"
@@ -156,7 +158,8 @@ Shown for apt."#,
             detail: Some(VerbDetail {
                 usage: "resh pkg://<alias>.snapshot input=<json>\n  \
                     <json> keys: manager (required), scope (all|manual|dependency),\n  \
-                    include_versions (exact|none), include_repo, include_arch,\n  \
+                    include_versions (exact|minimal|none; minimal records the\n  \
+                    upstream version only), include_repo, include_arch,\n  \
                     include_install_reason, include_os_metadata, exclude_patterns\n  \
                     (shell-style globs), format (json|yaml|text), timeout_ms\n  \
                     (default 15000), env",
@@ -200,7 +203,9 @@ Shown for apt with the lockfile string shortened."#,
                 usage: "resh pkg://<alias>.install input=<json>\n  \
                     <json> keys: manager, packages (both required; each package is\n  \
                     {name, version}), update_cache, assume_yes, only_if_missing,\n  \
-                    reinstall, upgrade, dry_run, timeout_ms (default 600000), arch,\n  \
+                    reinstall, upgrade, allow_downgrade (default false; a version older\n  \
+                    than the installed one is refused without it), dry_run,\n  \
+                    timeout_ms (default 600000), arch,\n  \
                     extra_args, env\n  \
                     version: apt, dnf, yum, apk; arch: apt, dnf, yum; elsewhere refused\n  \
                     A package source is not supported; a package with source is refused",
@@ -670,6 +675,10 @@ pub enum PkgError {
     /// to the locked state; refused before anything ran.
     #[error("Unresolved packages: {0}")]
     RestoreUnresolved(String),
+    /// A requested version older than the installed one without
+    /// `allow_downgrade`; refused before anything ran.
+    #[error("Downgrade refused: {0}")]
+    DowngradeRefused(String),
 }
 
 impl PkgError {
@@ -714,6 +723,7 @@ impl PkgError {
             PkgError::RestorePlatformIncompatible(_) => (FAILED, "pkg.platform_mismatch"),
             PkgError::RestoreRepoMismatch(_) => (FAILED, "pkg.repo_mismatch"),
             PkgError::RestoreUnresolved(_) => (FAILED, "pkg.unresolved"),
+            PkgError::DowngradeRefused(_) => (FAILED, "pkg.downgrade_refused"),
             PkgError::UpdateTimeout
             | PkgError::UpgradeTimeout
             | PkgError::InfoTimeout
@@ -859,21 +869,30 @@ enum InstallStep {
     Upgrade,
     /// Reinstall the installed package.
     Reinstall,
+    /// Install the requested version, older than the installed one
+    /// (`allow_downgrade`).
+    Downgrade,
 }
 
-fn install_step(config: &InstallConfig, pkg: &PackageSpec, installed: Option<&str>) -> InstallStep {
+fn install_step(
+    config: &InstallConfig,
+    pkg: &PackageSpec,
+    installed: Option<&str>,
+    manager: &ManagerKind,
+) -> InstallStep {
     let Some(installed) = installed else {
         return InstallStep::Install;
     };
+    if let Some(wanted) = pkg.version.as_deref() {
+        return match compare_package_versions(manager, wanted, installed) {
+            std::cmp::Ordering::Equal if config.reinstall => InstallStep::Reinstall,
+            std::cmp::Ordering::Equal => InstallStep::Skip,
+            std::cmp::Ordering::Less => InstallStep::Downgrade,
+            std::cmp::Ordering::Greater => InstallStep::Install,
+        };
+    }
     if config.reinstall {
         return InstallStep::Reinstall;
-    }
-    if let Some(wanted) = pkg.version.as_deref() {
-        return if wanted == installed {
-            InstallStep::Skip
-        } else {
-            InstallStep::Install
-        };
     }
     if config.upgrade {
         InstallStep::Upgrade
@@ -1028,6 +1047,73 @@ fn exclude_matchers(patterns: &[String]) -> Result<Vec<globset::GlobMatcher>, Pk
         .collect()
 }
 
+/// Whether a lockfile records upstream versions (`include_versions:
+/// minimal`).
+fn lockfile_is_minimal(lockfile: &Lockfile) -> bool {
+    lockfile
+        .manager
+        .config
+        .as_ref()
+        .and_then(|c| c.get("include_versions"))
+        .and_then(Value::as_str)
+        == Some("minimal")
+}
+
+/// The upstream part of a version, without the packaging revision and
+/// epoch: dpkg `[epoch:]upstream[-revision]`, rpm and pacman
+/// `[epoch:]version[-release]`, apk `version[-rN]`, brew `version[_N]`.
+fn upstream_version(manager: &ManagerKind, version: &str) -> String {
+    match manager {
+        ManagerKind::Apk => match version.rsplit_once("-r") {
+            Some((v, r)) if !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()) => v,
+            _ => version,
+        }
+        .to_string(),
+        ManagerKind::Brew => match version.rsplit_once('_') {
+            Some((v, r)) if !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()) => v,
+            _ => version,
+        }
+        .to_string(),
+        _ => {
+            let without_epoch = match version.split_once(':') {
+                Some((e, rest)) if !e.is_empty() && e.bytes().all(|b| b.is_ascii_digit()) => rest,
+                _ => version,
+            };
+            without_epoch
+                .rsplit_once('-')
+                .map_or(without_epoch, |(v, _)| v)
+                .to_string()
+        }
+    }
+}
+
+/// The versions a manager's listing of available builds shows (apt
+/// `madison`, dnf/yum `list --showduplicates --available`, apk `policy`).
+fn available_versions(manager: &ManagerKind, name: &str, listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .filter_map(|line| match manager {
+            ManagerKind::Apt => {
+                let mut cols = line.split('|').map(str::trim);
+                (cols.next() == Some(name)).then(|| cols.next()).flatten()
+            }
+            ManagerKind::Dnf | ManagerKind::Yum => {
+                let mut words = line.split_whitespace();
+                let first = words.next()?;
+                (first.rsplit_once('.').map(|(n, _)| n) == Some(name))
+                    .then(|| words.next())
+                    .flatten()
+            }
+            _ => {
+                let t = line.trim();
+                (line.starts_with("  ") && !line.starts_with("    ") && t.ends_with(':'))
+                    .then(|| t.trim_end_matches(':'))
+            }
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 /// The kind of one restore operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RestoreKind {
@@ -1045,6 +1131,9 @@ struct RestoreOp {
     name: String,
     version: Option<String>,
     from: Option<String>,
+    /// The lockfile records upstream versions (`include_versions:
+    /// minimal`): any build of `locked` satisfies it.
+    locked: Option<String>,
 }
 
 /// The operations for `plan`, in execution order (see
@@ -1057,7 +1146,15 @@ fn restore_operations(
     config: &RestoreConfig,
     manager: &ManagerKind,
 ) -> Result<Vec<RestoreOp>, PkgError> {
-    restore_operations_with(plan, lockfile, current, config, manager, &HashSet::new())
+    restore_operations_with(
+        plan,
+        lockfile,
+        current,
+        config,
+        manager,
+        &HashSet::new(),
+        &HashMap::new(),
+    )
 }
 
 /// The operations for `plan`, in execution order. With `mode: exact`, a
@@ -1065,7 +1162,9 @@ fn restore_operations(
 /// plan that needs one, except for the packages in `at_repo_version`, whose
 /// locked version is the one the repositories carry; with `best_effort` it
 /// installs by name and a downgrade, which it cannot do, becomes
-/// unresolved.
+/// unresolved. For a lockfile of upstream versions (`include_versions:
+/// minimal`), `builds` holds the newest available build of each locked
+/// upstream version, which is what gets installed.
 fn restore_operations_with(
     plan: &mut RestorePlan,
     lockfile: &Lockfile,
@@ -1073,7 +1172,9 @@ fn restore_operations_with(
     config: &RestoreConfig,
     manager: &ManagerKind,
     at_repo_version: &HashSet<String>,
+    builds: &HashMap<String, String>,
 ) -> Result<Vec<RestoreOp>, PkgError> {
+    let minimal = lockfile_is_minimal(lockfile);
     let locked: HashMap<&str, &LockfilePackage> = lockfile
         .packages
         .iter()
@@ -1083,18 +1184,22 @@ fn restore_operations_with(
         .iter()
         .map(|p| (p.name.as_str(), p.version.as_str()))
         .collect();
-    let op = |kind: RestoreKind, name: &String| RestoreOp {
-        kind,
-        name: name.clone(),
-        version: if kind == RestoreKind::Remove {
+    let op = |kind: RestoreKind, name: &String| {
+        let locked_version = if kind == RestoreKind::Remove {
             None
         } else {
             locked
                 .get(name.as_str())
                 .and_then(|p| p.version.as_deref())
                 .map(|v| normalize_version(manager, v))
-        },
-        from: installed.get(name.as_str()).map(|v| v.to_string()),
+        };
+        RestoreOp {
+            kind,
+            name: name.clone(),
+            version: builds.get(name).cloned().or(locked_version.clone()),
+            from: installed.get(name.as_str()).map(|v| v.to_string()),
+            locked: locked_version.filter(|_| minimal),
+        }
     };
 
     if !supports_version_pin(manager) {
@@ -1234,6 +1339,20 @@ fn verify_restore_op(
             "{} is not installed after the command",
             op.name
         ))),
+        (_, Some(v)) if op.locked.is_some() => {
+            let locked = op.locked.as_deref().unwrap_or_default();
+            if config.mode == RestoreMode::Exact
+                && upstream_version(manager, v) != upstream_version(manager, locked)
+            {
+                Err(PkgError::RestoreApplyFailed(format!(
+                    "{} is at {v}, not a build of the locked upstream version {locked} \
+                     (mode=exact)",
+                    op.name
+                )))
+            } else {
+                Ok(())
+            }
+        }
         (_, Some(v)) => match op.version.as_deref() {
             Some(locked)
                 if config.mode == RestoreMode::Exact
@@ -1463,6 +1582,9 @@ pub struct InstallConfig {
     pub reinstall: bool,
     #[serde(default)]
     pub upgrade: bool,
+    /// Allows installing a requested version older than the installed one.
+    #[serde(default)]
+    pub allow_downgrade: bool,
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default = "default_timeout")]
@@ -1629,7 +1751,10 @@ pub struct SearchResult {
     pub installed: bool,
     pub summary: Option<String>,
     pub description: Option<String>,
+    /// The suite/component (apt) or repository name the package comes from.
     pub repository: Option<String>,
+    /// The source URL of that repository, where the manager reports one.
+    pub repository_url: Option<String>,
     pub homepage: Option<String>,
     #[serde(default = "default_score")]
     pub score: f64,
@@ -1680,7 +1805,11 @@ pub struct PackageInfo {
     pub description: Option<String>,
     pub homepage: Option<String>,
     pub license: Option<String>,
+    /// The suite/component (apt, as in snapshot) or repository name of the
+    /// installed version, or of the candidate when not installed.
     pub repository: Option<String>,
+    /// The source URL of that repository, where the manager reports one.
+    pub repository_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dependencies: Option<PackageDependencies>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1763,6 +1892,7 @@ pub struct InstallSummary {
     pub installed: u32,
     pub upgraded: u32,
     pub reinstalled: u32,
+    pub downgraded: u32,
     pub unchanged: u32,
     pub failed: u32,
 }
@@ -2426,6 +2556,7 @@ impl PkgHandle {
         self.validate_config(&config)?;
         let manager = self.resolve_manager(&config.manager).await?;
         check_install_support(&config, &manager)?;
+        self.check_downgrades(&config, &manager).await?;
         if config.dry_run {
             return self.dry_run_install(&config, &manager).await;
         }
@@ -2603,15 +2734,16 @@ impl PkgHandle {
         // The same per-package decision and command as a real install.
         for pkg in &config.packages {
             let installed = self.installed_version_of(&pkg.name, manager).await;
-            let action = match install_step(config, pkg, installed.as_deref()) {
+            let action = match install_step(config, pkg, installed.as_deref(), manager) {
                 InstallStep::Skip => "already_installed",
                 InstallStep::Reinstall => "would_reinstall",
                 InstallStep::Upgrade => "would_upgrade",
+                InstallStep::Downgrade => "would_downgrade",
                 InstallStep::Install if installed.is_some() => "would_change_version",
                 InstallStep::Install => "would_install",
             };
             if action != "already_installed" {
-                let step = install_step(config, pkg, installed.as_deref());
+                let step = install_step(config, pkg, installed.as_deref(), manager);
                 commands.push(
                     self.build_install_command(config, pkg, manager, step)?
                         .to_string(),
@@ -2646,6 +2778,7 @@ impl PkgHandle {
             installed: 0,
             upgraded: 0,
             reinstalled: 0,
+            downgraded: 0,
             unchanged: 0,
             failed: 0,
         };
@@ -2670,6 +2803,7 @@ impl PkgHandle {
                 "installed" => summary.installed += 1,
                 "upgraded" => summary.upgraded += 1,
                 "reinstalled" => summary.reinstalled += 1,
+                "downgraded" => summary.downgraded += 1,
                 "unchanged" => summary.unchanged += 1,
                 _ => summary.failed += 1,
             }
@@ -2707,6 +2841,36 @@ impl PkgHandle {
     }
 
     /// Build install command for manager and packages
+    /// Refuses a requested version older than the installed one unless
+    /// `allow_downgrade` is set, before anything runs (dry run included).
+    async fn check_downgrades(
+        &self,
+        config: &InstallConfig,
+        manager: &ManagerKind,
+    ) -> Result<(), PkgError> {
+        let mut older = Vec::new();
+        for pkg in config.packages.iter().filter(|p| p.version.is_some()) {
+            let installed = self.installed_version_of(&pkg.name, manager).await;
+            if install_step(config, pkg, installed.as_deref(), manager) == InstallStep::Downgrade {
+                older.push(format!(
+                    "{} {} (installed: {})",
+                    pkg.name,
+                    pkg.version.as_deref().unwrap_or_default(),
+                    installed.unwrap_or_default()
+                ));
+            }
+        }
+        if older.is_empty() || config.allow_downgrade {
+            return Ok(());
+        }
+        Err(PkgError::DowngradeRefused(format!(
+            "{} requested version(s) are older than the installed one: {}; set \
+             allow_downgrade to install them; nothing was run",
+            older.len(),
+            name_list(&older)
+        )))
+    }
+
     /// The command that installs (or upgrades, or reinstalls) one package.
     fn build_install_command(
         &self,
@@ -2717,6 +2881,7 @@ impl PkgHandle {
     ) -> Result<CmdLine, PkgError> {
         let upgrade = step == InstallStep::Upgrade;
         let reinstall = step == InstallStep::Reinstall;
+        let downgrade = step == InstallStep::Downgrade;
         let mut cmd = match manager {
             ManagerKind::Apt => {
                 let mut base = CmdLine::lit("DEBIAN_FRONTEND=noninteractive apt-get install");
@@ -2728,6 +2893,9 @@ impl PkgHandle {
                 }
                 if upgrade {
                     base.push_lit(" --only-upgrade");
+                }
+                if downgrade {
+                    base.push_lit(" --allow-downgrades");
                 }
                 base
             }
@@ -2741,6 +2909,8 @@ impl PkgHandle {
                     "reinstall"
                 } else if upgrade {
                     "upgrade"
+                } else if downgrade {
+                    "downgrade"
                 } else {
                     "install"
                 };
@@ -2880,7 +3050,7 @@ impl PkgHandle {
         manager: &ManagerKind,
     ) -> Result<PackageResult, PkgError> {
         let before = self.installed_version_of(&pkg.name, manager).await;
-        let step = install_step(config, pkg, before.as_deref());
+        let step = install_step(config, pkg, before.as_deref(), manager);
         if step == InstallStep::Skip {
             return Ok(PackageResult {
                 name: pkg.name.clone(),
@@ -2918,6 +3088,8 @@ impl PkgHandle {
             "installed"
         } else if step == InstallStep::Reinstall {
             "reinstalled"
+        } else if step == InstallStep::Downgrade {
+            "downgraded"
         } else if before != after {
             "upgraded"
         } else {
@@ -4308,6 +4480,7 @@ impl PkgHandle {
                     // version, so it is dropped here rather than not queried.
                     if !config.include_repo {
                         package_info.repository = None;
+                        package_info.repository_url = None;
                     }
                     packages.push(package_info)
                 }
@@ -4329,6 +4502,7 @@ impl PkgHandle {
                         homepage: None,
                         license: None,
                         repository: None,
+                        repository_url: None,
                         dependencies: None,
                         reverse_dependencies: None,
                         files: None,
@@ -4395,6 +4569,7 @@ impl PkgHandle {
             homepage: None,
             license: None,
             repository: None,
+            repository_url: None,
             dependencies: None,
             reverse_dependencies: None,
             files: None,
@@ -4489,12 +4664,11 @@ impl PkgHandle {
                         if candidate != "(none)" {
                             package_info.candidate_version = Some(candidate.to_string());
                         }
-                    } else if line.trim().contains("http") && package_info.repository.is_none() {
-                        // Parse repository info from lines like: " 500 http://archive.ubuntu.com/ubuntu focal/main amd64 Packages"
-                        if let Some(repo_part) = line.trim().split_whitespace().nth(1) {
-                            package_info.repository = Some(repo_part.to_string());
-                        }
                     }
+                }
+                if let Some((url, suite)) = apt_policy_source(&output.stdout) {
+                    package_info.repository = Some(suite);
+                    package_info.repository_url = Some(url);
                 }
             }
         }
@@ -4564,6 +4738,7 @@ impl PkgHandle {
             homepage: None,
             license: None,
             repository: None,
+            repository_url: None,
             dependencies: None,
             reverse_dependencies: None,
             files: None,
@@ -4701,6 +4876,7 @@ impl PkgHandle {
             homepage: None,
             license: None,
             repository: None,
+            repository_url: None,
             dependencies: None,
             reverse_dependencies: None,
             files: None,
@@ -4831,6 +5007,7 @@ impl PkgHandle {
             homepage: None,
             license: None,
             repository: None,
+            repository_url: None,
             dependencies: None,
             reverse_dependencies: None,
             files: None,
@@ -4925,6 +5102,7 @@ impl PkgHandle {
             homepage: None,
             license: None,
             repository: None,
+            repository_url: None,
             dependencies: None,
             reverse_dependencies: None,
             files: None,
@@ -5234,6 +5412,7 @@ impl PkgHandle {
                 }
                 if config.include_repo {
                     result.repository = details.repository;
+                    result.repository_url = details.repository_url;
                 }
                 if result.homepage.is_none() {
                     result.homepage = details.homepage;
@@ -5303,6 +5482,7 @@ impl PkgHandle {
                     summary: Some(summary.to_string()),
                     description: None,
                     repository: None,
+                    repository_url: None,
                     homepage: None,
                     score: 1.0,
                 };
@@ -5433,6 +5613,7 @@ impl PkgHandle {
                     summary: Some(summary.to_string()),
                     description: None,
                     repository: None,
+                    repository_url: None,
                     homepage: None,
                     score: 1.0,
                 };
@@ -5546,6 +5727,7 @@ impl PkgHandle {
                     summary: summary.clone(),
                     description: None,
                     repository,
+                    repository_url: None,
                     homepage: None,
                     score: 1.0,
                 };
@@ -5618,6 +5800,7 @@ impl PkgHandle {
                     summary: Some(summary.to_string()),
                     description: None,
                     repository: None,
+                    repository_url: None,
                     homepage: None,
                     score: 1.0,
                 };
@@ -5707,6 +5890,7 @@ impl PkgHandle {
                 summary: None,
                 description: None,
                 repository: None,
+                repository_url: None,
                 homepage: None,
                 score: 1.0,
             };
@@ -6861,14 +7045,6 @@ impl PkgHandle {
                 "timeout_ms must be greater than 0".to_string(),
             ));
         }
-        if config.include_versions == SnapshotVersionMode::Minimal {
-            return Err(PkgError::Unsupported(
-                "include_versions=minimal is not supported: it recorded the same exact \
-                 versions as exact, and no reduced form is defined; use exact or none; \
-                 nothing was run"
-                    .to_string(),
-            ));
-        }
         exclude_matchers(&config.exclude_patterns)?;
         Ok(())
     }
@@ -6911,6 +7087,16 @@ impl PkgHandle {
         // Apply exclude patterns
         self.apply_exclude_patterns(&mut packages, &config.exclude_patterns);
 
+        // include_versions=minimal records the upstream version only.
+        let minimal = config.include_versions == SnapshotVersionMode::Minimal;
+        if minimal {
+            for pkg in &mut packages {
+                if let Some(v) = pkg.version.take() {
+                    pkg.version = Some(upstream_version(manager, &v));
+                }
+            }
+        }
+
         // Sort packages deterministically
         packages.sort_by(|a, b| {
             a.name
@@ -6927,7 +7113,11 @@ impl PkgHandle {
                 name: format!("{:?}", manager).to_lowercase(),
                 alias: self.alias.clone(),
                 version: manager_info.version,
-                config: manager_info.config,
+                config: if minimal {
+                    Some(json!({ "include_versions": "minimal" }))
+                } else {
+                    manager_info.config
+                },
             },
             platform: platform_info,
             scope: format!("{:?}", config.scope).to_lowercase(),
@@ -7146,6 +7336,9 @@ impl PkgHandle {
                     .unwrap_or("unknown")
             ));
         }
+        if lockfile_is_minimal(lockfile) {
+            output.push_str("# include_versions: minimal\n");
+        }
         output.push_str(&format!("# scope: {}\n\n", lockfile.scope));
         for pkg in &lockfile.packages {
             let mut line = pkg.name.clone();
@@ -7183,7 +7376,7 @@ impl PkgHandle {
             .into_iter()
             .map(|pkg| LockfilePackage {
                 pinned: held_packages.contains(&pkg.name),
-                version: (config.include_versions == SnapshotVersionMode::Exact)
+                version: (config.include_versions != SnapshotVersionMode::None)
                     .then_some(pkg.version),
                 version_spec: None,
                 architecture: pkg.architecture.filter(|_| config.include_arch),
@@ -7293,7 +7486,7 @@ impl PkgHandle {
             let name = parts[0].to_string();
             let version = normalize_version(&ManagerKind::Dnf, parts[1]);
             packages.push(LockfilePackage {
-                version: (config.include_versions == SnapshotVersionMode::Exact).then_some(version),
+                version: (config.include_versions != SnapshotVersionMode::None).then_some(version),
                 version_spec: None,
                 architecture: (config.include_arch && parts[2] != "(none)")
                     .then(|| parts[2].to_string()),
@@ -8245,6 +8438,7 @@ impl PkgHandle {
         let mut packages = Vec::new();
         let mut manager = "auto".to_string();
         let mut scope = "all".to_string();
+        let mut minimal = false;
         for (number, raw) in content.lines().enumerate() {
             let line = raw.trim();
             let header = line.strip_prefix('#').map(str::trim).unwrap_or(line);
@@ -8256,6 +8450,10 @@ impl PkgHandle {
             }
             if let Some(value) = header.strip_prefix("scope:") {
                 scope = value.trim().to_string();
+                continue;
+            }
+            if let Some(value) = header.strip_prefix("include_versions:") {
+                minimal = value.trim() == "minimal";
                 continue;
             }
             if line.is_empty() || line.starts_with('#') || header.starts_with("os:") {
@@ -8306,7 +8504,7 @@ impl PkgHandle {
                 name: manager,
                 alias: "system".to_string(),
                 version: None,
-                config: None,
+                config: minimal.then(|| json!({ "include_versions": "minimal" })),
             },
             platform: PlatformInfo {
                 os_family: None,
@@ -8452,6 +8650,7 @@ impl PkgHandle {
         let at_repo_version = self
             .locked_at_repo_version(&plan, lockfile, config, manager)
             .await;
+        let builds = self.upstream_builds(&plan, lockfile, manager).await;
         let ops = restore_operations_with(
             &mut plan,
             lockfile,
@@ -8459,6 +8658,7 @@ impl PkgHandle {
             config,
             manager,
             &at_repo_version,
+            &builds,
         )?;
         warnings.extend(restore_mode_warnings(&ops, config, manager));
 
@@ -8610,8 +8810,13 @@ impl PkgHandle {
             match key.trim() {
                 "Name" => name = value.trim().to_string(),
                 "Version" => {
+                    let repo = if lockfile_is_minimal(lockfile) {
+                        upstream_version(manager, value.trim())
+                    } else {
+                        value.trim().to_string()
+                    };
                     if wanted.get(name.as_str()).is_some_and(|locked| {
-                        version_cmp::pacman(locked, value.trim()) == std::cmp::Ordering::Equal
+                        version_cmp::pacman(locked, &repo) == std::cmp::Ordering::Equal
                     }) {
                         found.insert(name.clone());
                     }
@@ -8620,6 +8825,64 @@ impl PkgHandle {
             }
         }
         found
+    }
+
+    /// For a lockfile of upstream versions: the newest build of each locked
+    /// upstream version that the repositories carry, for the packages to
+    /// install, upgrade or downgrade (apt `madison`, dnf/yum `list
+    /// --showduplicates`, apk `policy`).
+    async fn upstream_builds(
+        &self,
+        plan: &RestorePlan,
+        lockfile: &Lockfile,
+        manager: &ManagerKind,
+    ) -> HashMap<String, String> {
+        let mut builds = HashMap::new();
+        if !lockfile_is_minimal(lockfile) || !supports_version_pin(manager) {
+            return builds;
+        }
+        for pkg in &lockfile.packages {
+            let Some(locked) = pkg.version.as_deref() else {
+                continue;
+            };
+            let name = &pkg.name;
+            if !(plan.install.contains(name)
+                || plan.upgrade.contains(name)
+                || plan.downgrade.contains(name))
+            {
+                continue;
+            }
+            let mut cmd = match manager {
+                ManagerKind::Apt => {
+                    let mut c = pkg_cmd("apt-cache");
+                    c.arg("madison");
+                    c
+                }
+                ManagerKind::Dnf | ManagerKind::Yum => {
+                    let mut c = pkg_cmd(manager_name(manager));
+                    c.args(["-q", "list", "--showduplicates", "--available"]);
+                    c
+                }
+                _ => {
+                    let mut c = pkg_cmd("apk");
+                    c.arg("policy");
+                    c
+                }
+            };
+            cmd.arg(name);
+            let Ok(output) = cmd.bounded_output().await else {
+                break;
+            };
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let best = available_versions(manager, name, &stdout)
+                .into_iter()
+                .filter(|v| upstream_version(manager, v) == upstream_version(manager, locked))
+                .max_by(|a, b| compare_package_versions(manager, a, b));
+            if let Some(best) = best {
+                builds.insert(name.clone(), normalize_version(manager, &best));
+            }
+        }
+        builds
     }
 
     /// Every installed package with its version (no limit, and under the
@@ -8692,6 +8955,7 @@ impl PkgHandle {
             skipped_dependencies: Vec::new(),
         };
 
+        let minimal = lockfile_is_minimal(lockfile);
         let mut current_map = std::collections::HashMap::new();
         for pkg in current_packages {
             current_map.insert(&pkg.name, pkg);
@@ -8708,8 +8972,13 @@ impl PkgHandle {
             match current_map.remove(&lock_pkg.name) {
                 Some(current_pkg) => match lock_pkg.version.as_deref() {
                     Some(lock_version) => {
-                        match compare_package_versions(manager, &current_pkg.version, lock_version)
-                        {
+                        // An upstream-only lockfile accepts any build.
+                        let current_version = if minimal {
+                            upstream_version(manager, &current_pkg.version)
+                        } else {
+                            current_pkg.version.clone()
+                        };
+                        match compare_package_versions(manager, &current_version, lock_version) {
                             std::cmp::Ordering::Equal => plan.keep.push(lock_pkg.name.clone()),
                             std::cmp::Ordering::Less => plan.upgrade.push(lock_pkg.name.clone()),
                             std::cmp::Ordering::Greater => {
@@ -9472,6 +9741,7 @@ mod tests {
             summary: Some("command line tool for transferring data".to_string()),
             description: None,
             repository: None,
+            repository_url: None,
             homepage: None,
             score: 0.0,
         };
@@ -9492,6 +9762,7 @@ mod tests {
             summary: Some("development files for curl".to_string()),
             description: None,
             repository: None,
+            repository_url: None,
             homepage: None,
             score: 0.0,
         };
@@ -9512,6 +9783,7 @@ mod tests {
             summary: Some("library for transferring data".to_string()),
             description: None,
             repository: None,
+            repository_url: None,
             homepage: None,
             score: 0.0,
         };
@@ -9532,6 +9804,7 @@ mod tests {
             summary: Some("retrieves files from the web using curl-like protocol".to_string()),
             description: None,
             repository: None,
+            repository_url: None,
             homepage: None,
             score: 0.0,
         };
@@ -9552,6 +9825,7 @@ mod tests {
             summary: Some("command line tool".to_string()),
             description: None,
             repository: None,
+            repository_url: None,
             homepage: None,
             score: 0.0,
         };
@@ -9578,6 +9852,7 @@ mod tests {
                 summary: Some("command line tool".to_string()),
                 description: None,
                 repository: None,
+                repository_url: None,
                 homepage: None,
                 score: 0.0,
             },
@@ -9588,6 +9863,7 @@ mod tests {
                 summary: Some("development files".to_string()),
                 description: None,
                 repository: None,
+                repository_url: None,
                 homepage: None,
                 score: 0.0,
             },
@@ -9627,6 +9903,7 @@ mod tests {
                 summary: Some("development files".to_string()),
                 description: None,
                 repository: None,
+                repository_url: None,
                 homepage: None,
                 score: 0.0,
             },
@@ -9637,6 +9914,7 @@ mod tests {
                 summary: Some("command line tool".to_string()),
                 description: None,
                 repository: None,
+                repository_url: None,
                 homepage: None,
                 score: 0.0,
             },
@@ -9647,6 +9925,7 @@ mod tests {
                 summary: Some("library for transferring data".to_string()),
                 description: None,
                 repository: None,
+                repository_url: None,
                 homepage: None,
                 score: 0.0,
             },
@@ -9689,6 +9968,7 @@ mod tests {
                 summary: Some("retrieves files from web using http protocol".to_string()),
                 description: None,
                 repository: None,
+                repository_url: None,
                 homepage: None,
                 score: 0.0,
             },
@@ -9699,6 +9979,7 @@ mod tests {
                 summary: Some("command line tool".to_string()),
                 description: None,
                 repository: None,
+                repository_url: None,
                 homepage: None,
                 score: 0.0,
             },
@@ -10462,6 +10743,39 @@ mod tests {
 // SEC-04: package-manager commands run without a shell. Nothing here
 // invokes a real package manager; execution is checked with a mock
 // executable inside a temporary directory.
+/// The source (URL, suite/component) in one package's `apt-cache policy`
+/// output of the installed version, or of the candidate when nothing is
+/// installed. A version known only from `/var/lib/dpkg/status` has none.
+fn apt_policy_source(policy: &str) -> Option<(String, String)> {
+    let field = |name: &str| {
+        policy
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(name))
+            .map(str::trim)
+            .filter(|v| *v != "(none)")
+    };
+    let target = field("Installed:").or_else(|| field("Candidate:"))?;
+    let mut current: Option<&str> = None;
+    for line in policy
+        .lines()
+        .skip_while(|l| !l.contains("Version table:"))
+        .skip(1)
+    {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let is_source = words.len() >= 2
+            && words[0].bytes().all(|b| b.is_ascii_digit() || b == b'-')
+            && (words[1].contains(':') || words[1].starts_with('/'));
+        if is_source {
+            if current == Some(target) && words.len() >= 3 && words[1].contains(':') {
+                return Some((words[1].to_string(), words[2].to_string()));
+            }
+        } else if let Some(v) = words.iter().find(|w| **w != "***") {
+            current = Some(v);
+        }
+    }
+    None
+}
+
 /// Splits `apt-cache policy` output for several packages into (package,
 /// section) pairs: each section starts with a `<name>:` line at column 0.
 fn apt_policy_sections(policy: &str) -> Vec<(String, String)> {
@@ -10949,6 +11263,7 @@ mod cmdline_safety_tests {
             only_if_missing: true,
             reinstall: false,
             upgrade: false,
+            allow_downgrade: false,
             dry_run,
             timeout_ms: 1000,
             arch: None,

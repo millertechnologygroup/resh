@@ -120,6 +120,7 @@ fn every_error_maps_to_a_listed_code() {
         PkgError::RestoreRepoMismatch(s()),
         PkgError::Unsupported(s()),
         PkgError::RestoreUnresolved(s()),
+        PkgError::DowngradeRefused(s()),
     ];
     let listed: HashMap<&str, i32> = pkg_args::ERROR_CODES.iter().copied().collect();
     let mut seen = HashSet::new();
@@ -238,14 +239,6 @@ fn options_that_cannot_work_are_refused_with_a_reason() {
     }
     let reason = refused("snapshot", json!({"manager": "apt", "inline": true}));
     assert!(reason.contains("inline is not supported"), "{reason}");
-    let reason = refused(
-        "snapshot",
-        json!({"manager": "apt", "include_versions": "minimal"}),
-    );
-    assert!(
-        reason.starts_with("[pkg.unsupported_option] include_versions=minimal"),
-        "{reason}"
-    );
 }
 
 #[test]
@@ -514,16 +507,20 @@ fn remove_refuses_what_the_manager_cannot_do() {
 
 #[test]
 fn install_steps() {
+    let apt = &ManagerKind::Apt;
     let plain = install(json!([{"name": "jq"}]), json!({}));
     let pkg = &plain.packages[0];
-    assert_eq!(install_step(&plain, pkg, None), InstallStep::Install);
-    assert_eq!(install_step(&plain, pkg, Some("1.0")), InstallStep::Skip);
+    assert_eq!(install_step(&plain, pkg, None, apt), InstallStep::Install);
+    assert_eq!(
+        install_step(&plain, pkg, Some("1.0"), apt),
+        InstallStep::Skip
+    );
     let up = install(
         json!([{"name": "jq"}]),
         json!({"only_if_missing": false, "upgrade": true}),
     );
     assert_eq!(
-        install_step(&up, &up.packages[0], Some("1.0")),
+        install_step(&up, &up.packages[0], Some("1.0"), apt),
         InstallStep::Upgrade
     );
     let re = install(
@@ -531,18 +528,35 @@ fn install_steps() {
         json!({"only_if_missing": false, "reinstall": true}),
     );
     assert_eq!(
-        install_step(&re, &re.packages[0], Some("1.0")),
+        install_step(&re, &re.packages[0], Some("1.0"), apt),
         InstallStep::Reinstall
     );
     let again = install(json!([{"name": "jq"}]), json!({"only_if_missing": false}));
     assert_eq!(
-        install_step(&again, &again.packages[0], Some("1.0")),
+        install_step(&again, &again.packages[0], Some("1.0"), apt),
         InstallStep::Install
     );
-    let pinned = install(json!([{"name": "jq", "version": "2.0"}]), json!({}));
+    // A requested version: newer installs, equal skips, older downgrades,
+    // in the manager's order (dpkg: 1.10 > 1.9).
+    let pinned = install(json!([{"name": "jq", "version": "1.10"}]), json!({}));
     let p = &pinned.packages[0];
-    assert_eq!(install_step(&pinned, p, Some("1.0")), InstallStep::Install);
-    assert_eq!(install_step(&pinned, p, Some("2.0")), InstallStep::Skip);
+    assert_eq!(
+        install_step(&pinned, p, Some("1.9"), apt),
+        InstallStep::Install
+    );
+    assert_eq!(
+        install_step(&pinned, p, Some("1.10"), apt),
+        InstallStep::Skip
+    );
+    assert_eq!(
+        install_step(&pinned, p, Some("1.11"), apt),
+        InstallStep::Downgrade
+    );
+    let rpm = install(json!([{"name": "jq", "version": "1.6-2"}]), json!({}));
+    assert_eq!(
+        install_step(&rpm, &rpm.packages[0], Some("0:1.6-2"), &ManagerKind::Dnf),
+        InstallStep::Skip
+    );
 }
 
 #[test]
@@ -591,6 +605,16 @@ fn install_commands_per_manager() {
         "apk fix --no-interactive jq --x"
     );
     assert_eq!(cmd(ManagerKind::Brew, Upgrade), "brew upgrade jq --x");
+    assert_eq!(
+        cmd(ManagerKind::Apt, Downgrade),
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades jq --x"
+    );
+    assert_eq!(cmd(ManagerKind::Dnf, Downgrade), "dnf downgrade -y jq --x");
+    assert_eq!(cmd(ManagerKind::Yum, Downgrade), "yum downgrade -y jq --x");
+    assert_eq!(
+        cmd(ManagerKind::Apk, Downgrade),
+        "apk add --no-interactive jq --x"
+    );
     let no = install(json!([{"name": "jq"}]), json!({"assume_yes": false}));
     assert_eq!(
         h.build_install_command(&no, &no.packages[0], &ManagerKind::Dnf, Install)
@@ -876,6 +900,7 @@ fn restore_commands_per_manager() {
         name: "jq".into(),
         version: version.map(str::to_string),
         from: None,
+        locked: None,
     };
     let config = restore_config(json!({}));
     let cmd =
@@ -975,6 +1000,7 @@ fn restore_verification() {
         name: "jq".into(),
         version: Some("1.6-2".into()),
         from: None,
+        locked: None,
     };
     let m = ManagerKind::Dnf;
     assert!(verify_restore_op(&op, Some("1.6-2"), &exact, &m).is_ok());
@@ -1137,4 +1163,114 @@ fn a_missing_manager_is_reported() {
             .unwrap()
             .starts_with("[pkg.manager_not_found] Manager not available"),
     );
+}
+
+// ---------------------------------------------------------------------------
+// Upstream-only versions (include_versions: minimal)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn upstream_versions_per_manager() {
+    let up = |m, v| upstream_version(m, v);
+    assert_eq!(up(&ManagerKind::Apt, "1:2.36-9+deb12u14"), "2.36");
+    assert_eq!(up(&ManagerKind::Apt, "8.5.0-2ubuntu10.16"), "8.5.0");
+    assert_eq!(up(&ManagerKind::Apt, "1.0"), "1.0");
+    assert_eq!(up(&ManagerKind::Dnf, "2:4.1-10.fc42"), "4.1");
+    assert_eq!(up(&ManagerKind::Yum, "1.8.0-10.el9"), "1.8.0");
+    assert_eq!(up(&ManagerKind::Pacman, "1:2.2.1-3"), "2.2.1");
+    assert_eq!(up(&ManagerKind::Apk, "1.8.2-r10"), "1.8.2");
+    assert_eq!(up(&ManagerKind::Apk, "1.0_rc1"), "1.0_rc1");
+    assert_eq!(up(&ManagerKind::Brew, "1.7.1_1"), "1.7.1");
+    assert_eq!(up(&ManagerKind::Brew, "3.4"), "3.4");
+}
+
+/// Listings of available builds, as the managers print them (captured in
+/// Ubuntu 24.04, Fedora 42 and Alpine containers).
+#[test]
+fn available_builds_are_read_per_manager() {
+    let madison = "      curl | 8.5.0-2ubuntu10.16 | http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+      curl | 8.5.0-2ubuntu10 | http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+";
+    assert_eq!(
+        available_versions(&ManagerKind::Apt, "curl", madison),
+        ["8.5.0-2ubuntu10.16", "8.5.0-2ubuntu10"]
+    );
+    let dnf = "Available packages
+tzdata.noarch 2025b-1.fc42 fedora
+tzdata.noarch 2026b-1.fc42 updates
+";
+    assert_eq!(
+        available_versions(&ManagerKind::Dnf, "tzdata", dnf),
+        ["2025b-1.fc42", "2026b-1.fc42"]
+    );
+    let apk = "jq policy:
+  1.8.2-r0:
+    https://dl-cdn.alpinelinux.org/alpine/v3.24/main
+";
+    assert_eq!(
+        available_versions(&ManagerKind::Apk, "jq", apk),
+        ["1.8.2-r0"]
+    );
+}
+
+/// A lockfile of upstream versions keeps any installed build of the
+/// version, installs the newest build of it, and checks the upstream part.
+#[test]
+fn restore_with_upstream_versions_accepts_any_build() {
+    let mut lock = lockfile(
+        "apt",
+        json!([
+            {"name": "a", "version": "8.5.0"},
+            {"name": "b", "version": "2.0"},
+            {"name": "c", "version": "3.1"}
+        ]),
+    );
+    lock.manager.config = Some(json!({"include_versions": "minimal"}));
+    assert!(lockfile_is_minimal(&lock));
+    let current = host(&[("a", "8.5.0-2ubuntu10.16"), ("b", "1.9-1")]);
+    let config = restore_config(json!({}));
+    let m = ManagerKind::Apt;
+    let mut plan = handle()
+        .compute_restore_plan_for(&lock, &current, &config, &m)
+        .unwrap();
+    assert_eq!(plan.keep, ["a"]);
+    assert_eq!(plan.upgrade, ["b"]);
+    assert_eq!(plan.install, ["c"]);
+    let builds: HashMap<String, String> = [("c".to_string(), "3.1-4".to_string())]
+        .into_iter()
+        .collect();
+    let ops = restore_operations_with(
+        &mut plan,
+        &lock,
+        &current,
+        &config,
+        &m,
+        &HashSet::new(),
+        &builds,
+    )
+    .unwrap();
+    assert_eq!(
+        restore_command(&ops[0], &m, &config, true).unwrap().argv(),
+        &["apt-get", "install", "-y", "c=3.1-4"]
+    );
+    assert_eq!(ops[0].locked.as_deref(), Some("3.1"));
+    assert!(verify_restore_op(&ops[0], Some("3.1-4"), &config, &m).is_ok());
+    assert!(verify_restore_op(&ops[0], Some("3.1-9"), &config, &m).is_ok());
+    let err = verify_restore_op(&ops[0], Some("3.2-1"), &config, &m).unwrap_err();
+    assert!(
+        err.to_string().contains("locked upstream version 3.1"),
+        "{err}"
+    );
+
+    // The text lockfile keeps the marker.
+    let h = handle();
+    let text = h.serialize_lockfile_text(&lock).unwrap();
+    assert!(text.contains("# include_versions: minimal\n"), "{text}");
+    assert!(lockfile_is_minimal(&h.parse_text_lockfile(&text).unwrap()));
+}
+
+#[test]
+fn a_refused_downgrade_is_exit_1() {
+    let e = PkgError::DowngradeRefused("x".into());
+    assert_eq!(e.code(), (1, "pkg.downgrade_refused"));
 }
